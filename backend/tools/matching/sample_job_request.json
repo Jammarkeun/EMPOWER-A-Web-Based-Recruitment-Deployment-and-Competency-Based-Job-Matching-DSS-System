@@ -1,0 +1,12 @@
+{
+  "id": "JR-2026-0001",
+  "criteria": [
+    { "code": "education", "type": "weighted_binary", "weight": 15, "expected": "high_school_or_above" },
+    { "code": "experience", "type": "weighted_scale", "weight": 20, "min": 6, "max": 60 },
+    { "code": "certifications", "type": "hard_filter", "weight": 10, "expected": "NC II" },
+    { "code": "distance", "type": "weighted_scale", "weight": 5, "min": 0, "max": 50 },
+    { "code": "availability", "type": "weighted_binary", "weight": 15, "expected": "within_7_days" },
+    { "code": "communication", "type": "weighted_rubric", "weight": 20, "rubric": { "excellent": 1.0, "good": 0.8, "fair": 0.5, "poor": 0.2 } },
+    { "code": "reliability", "type": "weighted_rubric", "weight": 15, "rubric": { "excellent": 1.0, "good": 0.8, "fair": 0.5, "poor": 0.2 } }
+  ]
+}

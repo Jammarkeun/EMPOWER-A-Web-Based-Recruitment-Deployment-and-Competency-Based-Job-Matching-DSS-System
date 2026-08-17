@@ -1,0 +1,183 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * The palette.
+ *
+ * Deep institutional blue rather than a consumer accent: this system holds
+ * employment records and disciplinary files, and it should look like an
+ * administrative instrument rather than a product.
+ *
+ * Status colours are separated from the accent and never carry meaning on their
+ * own. Every status in the interface is also written out in words, because a
+ * red/green pairing alone fails for the most common forms of colour blindness
+ * and disappears entirely in the black-and-white reports HR prints for client
+ * meetings.
+ */
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --primary: 221 70% 34%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 94%;
+    --secondary-foreground: 222 47% 20%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 45%;
+
+    --accent: 210 40% 94%;
+    --accent-foreground: 222 47% 20%;
+
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 210 40% 98%;
+
+    --success: 152 60% 32%;
+    --success-foreground: 210 40% 98%;
+
+    --warning: 32 90% 42%;
+    --warning-foreground: 210 40% 98%;
+
+    --border: 214 30% 89%;
+    --input: 214 30% 89%;
+    --ring: 221 70% 34%;
+
+    --radius: 0.5rem;
+  }
+
+  /*
+   * Dark theme.
+   *
+   * Not a naive inversion. The accent is lifted well above its light-mode value
+   * because a deep blue on a dark ground fails contrast outright, and the
+   * surfaces are given a slight blue bias so the greys read as chosen rather
+   * than as a flat neutral.
+   */
+  .dark {
+    --background: 222 47% 7%;
+    --foreground: 210 30% 92%;
+
+    --card: 222 40% 11%;
+    --card-foreground: 210 30% 92%;
+
+    --primary: 213 80% 62%;
+    --primary-foreground: 222 47% 9%;
+
+    --secondary: 217 30% 18%;
+    --secondary-foreground: 210 30% 92%;
+
+    --muted: 217 30% 16%;
+    --muted-foreground: 215 18% 62%;
+
+    --accent: 217 30% 18%;
+    --accent-foreground: 210 30% 92%;
+
+    --destructive: 0 68% 58%;
+    --destructive-foreground: 222 47% 9%;
+
+    --success: 152 50% 48%;
+    --success-foreground: 222 47% 9%;
+
+    --warning: 35 85% 58%;
+    --warning-foreground: 222 47% 9%;
+
+    --border: 217 28% 21%;
+    --input: 217 28% 21%;
+    --ring: 213 80% 62%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  /* Visible focus for keyboard users. HR staff work through these forms at a
+     counter, frequently by tab rather than mouse. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* Respect a system preference for reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Wide content scrolls inside its own container so the page body never
+     scrolls sideways on a laptop screen. */
+  .table-scroll {
+    @apply w-full overflow-x-auto;
+  }
+
+  .card-grid {
+    @apply grid gap-4 sm:grid-cols-2 lg:grid-cols-4;
+  }
+
+  /*
+    Toast countdown bar.
+
+    Declared here rather than in the Tailwind config because each toast sets
+    its own duration through an inline animation, and Tailwind only emits
+    @keyframes that one of its animation utilities actually references.
+
+    The reduced-motion rule above collapses every animation to 0.01ms, which
+    would leave this bar permanently drained rather than counting down. Since a
+    bar stuck at empty says nothing, it is hidden outright for those users -
+    the toast still dismisses on time, because the timer is kept in JavaScript
+    and does not depend on this animation running at all.
+  */
+  @keyframes toast-progress {
+    from {
+      transform: scaleX(1);
+    }
+    to {
+      transform: scaleX(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toast-progress-bar {
+      display: none;
+    }
+  }
+
+  /* Used on the landing page, where a soft field of colour behind the hero
+     reads better than a hard band. */
+  .radial-fade {
+    background-image: radial-gradient(
+      ellipse 80% 50% at 50% -10%,
+      hsl(var(--primary) / 0.10),
+      transparent 70%
+    );
+  }
+}
+
+/* Print rules for the report screens, which HR prints for client meetings. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+}

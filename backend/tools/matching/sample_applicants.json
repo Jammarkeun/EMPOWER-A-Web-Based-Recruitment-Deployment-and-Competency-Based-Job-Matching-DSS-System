@@ -1,0 +1,38 @@
+[
+  {
+    "id": 501,
+    "name": "Maria Santos",
+    "education_level": "high_school_or_above",
+    "months_experience": 24,
+    "certifications": ["NC II"],
+    "distance_km": 8.5,
+    "availability": "within_7_days",
+    "communication_rating": "good",
+    "reliability_rating": "excellent",
+    "application_date": "2026-07-28"
+  },
+  {
+    "id": 502,
+    "name": "Jose dela Cruz",
+    "education_level": "high_school_or_above",
+    "months_experience": 3,
+    "certifications": [],
+    "distance_km": 2.0,
+    "availability": "within_7_days",
+    "communication_rating": "fair",
+    "reliability_rating": "good",
+    "application_date": "2026-07-30"
+  },
+  {
+    "id": 503,
+    "name": "Ana Reyes",
+    "education_level": "primary_school",
+    "months_experience": 48,
+    "certifications": ["NC II"],
+    "distance_km": 30.0,
+    "availability": "within_7_days",
+    "communication_rating": "excellent",
+    "reliability_rating": "good",
+    "application_date": "2026-07-25"
+  }
+]

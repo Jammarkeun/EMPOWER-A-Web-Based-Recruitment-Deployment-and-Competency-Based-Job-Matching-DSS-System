@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+#
+# This repository is public. Everything in this block holds live credentials for
+# the Supabase project — the database password, the service_role key, and the S3
+# access keys — and a single accidental commit of any of it is not recoverable
+# by deleting the file afterwards: it stays in the history, and GitHub's search
+# indexes it within minutes.
+#
+# .env.example is deliberately NOT ignored. It documents which variables exist
+# without carrying any of their values.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+auth.json
+
+# ---------------------------------------------------------------------------
+# Superseded backup of the original Laravel skeleton
+# ---------------------------------------------------------------------------
+#
+# Kept locally for reference, excluded here for two reasons: it carries its own
+# .env with a database password, and it is a stale copy of an application that
+# has since been rewritten. Publishing it would mean shipping credentials and
+# code that no longer reflects the system.
+backend/laravel_old_backup/
+
+# ---------------------------------------------------------------------------
+# Dependencies — restored from the lockfiles, never committed
+# ---------------------------------------------------------------------------
+node_modules/
+vendor/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# ---------------------------------------------------------------------------
+# Build output and caches
+# ---------------------------------------------------------------------------
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Laravel runtime state. The directories themselves are tracked through their
+# own .gitignore files so the structure survives a clone.
+/backend/laravel/storage/*.key
+/backend/laravel/storage/framework/cache/data/*
+/backend/laravel/storage/framework/sessions/*
+/backend/laravel/storage/framework/views/*
+/backend/laravel/storage/logs/*
+/backend/laravel/bootstrap/cache/*.php
+/backend/laravel/public/storage
+
+# Recognition models are downloaded on first use, around 200 MB.
+.paddlex/
+.paddleocr/
+
+# ---------------------------------------------------------------------------
+# Local noise
+# ---------------------------------------------------------------------------
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.sqlite
+*.sqlite-journal

@@ -1,0 +1,65 @@
+services:
+  app:
+    build:
+      context: ./backend/laravel
+      dockerfile: Dockerfile
+    container_name: empower_app
+    working_dir: /var/www/html
+    volumes:
+      - ./backend/laravel:/var/www/html:cached
+    ports:
+      - "9000:9000"
+    environment:
+      - APP_ENV=local
+      - DB_HOST=db
+      - DB_DATABASE=empower
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+    depends_on:
+      - db
+      - redis
+      - ocr
+    command: ["/usr/local/bin/docker-entrypoint.sh"]
+
+  web:
+    image: nginx:stable-alpine
+    container_name: empower_web
+    ports:
+      - "8000:80"
+    volumes:
+      - ./backend/laravel:/var/www/html:ro
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - app
+
+  db:
+    image: mysql:8.0
+    container_name: empower_db
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: empower
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+
+  redis:
+    image: redis:6-alpine
+    container_name: empower_redis
+    ports:
+      - "6379:6379"
+
+  ocr:
+    build:
+      context: ./backend/ocr_service
+      dockerfile: Dockerfile
+    container_name: empower_ocr
+    working_dir: /srv/ocr
+    volumes:
+      - ./backend/ocr_service:/srv/ocr:cached
+    ports:
+      - "8001:8001"
+    command: ["/bin/sh", "-c", "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8001"]
+
+volumes:
+  db_data:

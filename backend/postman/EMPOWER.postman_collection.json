@@ -1,0 +1,309 @@
+{
+  "info": {
+    "name": "EMPOWER API",
+    "_postman_id": "3a0a4d8f-6b8e-4c17-98a2-8f3d9f8f0d11",
+    "description": "Recruitment, Deployment, and Competency-Based Job Matching DSS API collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"hr@cde.local\",\n  \"password\": \"Secret123!\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/auth/login"
+          }
+        },
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/me"
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/logout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Clients",
+      "item": [
+        {
+          "name": "List Clients",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "url": "{{baseUrl}}/api/v1/clients"
+          }
+        },
+        {
+          "name": "Create Client",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"company_name\": \"Best TV Food Products Corporation\",\n  \"business_type\": \"Food Manufacturing\",\n  \"contact_person\": \"Jane Dela Cruz\",\n  \"contact_number\": \"09171234567\",\n  \"email\": \"contact@besttv.local\",\n  \"office_address\": \"Sta. Cruz, Laguna\",\n  \"status\": \"active\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/clients"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Job Requests",
+      "item": [
+        {
+          "name": "Create Job Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_company_id\": 1,\n  \"client_department_id\": 1,\n  \"position_title\": \"Production Helper\",\n  \"required_education\": \"High School Graduate\",\n  \"required_experience_months\": 6,\n  \"required_certifications\": [\"NC II\"],\n  \"gender_preference\": \"any\",\n  \"age_min\": 18,\n  \"age_max\": 35,\n  \"height_min_cm\": 152,\n  \"physical_requirement\": \"Fit to lift 15kg\",\n  \"availability_requirement\": \"Can start within 7 days\",\n  \"workers_needed\": 15,\n  \"date_requested\": \"2026-08-04\",\n  \"deployment_deadline\": \"2026-08-20\",\n  \"request_source\": \"email\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/job-requests"
+          }
+        },
+        {
+          "name": "Run Matching Evaluation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"candidate_scope\": \"ready_for_deployment\",\n  \"limit\": 100\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/job-requests/1/evaluate"
+          }
+        }
+        {
+          "name": "Evaluate with Arrays (sample)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"criteria\": [\n    { \"code\": \"education\", \"type\": \"weighted_binary\", \"weight\": 15, \"expected\": \"high_school_or_above\" },\n    { \"code\": \"experience\", \"type\": \"weighted_scale\", \"weight\": 20, \"min\": 6, \"max\": 60 },\n    { \"code\": \"certifications\", \"type\": \"hard_filter\", \"weight\": 10, \"expected\": \"NC II\" },\n    { \"code\": \"distance\", \"type\": \"weighted_scale\", \"weight\": 5, \"min\": 0, \"max\": 50 },\n    { \"code\": \"availability\", \"type\": \"weighted_binary\", \"weight\": 15, \"expected\": \"within_7_days\" },\n    { \"code\": \"communication\", \"type\": \"weighted_rubric\", \"weight\": 20, \"rubric\": { \"excellent\": 1.0, \"good\": 0.8, \"fair\": 0.5, \"poor\": 0.2 } },\n    { \"code\": \"reliability\", \"type\": \"weighted_rubric\", \"weight\": 15, \"rubric\": { \"excellent\": 1.0, \"good\": 0.8, \"fair\": 0.5, \"poor\": 0.2 } }\n  ],\n  \"applicants\": [\n    {\n      \"id\": 501,\n      \"name\": \"Maria Santos\",\n      \"education_level\": \"high_school_or_above\",\n      \"months_experience\": 24,\n      \"certifications\": [\"NC II\"],\n      \"distance_km\": 8.5,\n      \"availability\": \"within_7_days\",\n      \"communication_rating\": \"good\",\n      \"reliability_rating\": \"excellent\",\n      \"application_date\": \"2026-07-28\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/job-requests/1/evaluate"
+          }
+        },
+      ]
+    },
+    {
+      "name": "Applicants",
+      "item": [
+        {
+          "name": "Create Applicant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_channel\": \"walk_in\",\n  \"first_name\": \"Maria\",\n  \"last_name\": \"Santos\",\n  \"present_address\": \"Sta. Cruz, Laguna\",\n  \"application_date\": \"2026-08-04\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/applicants"
+          }
+        },
+        {
+          "name": "Update Applicant Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"to_status\": \"initial_screening\",\n  \"reason\": \"Documents received\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/applicants/1/status"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Requirements",
+      "item": [
+        {
+          "name": "List Requirement Types",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "url": "{{baseUrl}}/api/v1/requirement-types"
+          }
+        },
+        {
+          "name": "Verify Requirement",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"verified\",\n  \"remarks\": \"Valid and complete\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/applicants/1/requirements/1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Deployment and Employees",
+      "item": [
+        {
+          "name": "Create Deployment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": 1,\n  \"job_request_id\": 1,\n  \"client_company_id\": 1,\n  \"client_department_id\": 1,\n  \"position_title\": \"Production Helper\",\n  \"supervisor_name\": \"Mark Reyes\",\n  \"employee_number\": \"EMP-2026-00123\",\n  \"biometric_number\": \"BIO-99231\",\n  \"deployment_date\": \"2026-08-12\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/deployments"
+          }
+        },
+        {
+          "name": "Get Employee Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "url": "{{baseUrl}}/api/v1/employees/1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Violations and Separation",
+      "item": [
+        {
+          "name": "Create Violation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"violation_date\": \"2026-08-18\",\n  \"violation_type\": \"late\",\n  \"description\": \"Reported late for 3 consecutive days\",\n  \"penalty\": \"Written warning\",\n  \"status\": \"open\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/employees/1/violations"
+          }
+        },
+        {
+          "name": "Submit Resignation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Personal reasons\",\n  \"filing_date\": \"2026-09-01\",\n  \"rendering_days\": 30,\n  \"exit_date\": \"2026-10-01\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/employees/1/resignations"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reports, Audit, Archive",
+      "item": [
+        {
+          "name": "Queue Deployment Report Export",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"report_type\": \"deployment\",\n  \"export_format\": \"xlsx\",\n  \"filters\": {\n    \"client_company_id\": 1,\n    \"date_from\": \"2026-01-01\",\n    \"date_to\": \"2026-12-31\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports/export"
+          }
+        },
+        {
+          "name": "View Audit Logs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "url": "{{baseUrl}}/api/v1/audit-logs"
+          }
+        },
+        {
+          "name": "Search Archives",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "url": "{{baseUrl}}/api/v1/archives"
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ]
+}
