@@ -72,8 +72,18 @@ npm install --prefix frontend
 php backend/laravel/artisan migrate --seed
 ```
 
-On Windows, `.\start.ps1` brings up all three services together
-(`-NoOcr` skips document reading, `-Stop` shuts them down).
+On Windows, **double-click `run.cmd`** — or from a terminal:
+
+```
+.\run.cmd            # API + frontend + OCR
+.\run.cmd -NoOcr     # skip document reading
+.\run.cmd -Stop      # shut everything down
+```
+
+It wraps `start.ps1`. Use the wrapper rather than the `.ps1` directly: Windows
+ships with the PowerShell execution policy set to `Restricted`, which refuses
+to run any script file, and `run.cmd` bypasses that for the single command
+instead of requiring a change to the machine's security settings.
 
 Otherwise, in three terminals:
 

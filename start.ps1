@@ -5,10 +5,15 @@
     a clear message if something is missing rather than letting a service fail
     silently in a hidden window.
 
-    Usage:
-        .\start.ps1            # API + frontend + OCR
-        .\start.ps1 -NoOcr     # skip the OCR service
-        .\start.ps1 -Stop      # stop everything
+    Usage - prefer run.cmd, which works on a machine straight out of the box:
+        .\run.cmd              # API + frontend + OCR
+        .\run.cmd -NoOcr       # skip the OCR service
+        .\run.cmd -Stop        # stop everything
+
+    This file can be called directly as .\start.ps1, but only where the
+    PowerShell execution policy allows it. Windows defaults to Restricted,
+    which refuses to run any .ps1 at all; run.cmd bypasses that for the one
+    command rather than asking anyone to change a machine security setting.
 
     Note: this file is deliberately plain ASCII. Windows PowerShell 5.1 reads a
     UTF-8 script without a BOM as ANSI, which turns any dash or accented
@@ -173,5 +178,5 @@ Write-Host ""
 Write-Host "  Administrator   admin@cdemanpower.local   ChangeMe123!" -ForegroundColor DarkGray
 Write-Host "  HR staff        hr@cdemanpower.local      ChangeMe123!" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "Stop everything with:  .\start.ps1 -Stop" -ForegroundColor DarkGray
+Write-Host "Stop everything with:  .\run.cmd -Stop" -ForegroundColor DarkGray
 Write-Host ""
