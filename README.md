@@ -57,18 +57,36 @@ deliberate act by a person.
 
 ## Running it
 
-Requires PHP 8.2+, Node 18+, and Python 3.10+ for the optional OCR service.
+**Install first** — none of these are in the repository:
+
+| | |
+| --- | --- |
+| PHP **8.2+** | 8.0 will not run Laravel 12. If XAMPP is installed, make sure the newer PHP comes first on your PATH. |
+| Composer | Installs the PHP dependencies. |
+| Node **18+** | |
+| Python **3.10+** | Only for document reading, which is optional. |
+
+Then, from the repository root:
 
 ```bash
-# 1. Configure — copy the example and fill in your own Supabase credentials
-cp backend/laravel/.env.example backend/laravel/.env
-php artisan key:generate
-
-# 2. Install
+# 1. Dependencies. Do this before anything else - the artisan commands below
+#    do not exist until vendor/ is installed.
 composer install --working-dir=backend/laravel
 npm install --prefix frontend
 
-# 3. Create the schema and seed reference data
+# 2. Configuration
+cp backend/laravel/.env.example backend/laravel/.env
+
+# 3. Fill in the blanks in backend/laravel/.env
+#    The Supabase credentials are NOT in this repository. Ask a teammate to
+#    send them privately, or create your own Supabase project and use its
+#    values. Every variable is explained in the file itself.
+
+# 4. Application key
+php backend/laravel/artisan key:generate
+
+# 5. Schema and reference data. Only needed once per database - if a teammate
+#    has already done it against the shared project, skip this.
 php backend/laravel/artisan migrate --seed
 ```
 
