@@ -87,7 +87,7 @@ return new class extends Migration
             $table->string('to_status', 40);
             $table->string('reason', 255)->nullable();
             $table->foreignId('changed_by')->constrained('users');
-            $table->timestamp('changed_at');
+            $table->timestamp('changed_at')->useCurrent();
             $table->timestamps();
 
             $table->index('employee_id', 'idx_employee_status_history_employee');

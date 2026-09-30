@@ -78,6 +78,33 @@ class ApiWorkflowTest extends TestCase
         );
     }
 
+    public function test_login_does_not_reveal_that_a_valid_account_is_inactive(): void
+    {
+        $hr = $this->hrUser();
+        $hr->forceFill(['is_active' => false])->save();
+
+        $response = $this->postJson('/api/v1/auth/login', [
+            'email' => $hr->email,
+            'password' => 'password',
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('errors.email.0', 'These credentials do not match our records.');
+    }
+
+    public function test_dashboard_months_must_be_between_one_and_thirty_six(): void
+    {
+        Sanctum::actingAs($this->hrUser());
+
+        $this->getJson('/api/v1/dashboard/summary?months=0')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('months');
+
+        $this->getJson('/api/v1/dashboard/summary?months=37')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('months');
+    }
+
     public function test_deactivated_account_cannot_use_an_existing_token(): void
     {
         $hr = $this->hrUser();
@@ -120,6 +147,7 @@ class ApiWorkflowTest extends TestCase
         $jobRequest = $this->jobRequest($department, $hr);
         $applicant = $this->applicant($hr, ['current_status' => 'ready_for_deployment']);
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         $deployment = app(\App\Services\DeploymentService::class)->deploy($applicant, $jobRequest, [
             'deployment_date' => now()->toDateString(),
@@ -208,24 +236,28 @@ class ApiWorkflowTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.folder.folder_category', 'folder_3');
 
-        // 6. Upload a document through the API, which stores it and marks the
-        //    requirement as submitted rather than verified.
-        Storage::fake('supabase');
+        // 6. A walk-in applicant hands their papers over the counter, so the
+        //    officer verifies them with no file ever stored. This is the common
+        //    case at the agency, and the system must record it as a genuine
+        //    verification rather than treating the applicant as incomplete.
+        Storage::fake('documents');
         $resume = RequirementType::where('requirement_code', 'resume')->firstOrFail();
-
-        $this->postJson("/api/v1/applicants/{$applicantId}/requirements/{$resume->id}/upload", [
-            'file' => UploadedFile::fake()->create('resume.pdf', 120, 'application/pdf'),
-        ])->assertOk()->assertJsonPath('data.status', 'submitted');
-
-        // A document cannot be verified until one has actually been uploaded.
         $diploma = RequirementType::where('requirement_code', 'diploma')->firstOrFail();
+
         $this->patchJson("/api/v1/applicants/{$applicantId}/requirements/{$diploma->id}", [
             'status' => 'verified',
-        ])->assertStatus(400);
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.requirement.status', 'verified')
+            ->assertJsonPath('data.requirement.upload_status', 'not_uploaded')
+            // Inferred from the absence of a file: the officer was looking at
+            // the original, not at an upload.
+            ->assertJsonPath('data.requirement.verification_method', 'walk_in');
 
         // 7. Verifying the remaining documents promotes the applicant
         //    automatically, without anyone having to remember to move them.
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         $this->patchJson("/api/v1/applicants/{$applicantId}/requirements/{$resume->id}", [
             'status' => 'verified',

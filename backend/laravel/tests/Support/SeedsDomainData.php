@@ -6,8 +6,11 @@ use App\Models\Applicant;
 use App\Models\ApplicantRequirement;
 use App\Models\ClientCompany;
 use App\Models\ClientDepartment;
+use App\Models\JobPosition;
 use App\Models\JobRequest;
 use App\Models\RequirementType;
+use App\Models\Training;
+use App\Models\TrainingEnrollment;
 use App\Models\User;
 use Database\Seeders\CriteriaCatalogSeeder;
 use Database\Seeders\RequirementTypesSeeder;
@@ -76,6 +79,20 @@ trait SeedsDomainData
         ], $overrides));
     }
 
+    /**
+     * A position on offer. Pass null for the company to get an agency-wide one.
+     */
+    protected function jobPosition(?ClientCompany $company, User $actor, array $overrides = []): JobPosition
+    {
+        return JobPosition::create(array_merge([
+            'position_code' => 'POS-TEST-'.uniqid(),
+            'client_company_id' => $company?->id,
+            'position_title' => 'Production Helper',
+            'status' => 'active',
+            'created_by' => $actor->id,
+        ], $overrides));
+    }
+
     protected function jobRequest(ClientDepartment $department, User $actor, array $overrides = []): JobRequest
     {
         // request_status is guarded on the model, so it is applied separately
@@ -118,6 +135,34 @@ trait SeedsDomainData
         $applicant->forceFill(['current_status' => $status])->save();
 
         return $applicant;
+    }
+
+    /**
+     * Puts an applicant through training, which CDE does before every placement.
+     *
+     * Deployment now genuinely requires it — the lifecycle refuses to endorse an
+     * untrained candidate to a client — so a test that wants a deployed employee
+     * has to walk the same path the agency does. Recording the enrolment rather
+     * than forcing the status keeps the tests honest about that.
+     */
+    protected function completeTraining(Applicant $applicant, User $actor): TrainingEnrollment
+    {
+        $training = Training::create([
+            'training_code' => 'TRN-TEST-'.uniqid(),
+            'training_title' => 'Pre-deployment orientation',
+            'training_date' => now()->toDateString(),
+            'location' => 'CDE Manpower Services, Sta. Cruz, Laguna',
+            'trainer_name' => 'Company Coordinator',
+            'status' => 'completed',
+            'created_by' => $actor->id,
+        ]);
+
+        return TrainingEnrollment::create([
+            'training_id' => $training->id,
+            'applicant_id' => $applicant->id,
+            'attendance_status' => 'present',
+            'completion_status' => 'completed',
+        ]);
     }
 
     /**

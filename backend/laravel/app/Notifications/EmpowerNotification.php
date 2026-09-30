@@ -2,6 +2,8 @@
 
 namespace App\Notifications;
 
+use App\Models\Applicant;
+use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 
@@ -20,8 +22,43 @@ abstract class EmpowerNotification extends Notification
 {
     use Queueable;
 
+    /**
+     * Honours the recipient's notification preferences.
+     *
+     * Returning an empty array is how Laravel is told to send nothing, so a
+     * muted category simply never produces a row — the badge and the panel then
+     * agree with the preference automatically, because both read the same rows.
+     *
+     * The notifiable is not always the user. Lifecycle notifications are
+     * addressed to the applicant or employee record, since that is the thing
+     * the event happened to, so the preference is resolved through the account
+     * linked to it.
+     *
+     * Muting suppresses the alert and nothing else. The document is still
+     * verified, the placement is still recorded, and no part of the recruitment
+     * process depends on a notification having been delivered — which is what
+     * makes this safe to let people switch off.
+     */
     public function via(object $notifiable): array
     {
+        $user = match (true) {
+            $notifiable instanceof User => $notifiable,
+            default => User::query()
+                ->when(
+                    $notifiable instanceof Applicant,
+                    fn ($q) => $q->where('applicant_id', $notifiable->getKey()),
+                    fn ($q) => $q->where('employee_id', $notifiable->getKey())
+                )
+                ->first(),
+        };
+
+        // Nobody to ask means nobody has opted out. A record with no portal
+        // account still accrues its notifications, which is what makes them
+        // visible the day an account is created for it.
+        if ($user && ! $user->wantsNotification($this->category())) {
+            return [];
+        }
+
         return ['database'];
     }
 

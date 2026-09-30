@@ -7,6 +7,7 @@ use App\Http\Resources\ApplicantResource;
 use App\Http\Resources\StatusHistoryResource;
 use App\Http\Responses\ApiResponse;
 use App\Models\Applicant;
+use App\Models\JobPosition;
 use App\Models\RequirementType;
 use App\Services\ApplicantLifecycleService;
 use App\Services\AuditService;
@@ -64,7 +65,7 @@ class ApplicantController extends Controller
     public function store(StoreApplicantRequest $request): JsonResponse
     {
         $applicant = DB::transaction(function () use ($request) {
-            $applicant = Applicant::create(array_merge($request->validated(), [
+            $applicant = Applicant::create(array_merge($this->withPositionTitle($request->validated()), [
                 'applicant_code' => $this->codes->applicant(),
                 'created_by' => $request->user()->id,
             ]));
@@ -97,6 +98,29 @@ class ApplicantController extends Controller
             new ApplicantResource($applicant->fresh()->load('requirements.requirementType')),
             'Applicant registered'
         );
+    }
+
+    /**
+     * Keeps the position reference and the position wording in step.
+     *
+     * When a position is chosen, its title is written alongside the reference so
+     * the two can never disagree. Every screen, report, and export already reads
+     * the title, and a record whose id says "Warehouse Staff" while its text
+     * says "Production Helper" is worse than either alone.
+     */
+    private function withPositionTitle(array $data): array
+    {
+        if (empty($data['preferred_position_id'])) {
+            return $data;
+        }
+
+        $position = JobPosition::find($data['preferred_position_id']);
+
+        if ($position) {
+            $data['preferred_position'] = $position->position_title;
+        }
+
+        return $data;
     }
 
     public function show(Applicant $applicant): JsonResponse
@@ -141,6 +165,7 @@ class ApplicantController extends Controller
             'email' => ['nullable', 'email', 'max:190'],
             'present_address' => ['sometimes', 'string', 'max:255'],
             'provincial_address' => ['nullable', 'string', 'max:255'],
+            'preferred_position_id' => ['nullable', 'integer', 'exists:job_positions,id'],
             'preferred_position' => ['nullable', 'string', 'max:150'],
             'availability_date' => ['nullable', 'date'],
             'distance_km' => ['nullable', 'numeric', 'min:0', 'max:9999'],
@@ -149,6 +174,7 @@ class ApplicantController extends Controller
             'remarks' => ['nullable', 'string'],
         ]);
 
+        $data = $this->withPositionTitle($data);
         $before = $applicant->only(array_keys($data));
 
         $applicant->update(array_merge($data, ['updated_by' => $request->user()->id]));
@@ -168,7 +194,33 @@ class ApplicantController extends Controller
         $data = $request->validate([
             'to_status' => ['required', 'string', Rule::in(array_keys(config('empower.applicant_transitions')))],
             'reason' => ['nullable', 'string', 'max:255'],
+
+            /*
+             * Why the application stopped, as a category rather than a sentence.
+             *
+             * CDE named two reasons applications do not proceed - requirements
+             * never completed, and not suitable for the work. Recorded as a
+             * chosen value so they can be counted, with the note carrying
+             * whatever made this case particular. A free-text reason alone
+             * could never answer "how many do we lose to incomplete
+             * requirements", which is the question worth being able to ask.
+             */
+            'disposition_reason' => [
+                'nullable',
+                Rule::in(['incomplete_requirements', 'not_suitable', 'other']),
+            ],
+            'disposition_note' => ['nullable', 'string', 'max:255'],
         ]);
+
+        // Recorded before the transition, so it is already on the record when
+        // the status history row and its notification are written.
+        if (! empty($data['disposition_reason'])) {
+            $applicant->forceFill([
+                'disposition_reason' => $data['disposition_reason'],
+                'disposition_note' => $data['disposition_note'] ?? null,
+                'disposition_recorded_at' => now(),
+            ])->save();
+        }
 
         $applicant = $this->lifecycle->transition(
             $applicant,

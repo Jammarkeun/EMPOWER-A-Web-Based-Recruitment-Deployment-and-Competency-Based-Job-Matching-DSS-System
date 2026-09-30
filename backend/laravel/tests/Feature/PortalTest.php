@@ -363,4 +363,69 @@ class PortalTest extends TestCase
             'At least one requirement expires, so the flag must be able to be true.'
         );
     }
+
+    // ------------------------------------------------------------- profile
+
+    /**
+     * The profile page reads from the signed-in account, like everything else
+     * here. Nothing about it is passed in by the client, so there is no name to
+     * substitute for somebody else's.
+     */
+    public function test_the_profile_comes_from_the_signed_in_account(): void
+    {
+        $hr = $this->hrUser();
+        $applicant = $this->applicant($hr, [
+            'first_name' => 'Andrea',
+            'last_name' => 'Santos',
+            'contact_number' => '09171234567',
+        ]);
+
+        Sanctum::actingAs($this->portalUserFor($applicant));
+
+        $this->getJson('/api/v1/portal/profile')
+            ->assertOk()
+            ->assertJsonPath('data.identity.first_name', 'Andrea')
+            ->assertJsonPath('data.identity.applicant_code', $applicant->applicant_code)
+            ->assertJsonPath('data.identity.initials', 'AS')
+            ->assertJsonPath('data.editable.contact_number', '09171234567')
+            ->assertJsonStructure(['data' => ['identity', 'editable', 'account', 'locked_fields_reason']]);
+    }
+
+    /**
+     * Contact details only. Name, date of birth, and address were checked
+     * against documents at the office, and a verified record must not drift away
+     * from the paperwork supporting it.
+     */
+    public function test_the_profile_edit_ignores_fields_it_does_not_own(): void
+    {
+        $hr = $this->hrUser();
+        $applicant = $this->applicant($hr, ['first_name' => 'Andrea', 'last_name' => 'Santos']);
+
+        Sanctum::actingAs($this->portalUserFor($applicant));
+
+        $this->patchJson('/api/v1/portal/profile', [
+            'contact_number' => '09998887777',
+            'first_name' => 'Someone',
+            'present_address' => 'Somewhere else entirely',
+        ])->assertOk();
+
+        $applicant->refresh();
+
+        $this->assertSame('09998887777', $applicant->contact_number);
+        $this->assertSame('Andrea', $applicant->first_name);
+        $this->assertSame('Sta. Cruz, Laguna', $applicant->present_address);
+    }
+
+    public function test_the_greeting_carries_the_applicants_own_name_and_initials(): void
+    {
+        $hr = $this->hrUser();
+        $applicant = $this->applicant($hr, ['first_name' => 'Andrea', 'last_name' => 'Santos']);
+
+        Sanctum::actingAs($this->portalUserFor($applicant));
+
+        $this->getJson('/api/v1/portal')
+            ->assertOk()
+            ->assertJsonPath('data.person.first_name', 'Andrea')
+            ->assertJsonPath('data.person.initials', 'AS');
+    }
 }

@@ -9,6 +9,8 @@ import {
   Loader2,
   ScanLine,
   Info,
+  UploadCloud,
+  Eye,
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { get, upload as uploadFile } from '@/lib/api'
@@ -27,15 +29,62 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatDate } from '@/lib/utils'
+import { cn, formatDate } from '@/lib/utils'
 
-const STATUS_META = {
-  verified: { icon: CheckCircle2, tone: 'success', label: 'Accepted' },
-  submitted: { icon: Clock, tone: 'info', label: 'Being checked' },
-  pending: { icon: Clock, tone: 'warning', label: 'Being checked' },
-  rejected: { icon: XCircle, tone: 'destructive', label: 'Needs resubmitting' },
-  expired: { icon: AlertCircle, tone: 'destructive', label: 'Expired' },
-  missing: { icon: AlertCircle, tone: 'muted', label: 'Not yet sent' },
+/**
+ * How each state of a document is described to the person who sent it.
+ *
+ * Keyed on `review_state`, which the API derives from the officer's decision and
+ * from whether anyone has actually opened the file. The page used to key on
+ * `status` alone and so called a document "being checked" the moment the upload
+ * finished — when in truth it had been received and nothing more. An applicant
+ * had no way to tell a document nobody had looked at from one genuinely under
+ * review, and the difference is most of what they want to know.
+ *
+ * Every state is also written out in words rather than carried by colour, which
+ * a red/green pairing alone would fail to do for the most common forms of colour
+ * blindness.
+ */
+const REVIEW_META = {
+  not_uploaded: {
+    icon: AlertCircle,
+    tone: 'muted',
+    detail: 'Bring the original to the office, or send a copy now.',
+  },
+  uploaded: {
+    icon: UploadCloud,
+    tone: 'info',
+    detail: 'We have your copy. Our staff will check it shortly.',
+  },
+  under_review: {
+    icon: Eye,
+    tone: 'warning',
+    detail: 'Our staff have opened this and are checking it.',
+  },
+  verified: {
+    icon: CheckCircle2,
+    tone: 'success',
+    detail: 'Checked and accepted. Nothing further needed.',
+  },
+  rejected: {
+    icon: XCircle,
+    tone: 'destructive',
+    detail: 'Please send this again.',
+  },
+  needs_correction: {
+    icon: AlertCircle,
+    tone: 'warning',
+    detail: 'Something needs fixing before this can be accepted.',
+  },
+  expired: {
+    icon: Clock,
+    tone: 'destructive',
+    detail: 'This document has passed its expiry date.',
+  },
+}
+
+function metaFor(requirement) {
+  return REVIEW_META[requirement.review_state] ?? REVIEW_META.not_uploaded
 }
 
 /** A verified document is closed to the applicant; everything else can be sent. */
@@ -43,16 +92,63 @@ function canSend(requirement) {
   return requirement.status !== 'verified'
 }
 
+const TONE_TEXT = {
+  success: 'text-success',
+  destructive: 'text-destructive',
+  warning: 'text-warning',
+  info: 'text-primary',
+  muted: 'text-muted-foreground',
+}
+
 export default function PortalDocuments() {
-  const { data, loading, error, refetch } = useApi('/portal/documents')
+  const { data, loading, error, refetch, setData } = useApi('/portal/documents')
   const toast = useToast()
   const [sending, setSending] = React.useState(null)
+
+  /*
+   * The document most recently changed, briefly highlighted.
+   *
+   * Rows update in place rather than the page reloading, which is what keeps
+   * the reader where they were — but it also means nothing visibly happens to
+   * confirm the change landed. A short highlight is the acknowledgement the
+   * reload used to provide by accident.
+   */
+  const [justChanged, setJustChanged] = React.useState(null)
+
+  const [openingId, setOpeningId] = React.useState(null)
+
+  React.useEffect(() => {
+    if (!justChanged) return
+
+    const timer = setTimeout(() => setJustChanged(null), 2500)
+    return () => clearTimeout(timer)
+  }, [justChanged])
 
   if (loading) return <LoadingState label="Loading your documents…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
   if (!data) return null
 
+  /**
+   * Replaces one requirement without touching the rest of the page.
+   *
+   * This is the whole fix for the scroll problem. Refetching after an upload
+   * replaced the page with a spinner, the document lost its height, the browser
+   * pinned the scroll to the top, and an applicant working through eighteen
+   * requirements had to scroll back down every single time.
+   */
+  function replaceRequirement(updated) {
+    setData((current) => ({
+      ...current,
+      requirements: current.requirements.map((row) =>
+        row.requirement_type_id === updated.requirement_type_id ? { ...row, ...updated } : row
+      ),
+    }))
+    setJustChanged(updated.requirement_type_id)
+  }
+
   async function openDocument(requirement) {
+    setOpeningId(requirement.requirement_type_id)
+
     try {
       const response = await get(`/portal/documents/${requirement.requirement_type_id}/download`)
       const opened = window.open(response.data.url, '_blank', 'noopener')
@@ -67,6 +163,8 @@ export default function PortalDocuments() {
       }
     } catch (err) {
       toast.error('Could not open document', err.message)
+    } finally {
+      setOpeningId(null)
     }
   }
 
@@ -129,53 +227,16 @@ export default function PortalDocuments() {
             </CardDescription>
           </CardHeader>
           <CardContent className="divide-y">
-            {groups[group].map((requirement) => {
-              const meta = STATUS_META[requirement.status] ?? STATUS_META.missing
-              const Icon = meta.icon
-
-              return (
-                <div key={requirement.id} className="flex flex-wrap items-center gap-3 py-3">
-                  <Icon
-                    className={
-                      meta.tone === 'success'
-                        ? 'h-4 w-4 shrink-0 text-success'
-                        : meta.tone === 'destructive'
-                          ? 'h-4 w-4 shrink-0 text-destructive'
-                          : meta.tone === 'warning'
-                            ? 'h-4 w-4 shrink-0 text-warning'
-                            : 'h-4 w-4 shrink-0 text-muted-foreground'
-                    }
-                  />
-
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">{requirement.requirement_name}</p>
-                    {requirement.rejection_reason ? (
-                      <p className="text-xs text-destructive">{requirement.rejection_reason}</p>
-                    ) : requirement.expiry_date ? (
-                      <p className="text-xs text-muted-foreground">
-                        Valid until {formatDate(requirement.expiry_date)}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <Badge tone={meta.tone}>{meta.label}</Badge>
-
-                  {requirement.has_file && (
-                    <Button variant="ghost" size="sm" onClick={() => openDocument(requirement)}>
-                      <Download className="h-3.5 w-3.5" />
-                      View
-                    </Button>
-                  )}
-
-                  {canSend(requirement) && (
-                    <Button variant="outline" size="sm" onClick={() => setSending(requirement)}>
-                      <Upload className="h-3.5 w-3.5" />
-                      {requirement.has_file ? 'Replace' : 'Send'}
-                    </Button>
-                  )}
-                </div>
-              )
-            })}
+            {groups[group].map((requirement) => (
+              <DocumentRow
+                key={requirement.id ?? requirement.requirement_type_id}
+                requirement={requirement}
+                highlighted={justChanged === requirement.requirement_type_id}
+                opening={openingId === requirement.requirement_type_id}
+                onOpen={() => openDocument(requirement)}
+                onSend={() => setSending(requirement)}
+              />
+            ))}
           </CardContent>
         </Card>
       ))}
@@ -183,11 +244,69 @@ export default function PortalDocuments() {
       <SendDocumentDialog
         requirement={sending}
         onOpenChange={(open) => !open && setSending(null)}
-        onSent={() => {
+        onSent={(updated) => {
           setSending(null)
-          refetch()
+          replaceRequirement(updated)
         }}
       />
+    </div>
+  )
+}
+
+/**
+ * One document, with its state said in words.
+ *
+ * The state and the detail line are both shown because the badge alone is a
+ * label, not an explanation: "Upload successful" tells the applicant what
+ * happened, and the line beneath tells them what happens next, which is the
+ * question that otherwise becomes a phone call to the office.
+ */
+function DocumentRow({ requirement, highlighted, opening, onOpen, onSend }) {
+  const meta = metaFor(requirement)
+  const Icon = meta.icon
+
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-3 rounded-md py-3 transition-colors duration-500',
+        highlighted && 'bg-success/10 px-3'
+      )}
+    >
+      <Icon className={cn('h-4 w-4 shrink-0', TONE_TEXT[meta.tone])} />
+
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium">{requirement.requirement_name}</p>
+        {requirement.rejection_reason ? (
+          <p className="text-xs text-destructive">{requirement.rejection_reason}</p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {meta.detail}
+            {requirement.expiry_date && requirement.review_state === 'verified'
+              ? ` Valid until ${formatDate(requirement.expiry_date)}.`
+              : ''}
+          </p>
+        )}
+      </div>
+
+      <Badge tone={meta.tone}>{requirement.review_state_label}</Badge>
+
+      {requirement.has_file && (
+        <Button variant="ghost" size="sm" onClick={onOpen} disabled={opening}>
+          {opening ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Download className="h-3.5 w-3.5" />
+          )}
+          {opening ? 'Opening…' : 'View'}
+        </Button>
+      )}
+
+      {canSend(requirement) && (
+        <Button variant="outline" size="sm" onClick={onSend}>
+          <Upload className="h-3.5 w-3.5" />
+          {requirement.has_file ? 'Replace' : 'Send'}
+        </Button>
+      )}
     </div>
   )
 }
@@ -199,6 +318,10 @@ export default function PortalDocuments() {
  * catching a photo too blurred to read while the applicant still has the
  * document in front of them — telling them afterwards would just mean doing it
  * twice.
+ *
+ * The work happens inside the dialog rather than over the page, which is what
+ * keeps the reader's place in a long checklist: the page behind never unmounts,
+ * so there is no scroll position to lose and none to restore.
  */
 function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
   const toast = useToast()
@@ -221,7 +344,7 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
   const needsExpiry = requirement.has_expiry
 
   async function runCheck() {
-    if (!file) return
+    if (!file || checking) return
 
     setChecking(true)
     setCheck(null)
@@ -246,6 +369,10 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
   }
 
   async function handleSend() {
+    // Guards the double-tap, which on a slow connection is the most ordinary
+    // way to send the same document twice.
+    if (busy) return
+
     if (!file) {
       setErrors({ file: ['Choose a photo or PDF of your document.'] })
       return
@@ -263,15 +390,22 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
         `/portal/documents/${requirement.requirement_type_id}/upload`,
         body
       )
-      toast.success('Document sent', response.message)
-      onSent()
+
+      // "Upload successful" and nothing stronger. The office has received the
+      // file; nobody has looked at it yet, and saying otherwise would be a
+      // guess dressed as a fact.
+      toast.success('Upload successful', response.message)
+
+      // The updated row comes back with the response, so the page can be
+      // corrected without asking the server a second time.
+      onSent(response.data)
     } catch (error) {
       if (error.isValidation) {
         setErrors(error.errors)
         toast.error('Check the form', 'Some details need correcting.')
       } else {
         toast.error(
-          error.isConflict ? 'Already accepted' : 'Could not send the document',
+          error.isConflict ? 'Already accepted' : 'Upload failed — please try again',
           error.message
         )
       }
@@ -281,7 +415,7 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
   }
 
   return (
-    <Dialog open={!!requirement} onOpenChange={onOpenChange}>
+    <Dialog open={!!requirement} onOpenChange={(open) => !busy && onOpenChange(open)}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Send {requirement.requirement_name}</DialogTitle>
@@ -299,8 +433,10 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
             hint="Up to 10 MB. JPG, PNG, WEBP, or PDF."
           >
             <Input
+              id="document_file"
               type="file"
               accept=".pdf,.jpg,.jpeg,.png,.webp"
+              disabled={busy}
               onChange={(e) => {
                 setFile(e.target.files?.[0] ?? null)
                 setCheck(null)
@@ -317,7 +453,13 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
               error={errors.expiry_date?.[0]}
               hint="The date printed on the document. This one expires, so we need it."
             >
-              <Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
+              <Input
+                id="expiry_date"
+                type="date"
+                value={expiry}
+                disabled={busy}
+                onChange={(e) => setExpiry(e.target.value)}
+              />
             </Field>
           )}
 
@@ -385,7 +527,7 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
           </Button>
           <Button onClick={handleSend} disabled={busy || checking}>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            {busy ? 'Sending…' : 'Send document'}
+            {busy ? 'Uploading…' : 'Send document'}
           </Button>
         </DialogFooter>
       </DialogContent>

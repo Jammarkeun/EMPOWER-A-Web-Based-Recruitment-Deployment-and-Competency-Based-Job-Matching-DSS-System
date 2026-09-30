@@ -97,6 +97,55 @@ class SettingsService
             'unit' => 'days ahead',
         ],
 
+        /*
+         * --- disciplinary policy ---
+         *
+         * The client's handbook, not the system's rules. CDE confirmed a
+         * one-year record and a fourth-offence threshold, and both are the sort
+         * of thing an agency changes without telling its developer.
+         */
+        'empower.violations.active_window_months' => [
+            'group' => 'policy',
+            'label' => 'Violations stay on the active record for',
+            'help' => 'After this, an offence stays in the history and in reports but stops counting towards the threshold.',
+            'type' => 'integer',
+            'rules' => ['integer', 'between:1,120'],
+            'unit' => 'months',
+        ],
+        'empower.violations.termination_threshold' => [
+            'group' => 'policy',
+            'label' => 'Flag for review at',
+            'help' => 'Offences within the active window at which an employee is raised for an administrator to review. Reaching it never terminates anybody by itself.',
+            'type' => 'integer',
+            'rules' => ['integer', 'between:1,20'],
+            'unit' => 'offences',
+        ],
+        'empower.require_training_before_deployment' => [
+            'group' => 'policy',
+            'label' => 'Require training before deployment',
+            'help' => 'CDE trains every worker before placing them. Switch off only to redeploy somebody already trained.',
+            'type' => 'boolean',
+            'rules' => ['boolean'],
+        ],
+
+        // --- retention ---
+        'empower.retention.unhired_applicant_months' => [
+            'group' => 'retention',
+            'label' => 'Offer unhired applicants for archiving after',
+            'help' => 'A prompt to review, never an automatic deletion. Nothing is removed without somebody archiving it.',
+            'type' => 'integer',
+            'rules' => ['integer', 'between:1,120'],
+            'unit' => 'months',
+        ],
+        'empower.retention.legal_document_years' => [
+            'group' => 'retention',
+            'label' => 'Keep legal documents for at least',
+            'help' => 'CDE keeps these five to ten years. This is the point at which a decision becomes due, not a deletion date.',
+            'type' => 'integer',
+            'rules' => ['integer', 'between:1,30'],
+            'unit' => 'years',
+        ],
+
         // --- organisation, printed on every report ---
         'empower.organisation.name' => [
             'group' => 'organisation',

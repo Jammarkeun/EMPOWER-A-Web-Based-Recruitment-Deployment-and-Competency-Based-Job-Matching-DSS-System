@@ -10,12 +10,14 @@ use App\Models\RequirementType;
 use App\Notifications\RequirementReviewed;
 use App\Services\ApplicantLifecycleService;
 use App\Services\AuditService;
+use App\Services\DocumentReviewService;
 use App\Services\DocumentStorageService;
 use App\Services\FolderCategoryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class RequirementController extends Controller
 {
@@ -38,85 +40,16 @@ class RequirementController extends Controller
     {
         $this->authorize('view', $applicant);
 
-        $applicant->load(['requirements.requirementType', 'requirements.verifier']);
+        $applicant->load([
+            'requirements.requirementType',
+            'requirements.verifier',
+            'requirements.firstViewer',
+        ]);
 
         return ApiResponse::success([
             'requirements' => ApplicantRequirementResource::collection($applicant->requirements),
             'folder' => $this->folders->explain($applicant),
         ]);
-    }
-
-    /**
-     * Upload or replace a requirement document.
-     */
-    public function upload(Request $request, Applicant $applicant, RequirementType $requirementType): JsonResponse
-    {
-        $this->authorize('uploadRequirement', $applicant);
-
-        $request->validate([
-            'file' => [
-                'required',
-                'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
-            'expiry_date' => [
-                // Documents that expire must say when. A police clearance with
-                // no expiry recorded would silently count as valid forever.
-                $requirementType->has_expiry ? 'required' : 'nullable',
-                'date',
-                'after:today',
-            ],
-            'remarks' => ['nullable', 'string', 'max:1000'],
-        ]);
-
-        $requirement = ApplicantRequirement::firstOrNew([
-            'applicant_id' => $applicant->id,
-            'requirement_type_id' => $requirementType->id,
-        ]);
-
-        $previousKey = $requirement->file_path;
-
-        $stored = $this->storage->store($request->file('file'), 'requirements', $applicant->id);
-
-        DB::transaction(function () use ($requirement, $stored, $request, $requirementType) {
-            $requirement->fill(array_merge($stored, [
-                // A re-uploaded document returns to "submitted": replacing the
-                // file invalidates any previous verification.
-                'status' => 'submitted',
-                'submitted_at' => now(),
-                'verified_at' => null,
-                'verified_by' => null,
-                'rejection_reason' => null,
-                'expiry_date' => $request->input('expiry_date'),
-                'remarks' => $request->input('remarks'),
-            ]))->save();
-
-            $this->audit->record(
-                action: 'create',
-                module: 'requirements',
-                recordType: ApplicantRequirement::class,
-                recordId: $requirement->id,
-                newValues: [
-                    'requirement' => $requirementType->requirement_name,
-                    'file_name' => $stored['file_name'],
-                ],
-            );
-        });
-
-        // Only removed once the replacement is safely recorded, so a failure
-        // mid-way never leaves the applicant with no document at all.
-        if ($previousKey && $previousKey !== $requirement->file_path) {
-            $this->storage->delete($previousKey);
-        }
-
-        $applicant->unsetRelation('requirements');
-        $this->folders->recalculate($applicant);
-
-        return ApiResponse::success(
-            new ApplicantRequirementResource($requirement->fresh()->load('requirementType')),
-            'Document uploaded'
-        );
     }
 
     /**
@@ -131,30 +64,69 @@ class RequirementController extends Controller
         $this->authorize('verifyRequirement', $applicant);
 
         $data = $request->validate([
-            'status' => ['required', Rule::in(['submitted', 'pending', 'verified', 'rejected', 'expired', 'missing'])],
+            'status' => ['required', Rule::in([
+                'submitted', 'pending', 'verified', 'rejected', 'needs_correction', 'expired', 'missing',
+            ])],
             'rejection_reason' => ['required_if:status,rejected', 'nullable', 'string', 'max:255'],
             'expiry_date' => ['nullable', 'date'],
             'remarks' => ['nullable', 'string', 'max:1000'],
+            // How the document was checked. Optional: when it is not given the
+            // system infers it below, so existing callers keep working.
+            'verification_method' => ['nullable', Rule::in(['online_upload', 'walk_in', 'other'])],
+            'verification_note' => ['nullable', 'string', 'max:255'],
+            'expiry_override_reason' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $requirement = ApplicantRequirement::where('applicant_id', $applicant->id)
-            ->where('requirement_type_id', $requirementType->id)
-            ->firstOrFail();
+        /*
+         * The checklist row is created here when it does not already exist.
+         *
+         * Rows are normally created alongside the applicant, but not always: an
+         * administrator who adds a new requirement type from the settings screen
+         * creates it for future applicants only, so everyone already on file has
+         * no row for it. Failing outright meant that document could never be
+         * verified for those applicants, behind a 404 that explained nothing.
+         */
+        $requirement = ApplicantRequirement::firstOrNew([
+            'applicant_id' => $applicant->id,
+            'requirement_type_id' => $requirementType->id,
+        ]);
 
-        if ($data['status'] === 'verified' && is_null($requirement->file_path)) {
-            return ApiResponse::error('A document must be uploaded before it can be verified.', 400);
-        }
+        $this->assertVerificationLifecycle($requirementType, $requirement, $data);
 
-        $before = $requirement->only(['status', 'expiry_date', 'rejection_reason']);
+        /*
+         * A missing file no longer blocks verification.
+         *
+         * Most applicants walk in and hand their originals across the counter.
+         * Requiring a stored file before the system would accept a verification
+         * meant those applicants stayed permanently incomplete, and the only
+         * workaround was for staff to scan papers purely to satisfy the
+         * software. Whether a file exists and whether a person has checked the
+         * document are two different facts, and the record now keeps them apart:
+         * file_path answers the first, this status and the method answer the
+         * second.
+         */
+        $before = $requirement->only(['status', 'expiry_date', 'rejection_reason', 'verification_method']);
 
         DB::transaction(function () use ($requirement, $data, $request, $applicant) {
+            $isVerified = $data['status'] === 'verified';
+
             $requirement->fill([
                 'status' => $data['status'],
                 'rejection_reason' => $data['status'] === 'rejected' ? $data['rejection_reason'] : null,
                 'expiry_date' => $data['expiry_date'] ?? $requirement->expiry_date,
                 'remarks' => $data['remarks'] ?? $requirement->remarks,
-                'verified_at' => $data['status'] === 'verified' ? now() : null,
-                'verified_by' => $data['status'] === 'verified' ? $request->user()->id : null,
+                'verified_at' => $isVerified ? now() : null,
+                'verified_by' => $isVerified ? $request->user()->id : null,
+                // Inferred when the caller does not say: a stored file means the
+                // officer was looking at an upload, no file means they were
+                // looking at the original in their hand.
+                'verification_method' => $isVerified
+                    ? ($data['verification_method']
+                        ?? ($requirement->file_path ? 'online_upload' : 'walk_in'))
+                    : null,
+                'verification_note' => $isVerified
+                    ? ($data['verification_note'] ?? $data['expiry_override_reason'] ?? null)
+                    : null,
             ])->save();
 
             $applicant->unsetRelation('requirements');
@@ -193,9 +165,17 @@ class RequirementController extends Controller
 
     /**
      * Issues a short-lived download link for a stored document.
+     *
+     * Opening the document is also what starts its review. Until an officer
+     * actually looks at the file the applicant is told their upload was
+     * received and no more than that, because that is all that has happened.
      */
-    public function download(Applicant $applicant, RequirementType $requirementType): JsonResponse
-    {
+    public function download(
+        Request $request,
+        Applicant $applicant,
+        RequirementType $requirementType,
+        DocumentReviewService $review,
+    ): JsonResponse {
         $this->authorize('view', $applicant);
 
         $requirement = ApplicantRequirement::where('applicant_id', $applicant->id)
@@ -208,18 +188,160 @@ class RequirementController extends Controller
 
         $minutes = config('empower.uploads.signed_url_ttl_minutes', 10);
 
-        $this->audit->record(
-            action: 'view',
-            module: 'requirements',
-            recordType: ApplicantRequirement::class,
-            recordId: $requirement->id,
-            newValues: ['document' => $requirement->file_name],
-        );
+        $review->recordStaffView($requirement, $request->user());
 
         return ApiResponse::success([
             'url' => $this->storage->temporaryUrl($requirement->file_path, $minutes),
             'file_name' => $requirement->file_name,
             'expires_in_minutes' => $minutes,
+
+            // Returned so the screen that opened the document can update the row
+            // in place. Without it the officer would have to reload the page to
+            // see that the document has moved into review, and a reload is
+            // exactly what loses their place in a long checklist.
+            'requirement' => new ApplicantRequirementResource(
+                $requirement->fresh()->load('requirementType', 'verifier', 'firstViewer')
+            ),
         ]);
     }
+
+    /**
+     * Verify several requirements at once.
+     *
+     * The counter case this exists for: an applicant hands over a folder, the
+     * officer checks the papers together, and every one of them is in order.
+     * Approving them one at a time meant a dialog per document, and with
+     * eighteen requirements per applicant that is most of the working day.
+     *
+     * Deliberately verify-only. Rejecting a document needs a reason written
+     * against that specific document, and a bulk reject would either lose that
+     * reason or apply one sentence to several unrelated papers - so rejection
+     * stays a single, considered action.
+     */
+    public function verifyBatch(Request $request, Applicant $applicant): JsonResponse
+    {
+        $this->authorize('verifyRequirement', $applicant);
+
+        $data = $request->validate([
+            'requirement_type_ids' => ['required', 'array', 'min:1'],
+            'requirement_type_ids.*' => ['integer', 'exists:requirement_types,id'],
+            'verification_method' => ['nullable', Rule::in(['online_upload', 'walk_in', 'other'])],
+            'verification_note' => ['nullable', 'string', 'max:255'],
+            'expiry_override_reason' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        // Any requested type without a checklist row gets one, for the same
+        // reason as above.
+        $requirements = collect($data['requirement_type_ids'])
+            ->unique()
+            ->map(fn (int $typeId) => ApplicantRequirement::firstOrNew([
+                'applicant_id' => $applicant->id,
+                'requirement_type_id' => $typeId,
+            ]))
+            ->each(fn (ApplicantRequirement $r) => $r->loadMissing('requirementType'));
+
+        foreach ($requirements as $requirement) {
+            $this->assertVerificationLifecycle(
+                $requirement->requirementType,
+                $requirement,
+                [...$data, 'status' => 'verified']
+            );
+        }
+
+        $verified = [];
+
+        DB::transaction(function () use ($requirements, $data, $request, $applicant, &$verified) {
+            foreach ($requirements as $requirement) {
+                // Already verified and still valid: skip rather than rewrite the
+                // timestamp, so the record keeps who checked it first.
+                if ($requirement->countsAsComplete()) {
+                    continue;
+                }
+
+                $requirement->fill([
+                    'status' => 'verified',
+                    'rejection_reason' => null,
+                    'verified_at' => now(),
+                    'verified_by' => $request->user()->id,
+                    'verification_method' => $data['verification_method']
+                        ?? ($requirement->file_path ? 'online_upload' : 'walk_in'),
+                    'verification_note' => $data['verification_note']
+                        ?? $data['expiry_override_reason']
+                        ?? null,
+                ])->save();
+
+                $verified[] = $requirement->requirementType?->requirement_name;
+            }
+
+            $applicant->unsetRelation('requirements');
+            $this->folders->recalculate($applicant);
+        });
+
+        $this->audit->record(
+            action: 'update',
+            module: 'requirements',
+            recordType: Applicant::class,
+            recordId: $applicant->id,
+            newValues: [
+                'bulk_verified' => $verified,
+                'count' => count($verified),
+                'method' => $data['verification_method'] ?? 'inferred per document',
+            ],
+        );
+
+        // One notification for the batch, not one per document. Eight separate
+        // alerts saying the same thing is not eight times as informative.
+        if ($verified !== []) {
+            $applicant->unsetRelation('requirements');
+            $this->lifecycle->syncStatusToDocuments($applicant->fresh(), $request->user());
+        }
+
+        $fresh = $applicant->fresh()->load('requirements.requirementType', 'requirements.verifier');
+
+        return ApiResponse::success([
+            'requirements' => ApplicantRequirementResource::collection($fresh->requirements),
+            'folder' => $this->folders->explain($fresh),
+            'applicant_status' => $fresh->current_status,
+            'verified_count' => count($verified),
+        ], count($verified) === 1
+            ? '1 document verified'
+            : count($verified).' documents verified');
+    }
+
+    /**
+     * Inactive types remain readable for historical records, but cannot create
+     * new checklist rows. Expiring requirements must have a current expiry;
+     * staff may override that rule only with an explicit reason.
+     */
+    private function assertVerificationLifecycle(
+        RequirementType $type,
+        ApplicantRequirement $requirement,
+        array $data,
+    ): void {
+        if (! $type->active_flag && ! $requirement->exists) {
+            throw ValidationException::withMessages([
+                'requirement_type' => ['Inactive requirement types cannot be verified for new checklist rows.'],
+            ]);
+        }
+
+        if (($data['status'] ?? null) !== 'verified' || ! $type->has_expiry) {
+            return;
+        }
+
+        $expiry = $data['expiry_date'] ?? $requirement->expiry_date;
+        $overrideReason = trim((string) ($data['expiry_override_reason'] ?? ''));
+
+        if (! $expiry) {
+            throw ValidationException::withMessages([
+                'expiry_date' => ['This requirement must have an expiry date before it can be verified.'],
+            ]);
+        }
+
+        if ($expiry < now()->toDateString() && $overrideReason === '') {
+            throw ValidationException::withMessages([
+                'expiry_override_reason' => ['A past expiry date requires a reason before verification.'],
+            ]);
+        }
+    }
+
 }

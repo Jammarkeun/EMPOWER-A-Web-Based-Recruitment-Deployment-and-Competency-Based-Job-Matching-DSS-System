@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Exports\ReportExport;
+use App\Jobs\BuildReportExport;
+use App\Models\ReportExport as ReportExportRecord;
 use App\Http\Responses\ApiResponse;
 use App\Services\AuditService;
 use App\Services\Reporting\ReportBuilder;
@@ -13,6 +15,7 @@ use Illuminate\Validation\Rule;
 use Maatwebsite\Excel\Facades\Excel;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Report generation and export.
@@ -66,12 +69,29 @@ class ReportController extends Controller
         ]);
     }
 
-    public function export(Request $request): Response|BinaryFileResponse|JsonResponse
+    public function export(Request $request): Response|BinaryFileResponse|StreamedResponse|JsonResponse
     {
         $this->authorize('exportReports');
 
         $data = $this->validateRequest($request);
         $report = $this->builder->build($data['report_type'], $data['filters'] ?? []);
+
+        if ($report['rows']->count() >= config('empower.reports.queue_threshold_rows', 1000)) {
+            $queued = ReportExportRecord::create([
+                'report_type' => $data['report_type'],
+                'filter_json' => $data['filters'] ?? [],
+                'export_format' => $data['format'],
+                'status' => 'queued',
+                'requested_by' => $request->user()->id,
+            ]);
+
+            BuildReportExport::dispatch($queued->id);
+
+            return ApiResponse::success([
+                'export_id' => $queued->id,
+                'status' => 'queued',
+            ], 'Large report queued for generation', 202);
+        }
 
         $this->audit->record('export', 'reports', null, null, null, [
             'report_type' => $data['report_type'],
@@ -85,8 +105,45 @@ class ReportController extends Controller
         return match ($data['format']) {
             'pdf' => $this->toPdf($report, $filename, $request),
             'xlsx' => Excel::download(new ReportExport($report), $filename),
-            'csv' => Excel::download(new ReportExport($report), $filename, \Maatwebsite\Excel\Excel::CSV),
+            'csv' => $this->toCsv($report, $filename),
         };
+    }
+
+    public function exportStatus(Request $request, ReportExportRecord $export): JsonResponse
+    {
+        abort_unless($export->requested_by === $request->user()->id, 404);
+
+        $data = ['id' => $export->id, 'status' => $export->status];
+        if ($export->status === 'failed') $data['message'] = $export->error_message;
+        if ($export->isReady()) $data['download_url'] = url('/api/v1/reports/exports/'.$export->id.'/download');
+
+        return ApiResponse::success($data);
+    }
+
+    public function downloadQueuedExport(Request $request, ReportExportRecord $export): Response
+    {
+        abort_unless($export->requested_by === $request->user()->id, 404);
+        abort_unless($export->isReady(), 409, 'This report is not ready yet.');
+
+        return response()->download(
+            storage_path('app/private/'.$export->file_path),
+            basename($export->file_path),
+            ['Content-Type' => mime_content_type(storage_path('app/private/'.$export->file_path))]
+        );
+    }
+
+    private function toCsv(array $report, string $filename): StreamedResponse
+    {
+        return response()->streamDownload(function () use ($report) {
+            $output = fopen('php://output', 'wb');
+            fputcsv($output, $report['columns']);
+
+            foreach ($report['rows'] as $row) {
+                fputcsv($output, $row);
+            }
+
+            fclose($output);
+        }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 
     private function toPdf(array $report, string $filename, Request $request): Response
@@ -114,6 +171,20 @@ class ReportController extends Controller
             'filters.date_to' => ['nullable', 'date', 'after_or_equal:filters.date_from'],
             'filters.year' => ['nullable', 'integer', 'between:2000,2100'],
             'filters.client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
+            'filters.client_department_id' => ['nullable', 'integer', 'exists:client_departments,id'],
+            /*
+             * Position is filtered by title rather than by id.
+             *
+             * The column that actually records where somebody works is
+             * `current_position_title` on the employee and `position_title` on
+             * the deployment - the client's own wording, captured when the
+             * placement was made. Filtering on a reference and hoping it agrees
+             * with that text would quietly drop rows whenever the two differ,
+             * which is the exact failure this report is meant to rule out. The
+             * picker offers the titles the system knows about, so the value is
+             * still chosen rather than typed.
+             */
+            'filters.position_title' => ['nullable', 'string', 'max:150'],
             'filters.current_status' => ['nullable', 'string', 'max:60'],
             'filters.employment_status' => ['nullable', 'string', 'max:40'],
             'filters.folder_category' => ['nullable', Rule::in(['folder_1', 'folder_2', 'folder_3'])],
@@ -131,12 +202,12 @@ class ReportController extends Controller
         $dateRange = ['date_from', 'date_to'];
 
         return match ($type) {
-            'applicants' => [...$dateRange, 'current_status', 'folder_category', 'source_channel'],
-            'employees' => ['employment_status', 'client_company_id'],
-            'deployments' => [...$dateRange, 'client_company_id', 'deployment_status'],
+            'applicants' => [...$dateRange, 'current_status', 'folder_category', 'source_channel', 'position_title'],
+            'employees' => [...$dateRange, 'employment_status', 'client_company_id', 'client_department_id', 'position_title'],
+            'deployments' => [...$dateRange, 'client_company_id', 'client_department_id', 'position_title', 'deployment_status'],
             'violations' => [...$dateRange, 'violation_type', 'status'],
             'clients' => ['status'],
-            'job_requests' => [...$dateRange, 'client_company_id', 'request_status'],
+            'job_requests' => [...$dateRange, 'client_company_id', 'client_department_id', 'position_title', 'request_status'],
             'training' => [...$dateRange, 'status'],
             'resignations', 'terminations' => [...$dateRange, 'status'],
             'annual_summary' => ['year'],

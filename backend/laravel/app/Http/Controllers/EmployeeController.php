@@ -7,6 +7,8 @@ use App\Http\Resources\ViolationResource;
 use App\Http\Responses\ApiResponse;
 use App\Models\Employee;
 use App\Models\EmployeeViolation;
+use App\Models\User;
+use App\Notifications\ViolationThresholdReached;
 use App\Services\AuditService;
 use App\Services\DocumentStorageService;
 use Illuminate\Http\JsonResponse;
@@ -104,13 +106,43 @@ class EmployeeController extends Controller
 
     // ---------------------------------------------------------------- violations
 
+    /**
+     * The employee's disciplinary record, and where it stands against policy.
+     *
+     * Returns the whole history — expired offences included and marked as such
+     * — alongside the count that actually matters. Sending only the active ones
+     * would answer the policy question while quietly losing the agency its own
+     * history.
+     */
     public function violations(Employee $employee): JsonResponse
     {
         $this->authorize('view', $employee);
 
-        return ApiResponse::success(
-            ViolationResource::collection($employee->violations()->with('issuer')->get())
-        );
+        $violations = $employee->violations()->with('issuer')->get();
+        $active = $violations->filter->isActive();
+        $threshold = (int) config('empower.violations.termination_threshold', 4);
+
+        return ApiResponse::success([
+            'violations' => ViolationResource::collection($violations),
+            'policy' => [
+                'active_count' => $active->count(),
+                'expired_count' => $violations->count() - $active->count(),
+                'window_months' => EmployeeViolation::windowMonths(),
+                'threshold' => $threshold,
+
+                /*
+                 * The flag, and nothing more.
+                 *
+                 * Reaching the threshold raises the question for an
+                 * administrator; it does not answer it. Nothing downstream of
+                 * this ends anybody's employment, which is the point — an
+                 * automatic dismissal is precisely the irreversible decision a
+                 * decision-support system must leave to a person.
+                 */
+                'threshold_reached' => $employee->reachedViolationThreshold(),
+                'remaining_before_review' => max(0, $threshold - $active->count()),
+            ],
+        ]);
     }
 
     public function storeViolation(Request $request, Employee $employee): JsonResponse
@@ -163,10 +195,36 @@ class EmployeeController extends Controller
             'type' => $data['violation_type'],
         ]);
 
-        return ApiResponse::created(
-            new ViolationResource($violation->load('issuer')),
-            'Violation recorded'
-        );
+        /*
+         * Raise the question when the client's threshold is reached.
+         *
+         * This notifies and flags; it does not act. CDE's policy is that the
+         * fourth offence puts an employee up for review, and an administrator
+         * decides what follows — the system's job is to make sure nobody has to
+         * notice by counting rows themselves, not to reach the conclusion for
+         * them.
+         */
+        $reached = $employee->reachedViolationThreshold();
+
+        if ($reached) {
+            User::query()
+                ->whereIn('user_type', ['admin', 'hr'])
+                ->where('is_active', true)
+                ->get()
+                ->each->notify(new ViolationThresholdReached(
+                    $employee->loadMissing('applicant'),
+                    $employee->activeViolations()->count()
+                ));
+        }
+
+        return ApiResponse::created([
+            'violation' => new ViolationResource($violation->load('issuer')),
+            'active_count' => $employee->activeViolations()->count(),
+            'threshold' => (int) config('empower.violations.termination_threshold', 4),
+            'threshold_reached' => $reached,
+        ], $reached
+            ? 'Violation recorded. This employee has reached the review threshold.'
+            : 'Violation recorded');
     }
 
     public function updateViolation(Request $request, Employee $employee, EmployeeViolation $violation): JsonResponse

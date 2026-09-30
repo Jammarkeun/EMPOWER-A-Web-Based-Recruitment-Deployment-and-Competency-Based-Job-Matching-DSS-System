@@ -135,6 +135,44 @@ class SettingsTest extends TestCase
             ->assertJsonPath('message', 'The recommendation bands must descend: highly recommended above recommended, and recommended above reserve pool.');
     }
 
+    public function test_equal_recommendation_bands_are_rejected(): void
+    {
+        Sanctum::actingAs($this->adminUser());
+
+        $this->putJson('/api/v1/settings', [
+            'settings' => [
+                ['key' => 'empower.recommendation_bands.highly_recommended', 'value' => 70],
+                ['key' => 'empower.recommendation_bands.recommended', 'value' => 70],
+            ],
+        ])->assertStatus(422);
+    }
+
+    public function test_recommendation_bands_cannot_be_negative_or_zero(): void
+    {
+        Sanctum::actingAs($this->adminUser());
+
+        $this->putJson('/api/v1/settings', [
+            'settings' => [['key' => 'empower.recommendation_bands.reserve_pool', 'value' => 0]],
+        ])->assertStatus(422);
+    }
+
+    public function test_partial_band_update_is_checked_against_saved_overrides(): void
+    {
+        Sanctum::actingAs($this->adminUser());
+
+        $this->putJson('/api/v1/settings', [
+            'settings' => [
+                ['key' => 'empower.recommendation_bands.highly_recommended', 'value' => 80],
+                ['key' => 'empower.recommendation_bands.recommended', 'value' => 60],
+                ['key' => 'empower.recommendation_bands.reserve_pool', 'value' => 40],
+            ],
+        ])->assertOk();
+
+        $this->putJson('/api/v1/settings', [
+            'settings' => [['key' => 'empower.recommendation_bands.recommended', 'value' => 90]],
+        ])->assertStatus(422);
+    }
+
     public function test_out_of_range_values_are_rejected(): void
     {
         Sanctum::actingAs($this->adminUser());

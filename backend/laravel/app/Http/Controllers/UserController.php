@@ -6,12 +6,15 @@ use App\Http\Responses\ApiResponse;
 use App\Models\Applicant;
 use App\Models\Employee;
 use App\Models\User;
+use App\Notifications\PasswordChanged;
+use App\Rules\PasswordPolicy;
 use App\Services\AuditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 
@@ -73,7 +76,7 @@ class UserController extends Controller
             'mobile_number' => ['nullable', 'string', 'max:30'],
             'user_type' => ['required', Rule::in(['admin', 'hr'])],
             'role' => ['required', 'string', 'exists:roles,name'],
-            'password' => ['required', 'string', 'min:10', 'confirmed'],
+            'password' => ['required', 'string', 'confirmed', new PasswordPolicy()],
         ]);
 
         // Staff accounts only. Portal logins are created from the applicant or
@@ -187,7 +190,7 @@ class UserController extends Controller
         $this->authorize('manageUsers');
 
         $data = $request->validate([
-            'password' => ['required', 'string', 'min:10', 'confirmed'],
+            'password' => ['required', 'string', 'confirmed', new PasswordPolicy()],
         ]);
 
         $user->forceFill(['password' => Hash::make($data['password'])])->save();
@@ -200,6 +203,8 @@ class UserController extends Controller
             'password' => '[redacted]',
             'sessions_revoked' => true,
         ]);
+
+        $user->notify(new PasswordChanged());
 
         return ApiResponse::success(null, 'Password reset. The user has been signed out everywhere.');
     }
@@ -221,6 +226,13 @@ class UserController extends Controller
             'employee_id' => ['required_without:applicant_id', 'nullable', 'integer', 'exists:employees,id'],
             'email' => ['required', 'email', 'max:190', 'unique:users,email'],
         ]);
+
+        if (isset($data['applicant_id'], $data['employee_id'])) {
+            throw ValidationException::withMessages([
+                'applicant_id' => ['Provide either an applicant or employee, not both.'],
+                'employee_id' => ['Provide either an employee or applicant, not both.'],
+            ]);
+        }
 
         $applicant = isset($data['applicant_id']) ? Applicant::findOrFail($data['applicant_id']) : null;
         $employee = isset($data['employee_id']) ? Employee::with('applicant')->findOrFail($data['employee_id']) : null;

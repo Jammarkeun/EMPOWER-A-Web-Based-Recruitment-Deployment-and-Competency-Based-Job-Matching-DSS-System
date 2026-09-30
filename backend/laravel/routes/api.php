@@ -6,8 +6,10 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ClientCompanyController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeploymentController;
+use App\Http\Controllers\DocumentLibraryController;
 use App\Http\Controllers\DocumentScanController;
 use App\Http\Controllers\EmployeeController;
+use App\Http\Controllers\JobPositionController;
 use App\Http\Controllers\JobRequestController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PortalController;
@@ -54,6 +56,14 @@ Route::prefix('v1')->group(function () {
     | applicant needs.
     */
     Route::get('register/requirements', [RegistrationController::class, 'requirements']);
+    /*
+     * The positions the application form offers.
+     *
+     * Public for the same reason the checklist beside it is: the people who need
+     * it do not have accounts yet. It reveals nothing a job posting would not -
+     * a title and the company hiring - and it is read-only.
+     */
+    Route::get('register/positions', [JobPositionController::class, 'open']);
     Route::post('register/check-email', [RegistrationController::class, 'checkEmail'])
         ->middleware('throttle:20,1');
     Route::post('register', [RegistrationController::class, 'register'])
@@ -66,6 +76,11 @@ Route::prefix('v1')->group(function () {
         Route::get('auth/me', [AuthController::class, 'me']);
         Route::patch('auth/profile', [AuthController::class, 'updateProfile']);
         Route::post('auth/change-password', [AuthController::class, 'changePassword']);
+
+        // Which notifications this account wants. Open to every signed-in user,
+        // staff and portal alike - the categories and the reasoning are the same.
+        Route::get('auth/notification-preferences', [AuthController::class, 'notificationPreferences']);
+        Route::patch('auth/notification-preferences', [AuthController::class, 'updateNotificationPreferences']);
 
         // ------------------------------------------------------------ settings
         // Reading is open to anyone with settings.view (HR included); every
@@ -89,9 +104,34 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------------------- clients
         Route::apiResource('clients', ClientCompanyController::class)
             ->only(['index', 'store', 'show', 'update']);
+        // The company workspace: pick a client, then work inside their records.
+        Route::get('clients/{client}/overview', [ClientCompanyController::class, 'overview']);
+        // "Adjust Criteria" - the requirements this client asks for as standard.
+        Route::get('clients/{client}/criteria', [ClientCompanyController::class, 'criteria']);
+        Route::put('clients/{client}/criteria', [ClientCompanyController::class, 'setCriteria']);
+        // The roles this client hires for. Adding one here is what puts it in
+        // front of applicants, with no change to the front end.
+        Route::get('positions', [JobPositionController::class, 'index']);
+        Route::get('clients/{client}/positions', [JobPositionController::class, 'forCompany']);
+        Route::post('clients/{client}/positions', [JobPositionController::class, 'store']);
+        Route::put('clients/{client}/positions/{position}', [JobPositionController::class, 'update']);
+
         Route::get('clients/{client}/departments', [ClientCompanyController::class, 'departments']);
         Route::post('clients/{client}/departments', [ClientCompanyController::class, 'storeDepartment']);
         Route::put('clients/{client}/departments/{department}', [ClientCompanyController::class, 'updateDepartment']);
+        /*
+         * Who is placed in one department.
+         *
+         * Nested under the client rather than exposed as /departments/{id}: the
+         * company is part of the address, so a department belonging to another
+         * client does not resolve at all instead of resolving and then being
+         * refused. Company scoping is a property of the route, not a condition
+         * somebody has to remember to write.
+         */
+        Route::get(
+            'clients/{client}/departments/{department}/employees',
+            [ClientCompanyController::class, 'departmentEmployees']
+        );
 
         // -------------------------------------------------------- job requests
         Route::apiResource('job-requests', JobRequestController::class)
@@ -114,6 +154,15 @@ Route::prefix('v1')->group(function () {
         Route::get('document-scan/status', [DocumentScanController::class, 'status']);
         Route::post('document-scan', [DocumentScanController::class, 'scan'])
             ->middleware('throttle:20,1');
+        Route::get('document-scan/status/{scan}', [DocumentScanController::class, 'result']);
+
+        // ---------------------------------------------------- document library
+        // Uploaded documents grouped by kind - "show me the medical
+        // certificates" - as opposed to the Folder 1/2/3 filing, which describes
+        // how complete one applicant's paperwork is. Two different questions.
+        Route::get('documents', [DocumentLibraryController::class, 'index']);
+        Route::get('documents/{requirementType}', [DocumentLibraryController::class, 'show']);
+        Route::get('documents/file/{requirement}', [DocumentLibraryController::class, 'download']);
 
         // ---------------------------------------------------------- applicants
         Route::apiResource('applicants', ApplicantController::class)
@@ -127,10 +176,19 @@ Route::prefix('v1')->group(function () {
         // -------------------------------------------------------- requirements
         Route::get('requirement-types', [RequirementController::class, 'types']);
         Route::get('applicants/{applicant}/requirements', [RequirementController::class, 'index']);
+        /*
+         * There is deliberately no staff upload route.
+         *
+         * Applicants upload their own documents through the portal, and for a
+         * walk-in the officer verifies the original across the counter without
+         * a file ever being stored. Staff uploading on an applicant's behalf
+         * blurred who actually submitted what, and the audit trail could no
+         * longer answer it.
+         */
         Route::post(
-            'applicants/{applicant}/requirements/{requirementType}/upload',
-            [RequirementController::class, 'upload']
-        )->middleware('throttle:30,1');
+            'applicants/{applicant}/requirements/verify-batch',
+            [RequirementController::class, 'verifyBatch']
+        );
         Route::patch(
             'applicants/{applicant}/requirements/{requirementType}',
             [RequirementController::class, 'updateStatus']
@@ -189,6 +247,8 @@ Route::prefix('v1')->group(function () {
         Route::get('reports', [ReportController::class, 'index']);
         Route::post('reports/preview', [ReportController::class, 'preview']);
         Route::post('reports/export', [ReportController::class, 'export']);
+        Route::get('reports/exports/{export}', [ReportController::class, 'exportStatus']);
+        Route::get('reports/exports/{export}/download', [ReportController::class, 'downloadQueuedExport']);
 
         // ----------------------------------------------- user administration
         // Administrator only, enforced by the manageUsers gate in each action.
@@ -229,7 +289,14 @@ Route::prefix('v1')->group(function () {
         // unthrottled endpoint a cheap way to wedge it.
         Route::post('documents/check-readable', [PortalController::class, 'checkReadable'])
             ->middleware('throttle:10,60');
+        Route::get('profile', [PortalController::class, 'profile']);
         Route::patch('profile', [PortalController::class, 'updateProfile']);
+
+        // The applicant's own answer to an offer of work. Records what they
+        // decided; it changes no status and cannot advance anybody - the client's
+        // approval and the agency's decision are still separate acts.
+        Route::post('placement-response', [PortalController::class, 'respondToPlacement']);
+
         Route::get('employment', [PortalController::class, 'employment']);
         Route::post('resignation', [PortalController::class, 'submitResignation']);
     });

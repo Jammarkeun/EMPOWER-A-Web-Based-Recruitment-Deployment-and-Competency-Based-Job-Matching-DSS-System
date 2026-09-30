@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { LoadingState } from '@/components/ui/states'
+import CriteriaValueEditor from '@/components/CriteriaValueEditor'
 
 /**
  * Configures which competency criteria apply to a request and what each is worth.
@@ -95,7 +96,7 @@ export default function CriteriaDialog({ open, onOpenChange, jobRequestId, onSav
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Competency criteria</DialogTitle>
+          <DialogTitle>Adjust criteria</DialogTitle>
           <DialogDescription>
             Choose what matters for this position and how much each factor is worth. Mandatory
             criteria act as eligibility gates rather than scored points.
@@ -159,29 +160,74 @@ export default function CriteriaDialog({ open, onOpenChange, jobRequestId, onSav
                               </div>
                             )}
 
-                            <div>
-                              <label className="text-xs text-muted-foreground">Min</label>
-                              <Input
-                                type="number"
-                                value={row.min ?? ''}
-                                onChange={(e) => update(criterion.criteria_code, { min: e.target.value })}
-                                className="h-8"
-                              />
-                            </div>
+                            {/* Numeric bounds are meaningless for a criterion
+                                measured against a list of words, so they are
+                                offered only where they apply. */}
+                            {criterion.accepts === 'none' && (
+                              <>
+                                <div>
+                                  <label className="text-xs text-muted-foreground">Min</label>
+                                  <Input
+                                    type="number"
+                                    value={row.min ?? ''}
+                                    onChange={(e) => update(criterion.criteria_code, { min: e.target.value })}
+                                    className="h-8"
+                                  />
+                                </div>
 
-                            <div>
-                              <label className="text-xs text-muted-foreground">Max</label>
-                              <Input
-                                type="number"
-                                value={row.max ?? ''}
-                                onChange={(e) => update(criterion.criteria_code, { max: e.target.value })}
-                                className="h-8"
-                              />
-                            </div>
+                                <div>
+                                  <label className="text-xs text-muted-foreground">Max</label>
+                                  <Input
+                                    type="number"
+                                    value={row.max ?? ''}
+                                    onChange={(e) => update(criterion.criteria_code, { max: e.target.value })}
+                                    className="h-8"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {/*
+                              What this client actually requires. Without it the
+                              skills and certifications criteria carried weight
+                              but had nothing to look for, so they matched
+                              nobody and said nothing about why.
+                            */}
+                            {criterion.accepts !== 'none' && (
+                              <div className="sm:col-span-3">
+                                <CriteriaValueEditor
+                                  accepts={criterion.accepts}
+                                  options={criterion.options}
+                                  value={row.expected ?? ''}
+                                  onChange={(next) =>
+                                    update(criterion.criteria_code, { expected: next ?? '' })
+                                  }
+                                  label={
+                                    criterion.accepts === 'list'
+                                      ? `What this client requires`
+                                      : 'Required level'
+                                  }
+                                />
+                              </div>
+                            )}
 
                             {!row.mandatory && Number(row.weight) > 0 && (
                               <p className="text-xs text-muted-foreground sm:col-span-4">
                                 Worth {Math.round(share)}% of the total score
+                              </p>
+                            )}
+
+                            {/*
+                              A weighted criterion with nothing to measure
+                              against is the failure this whole field exists to
+                              prevent, so it is called out rather than left to
+                              be discovered in an empty ranking.
+                            */}
+                            {criterion.accepts !== 'none' && !row.expected && (
+                              <p className="flex items-start gap-1.5 text-xs text-warning sm:col-span-4">
+                                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                                Nothing set yet, so this criterion will score every applicant the
+                                same.
                               </p>
                             )}
                           </div>

@@ -109,9 +109,22 @@ return [
     | still rejected.
     */
     'uploads' => [
+        /*
+         | The disk applicant documents are stored on. Overridden to a fake in
+         | the test suite so tests never reach the live bucket.
+         */
+        'disk' => env('DOCUMENT_DISK', 'supabase'),
+
         'max_size_kb' => 10240,
         'allowed_mimes' => ['pdf', 'jpg', 'jpeg', 'png', 'webp'],
+        'max_width' => 7000,
+        'max_height' => 7000,
+        'storage_retries' => 3,
         'signed_url_ttl_minutes' => (int) env('SUPABASE_SIGNED_URL_TTL', 10),
+    ],
+
+    'reports' => [
+        'queue_threshold_rows' => 1000,
     ],
 
     /*
@@ -119,6 +132,65 @@ return [
     | to lapse. Adjustable from the settings screen.
     */
     'expiry_warning_days' => 30,
+
+    /*
+    | Disciplinary policy.
+    |
+    | The agency confirmed that a worker's record "goes back to zero" after a
+    | year and that the current threshold is the fourth offence. Both are held
+    | here rather than written into the code because they are the client's
+    | policy, not the system's, and a client that changes its handbook should
+    | not need a developer.
+    |
+    | The threshold is a point at which the system *raises the question*. It
+    | never terminates anybody: reaching it flags the employee for review, and
+    | an administrator decides. That separation is deliberate — an automatic
+    | dismissal is exactly the kind of irreversible decision a decision-support
+    | system must not make on its own.
+    */
+    'violations' => [
+        // Months an offence stays on the active record. After this it remains
+        // in the history, and in reports, but stops counting towards the
+        // threshold.
+        'active_window_months' => 12,
+
+        // Offences within that window at which the employee is flagged for an
+        // administrator to review. Currently the fourth, per CDE.
+        'termination_threshold' => 4,
+    ],
+
+    /*
+    | Training before deployment.
+    |
+    | The agency is explicit that training always happens before a worker is
+    | placed, so the lifecycle enforces it. Kept as a setting rather than a
+    | hard-coded rule so the agency can suspend it deliberately — for a
+    | redeployment of somebody already trained, say — instead of a developer
+    | having to lift the gate in an emergency. Default is on, which is the
+    | client's stated process.
+    */
+    'require_training_before_deployment' => true,
+
+    /*
+    | Record retention.
+    |
+    | Every value here is an operational policy the agency gave us, not a legal
+    | constant, and nothing in the system deletes on its own: these drive when a
+    | record is *offered* for archiving and when a document is shown as past its
+    | retention. Archiving stays a deliberate act by a person, because a
+    | scheduled job that quietly destroys employment records is not something
+    | anybody should be able to switch on by accident.
+    */
+    'retention' => [
+        // Unhired applicants. CDE estimated three months "depending on the
+        // situation", so this is a prompt to review rather than a deadline.
+        'unhired_applicant_months' => 3,
+
+        // Legal and employment documents, which CDE keeps for five to ten
+        // years. The lower bound is the default because it is the point at
+        // which a decision becomes due, not the point at which it is too late.
+        'legal_document_years' => 5,
+    ],
 
     /*
     | Printed in the header of every exported report and shown to applicants in
@@ -142,5 +214,6 @@ return [
         'deployment' => 'DEP',
         'training' => 'TRN',
         'client' => 'CLI',
+        'position' => 'POS',
     ],
 ];

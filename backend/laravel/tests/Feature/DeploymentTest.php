@@ -31,6 +31,7 @@ class DeploymentTest extends TestCase
 
         $applicant = $this->applicant($hr, ['current_status' => 'ready_for_deployment']);
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         $deployment = app(DeploymentService::class)->deploy($applicant, $request, [
             'deployment_date' => now()->toDateString(),
@@ -85,6 +86,7 @@ class DeploymentTest extends TestCase
 
         $applicant = $this->applicant($hr, ['current_status' => 'ready_for_deployment']);
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('cannot accept another deployment');
@@ -102,6 +104,7 @@ class DeploymentTest extends TestCase
 
         $applicant = $this->applicant($hr, ['current_status' => 'ready_for_deployment']);
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('client company is inactive');
@@ -118,6 +121,7 @@ class DeploymentTest extends TestCase
 
         $applicant = $this->applicant($hr, ['current_status' => 'initial_screening']);
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('must be approved or ready for deployment');
@@ -162,6 +166,7 @@ class DeploymentTest extends TestCase
 
         $applicant = $this->applicant($hr, ['current_status' => 'ready_for_deployment']);
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         app(DeploymentService::class)->deploy($applicant, $request, [
             'deployment_date' => now()->toDateString(),
@@ -184,6 +189,7 @@ class DeploymentTest extends TestCase
 
         $applicant = $this->applicant($hr, ['current_status' => 'ready_for_deployment']);
         $this->verifyRequirements($applicant, $hr, 'all');
+        $this->completeTraining($applicant, $hr);
 
         $deployment = app(DeploymentService::class)->deploy($applicant, $request, [
             'deployment_date' => now()->toDateString(),

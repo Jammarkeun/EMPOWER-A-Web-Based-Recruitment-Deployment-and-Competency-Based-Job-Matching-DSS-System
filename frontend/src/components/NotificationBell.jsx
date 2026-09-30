@@ -5,6 +5,7 @@ import { get, post } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/toast'
+import { useNotifications } from '@/contexts/NotificationsContext'
 
 const CATEGORY_ICONS = {
   requirements: FileText,
@@ -22,33 +23,21 @@ const SEVERITY_STYLES = {
 /**
  * Notification bell with an unread badge.
  *
- * Polls rather than holding a socket open. The events here are things like a
- * document being verified — meaningful within minutes, not seconds — so a
- * lightweight poll avoids running a WebSocket server for no practical gain.
+ * The count comes from the shared notifications context rather than a poll of
+ * its own, so the bell and the per-section counts in the sidebar are always the
+ * same figure read two ways. Reading or clearing anything here refreshes that
+ * one source, which moves every badge at once instead of leaving the sidebar a
+ * minute behind.
  */
 export default function NotificationBell() {
   const [open, setOpen] = React.useState(false)
   const [items, setItems] = React.useState([])
-  const [unread, setUnread] = React.useState(0)
   const [loading, setLoading] = React.useState(false)
   const containerRef = React.useRef(null)
   const navigate = useNavigate()
   const toast = useToast()
 
-  const loadCount = React.useCallback(async () => {
-    try {
-      const response = await get('/notifications/unread-count')
-      setUnread(response.data.unread_count)
-    } catch {
-      // A failing badge must not interrupt whatever the user is doing.
-    }
-  }, [])
-
-  React.useEffect(() => {
-    loadCount()
-    const timer = setInterval(loadCount, 60_000)
-    return () => clearInterval(timer)
-  }, [loadCount])
+  const { unread, refresh } = useNotifications()
 
   // Close on outside click and on Escape, so the panel never traps the user.
   React.useEffect(() => {
@@ -81,7 +70,6 @@ export default function NotificationBell() {
       try {
         const response = await get('/notifications', { per_page: 12 })
         setItems(response.data.notifications)
-        setUnread(response.data.unread_count)
       } catch {
         setItems([])
       } finally {
@@ -92,11 +80,11 @@ export default function NotificationBell() {
 
   async function handleOpenItem(item) {
     if (!item.read_at) {
-      // Updated locally first so the panel responds immediately; the badge is
-      // reconciled against the server on the next poll regardless.
+      // The row is updated locally so the panel responds immediately, and the
+      // shared count is re-read once the server has agreed - which is what
+      // moves the bell and the matching sidebar section together.
       setItems((current) => current.map((n) => (n.id === item.id ? { ...n, read_at: new Date().toISOString() } : n)))
-      setUnread((count) => Math.max(0, count - 1))
-      post(`/notifications/${item.id}/read`).catch(() => loadCount())
+      post(`/notifications/${item.id}/read`).finally(refresh)
     }
 
     if (item.link) {
@@ -113,10 +101,10 @@ export default function NotificationBell() {
 
     // Applied optimistically: the badge should clear the moment it is clicked.
     setItems((current) => current.map((n) => ({ ...n, read_at: n.read_at ?? new Date().toISOString() })))
-    setUnread(0)
 
     try {
       await post('/notifications/read-all')
+      await refresh()
       toast.success(
         'Notifications cleared',
         `${cleared} notification${cleared === 1 ? '' : 's'} marked as read.`
@@ -124,7 +112,7 @@ export default function NotificationBell() {
     } catch (error) {
       // The optimistic update has to be undone visibly, or the user is left
       // believing a badge cleared when the server never agreed.
-      loadCount()
+      refresh()
       toast.error('Could not clear notifications', error.message)
     }
   }

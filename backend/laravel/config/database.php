@@ -42,14 +42,25 @@ return [
             'synchronous' => null,
         ],
 
+        /*
+         * Local MySQL / MariaDB, used for development and for demonstrations.
+         *
+         * Reads MYSQL_* first and falls back to the generic DB_* names. That is
+         * what lets both this and the Supabase connection below be configured in
+         * .env at the same time, so switching between them is one line -
+         * DB_CONNECTION=mysql or DB_CONNECTION=pgsql - rather than rewriting six
+         * variables and hoping the old values were noted down somewhere.
+         *
+         * The defaults are XAMPP's out of the box: root with no password.
+         */
         'mysql' => [
             'driver' => 'mysql',
             'url' => env('DB_URL'),
-            'host' => env('DB_HOST', '127.0.0.1'),
-            'port' => env('DB_PORT', '3306'),
-            'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
-            'password' => env('DB_PASSWORD', ''),
+            'host' => env('MYSQL_HOST', env('DB_HOST', '127.0.0.1')),
+            'port' => env('MYSQL_PORT', env('DB_PORT', '3306')),
+            'database' => env('MYSQL_DATABASE', env('DB_DATABASE', 'empower')),
+            'username' => env('MYSQL_USERNAME', env('DB_USERNAME', 'root')),
+            'password' => env('MYSQL_PASSWORD', env('DB_PASSWORD', '')),
             'unix_socket' => env('DB_SOCKET', ''),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
             'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
@@ -82,14 +93,19 @@ return [
             ]) : [],
         ],
 
+        /*
+         * Supabase PostgreSQL - the platform for the final defense.
+         *
+         * Reads PGSQL_* first, same reasoning as the MySQL block above.
+         */
         'pgsql' => [
             'driver' => 'pgsql',
             'url' => env('DB_URL'),
-            'host' => env('DB_HOST', '127.0.0.1'),
-            'port' => env('DB_PORT', '5432'),
-            'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
-            'password' => env('DB_PASSWORD', ''),
+            'host' => env('PGSQL_HOST', env('DB_HOST', '127.0.0.1')),
+            'port' => env('PGSQL_PORT', env('DB_PORT', '5432')),
+            'database' => env('PGSQL_DATABASE', env('DB_DATABASE', 'postgres')),
+            'username' => env('PGSQL_USERNAME', env('DB_USERNAME', 'postgres')),
+            'password' => env('PGSQL_PASSWORD', env('DB_PASSWORD', '')),
             'charset' => env('DB_CHARSET', 'utf8'),
             'prefix' => '',
             'prefix_indexes' => true,

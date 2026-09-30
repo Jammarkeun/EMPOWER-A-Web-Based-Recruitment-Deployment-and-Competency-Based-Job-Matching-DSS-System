@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Http\Responses\ApiResponse;
 use App\Models\User;
+use App\Notifications\PasswordChanged;
+use App\Rules\PasswordPolicy;
 use App\Services\AuditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -57,7 +59,17 @@ class AuthController extends Controller
         }
 
         if (! $user->isActive()) {
-            return ApiResponse::error('This account has been deactivated.', 403);
+            $this->audit->record(
+                action: 'login',
+                module: 'auth',
+                recordType: User::class,
+                recordId: $user->id,
+                newValues: ['result' => 'failed', 'reason' => 'inactive_account'],
+            );
+
+            throw ValidationException::withMessages([
+                'email' => ['These credentials do not match our records.'],
+            ]);
         }
 
         RateLimiter::clear($throttleKey);
@@ -130,11 +142,64 @@ class AuthController extends Controller
         return ApiResponse::success($this->profile($user->fresh()), 'Your details have been updated');
     }
 
+    /**
+     * Which kinds of notification this account wants to receive.
+     *
+     * Available to every signed-in user, staff and portal alike: the categories
+     * are the same, and so is the reason for offering them.
+     */
+    public function notificationPreferences(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        return ApiResponse::success([
+            'categories' => collect(User::NOTIFICATION_CATEGORIES)
+                ->map(fn (string $label, string $key) => [
+                    'key' => $key,
+                    'label' => $label,
+                    'enabled' => $user->wantsNotification($key),
+                ])
+                ->values(),
+        ]);
+    }
+
+    public function updateNotificationPreferences(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $data = $request->validate([
+            'preferences' => ['required', 'array'],
+            'preferences.*' => ['boolean'],
+        ]);
+
+        // Only recognised categories are stored, so a stale or hand-made
+        // request cannot write keys that nothing will ever read.
+        $preferences = collect($data['preferences'])
+            ->only(array_keys(User::NOTIFICATION_CATEGORIES))
+            ->map(fn ($enabled) => (bool) $enabled)
+            ->all();
+
+        $user->forceFill(['notification_preferences' => $preferences])->save();
+
+        $this->audit->record(
+            action: 'update',
+            module: 'settings',
+            recordType: User::class,
+            recordId: $user->id,
+            newValues: ['notification_preferences' => $preferences],
+        );
+
+        return ApiResponse::success(
+            ['preferences' => $preferences],
+            'Notification preferences saved'
+        );
+    }
+
     public function changePassword(Request $request): JsonResponse
     {
         $data = $request->validate([
             'current_password' => ['required', 'string'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'password' => ['required', 'string', 'confirmed', new PasswordPolicy()],
         ]);
 
         $user = $request->user();
@@ -158,6 +223,8 @@ class AuthController extends Controller
             recordId: $user->id,
             newValues: ['password' => '[redacted]'],
         );
+
+        $user->notify(new PasswordChanged());
 
         return ApiResponse::success(null, 'Password updated');
     }

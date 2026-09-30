@@ -219,9 +219,12 @@ class SettingsController extends Controller
     {
         $prefix = 'empower.recommendation_bands.';
 
-        $high = $changes[$prefix.'highly_recommended'] ?? config($prefix.'highly_recommended');
-        $mid = $changes[$prefix.'recommended'] ?? config($prefix.'recommended');
-        $low = $changes[$prefix.'reserve_pool'] ?? config($prefix.'reserve_pool');
+        $high = $changes[$prefix.'highly_recommended']
+            ?? $this->settings->get($prefix.'highly_recommended');
+        $mid = $changes[$prefix.'recommended']
+            ?? $this->settings->get($prefix.'recommended');
+        $low = $changes[$prefix.'reserve_pool']
+            ?? $this->settings->get($prefix.'reserve_pool');
 
         abort_if(
             ! ($high > $mid && $mid > $low),

@@ -44,7 +44,7 @@ return new class extends Migration
             $table->foreignId('shortlisted_by')->nullable()->constrained('users');
 
             $table->foreignId('evaluated_by')->constrained('users');
-            $table->timestamp('evaluated_at');
+            $table->timestamp('evaluated_at')->useCurrent();
             $table->timestamps();
 
             $table->unique(['job_request_id', 'applicant_id'], 'uq_match_request_applicant');

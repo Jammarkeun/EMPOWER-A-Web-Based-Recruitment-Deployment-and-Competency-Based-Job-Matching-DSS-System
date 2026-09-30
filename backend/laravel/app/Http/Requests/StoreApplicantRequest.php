@@ -36,6 +36,16 @@ class StoreApplicantRequest extends FormRequest
             'present_address' => ['required', 'string', 'max:255'],
             'provincial_address' => ['nullable', 'string', 'max:255'],
 
+            /*
+             * Staff pick the position from the same list applicants do.
+             *
+             * The free-text column stays accepted rather than removed: an
+             * officer at the counter occasionally records something the list
+             * does not cover yet, and refusing to write it down would lose
+             * information the agency wanted. When an id is given it wins, and
+             * the title is written from it.
+             */
+            'preferred_position_id' => ['nullable', 'integer', 'exists:job_positions,id'],
             'preferred_position' => ['nullable', 'string', 'max:150'],
             'availability_date' => ['nullable', 'date'],
             'distance_km' => ['nullable', 'numeric', 'min:0', 'max:9999'],

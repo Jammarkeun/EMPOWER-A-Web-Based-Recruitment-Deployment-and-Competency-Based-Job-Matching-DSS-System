@@ -20,6 +20,19 @@ class ClientDepartmentResource extends JsonResource
             'department_name' => $this->department_name,
             'status' => $this->status,
             'job_requests_count' => $this->whenCounted('jobRequests'),
+
+            /*
+             * Two counts, because they answer different questions and a single
+             * number would be wrong for one of them. `employees_count` is who
+             * works here now; `former_employees_count` is what is left in the
+             * history, so a department that has lost its whole team reads as
+             * empty rather than as though its records had gone missing.
+             */
+            'employees_count' => $this->whenCounted('activeEmployees'),
+            'former_employees_count' => $this->when(
+                ! is_null($this->employees_count) && ! is_null($this->active_employees_count),
+                fn () => max(0, (int) $this->employees_count - (int) $this->active_employees_count)
+            ),
         ];
     }
 }

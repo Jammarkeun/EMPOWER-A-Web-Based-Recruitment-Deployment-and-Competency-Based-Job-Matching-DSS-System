@@ -178,6 +178,25 @@ class DeploymentService
             );
         }
 
+        /*
+         * The applicant's own answer counts.
+         *
+         * The agency's process has the candidate decide, after training and
+         * after seeing the site, whether they still want the job - and people do
+         * say no. Deploying somebody who has declined means sending a worker who
+         * will not turn up, which costs the agency its standing with the client.
+         *
+         * Refused rather than warned about: if the applicant has changed their
+         * mind, HR clears the response and deploys, and there is then a record
+         * that somebody made that decision knowingly.
+         */
+        if ($applicant->placement_response === 'declined') {
+            throw new RuntimeException(
+                'This applicant has declined the placement. Confirm they still want the job '
+                .'and clear their response before deploying them.'
+            );
+        }
+
         if ($applicant->employee?->isActive()) {
             throw new RuntimeException('This applicant is already deployed as an active employee.');
         }

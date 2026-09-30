@@ -20,7 +20,7 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { TrendChart, CategoryBarChart, PipelineChart } from '@/components/charts'
-import { formatNumber, formatDate, cn } from '@/lib/utils'
+import { formatNumber, formatDate, formatDateTime, cn } from '@/lib/utils'
 
 /**
  * The dashboard.
@@ -37,7 +37,13 @@ import { formatNumber, formatDate, cn } from '@/lib/utils'
  * twelve-month line.
  */
 export default function Dashboard() {
-  const { data, loading, error, refetch } = useApi('/dashboard/summary')
+  const { data, loading, error, refetch, updatedAt } = useApi('/dashboard/summary')
+  const [now, setNow] = React.useState(() => Date.now())
+
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(timer)
+  }, [])
 
   if (loading) return <LoadingState label="Loading dashboard…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
@@ -60,6 +66,10 @@ export default function Dashboard() {
         title="Dashboard"
         description="Recruitment and deployment activity for CDE Manpower Services."
       />
+      <p className="mb-4 text-xs text-muted-foreground" role="status">
+        {updatedAt && now - updatedAt > 300_000 ? 'Data may be stale. ' : ''}
+        Updated {formatDateTime(updatedAt)}
+      </p>
 
       <Bento>
         {/* ---------------------------------------------------- headline row */}
@@ -132,7 +142,21 @@ export default function Dashboard() {
         </Cell>
 
         <Cell span="xl:col-span-3 sm:col-span-3">
-          <Panel title="Document folders" description="Applicants by document completeness." icon={FolderCheck}>
+          <Panel
+            title="Document folders"
+            description="Applicants by document completeness."
+            icon={FolderCheck}
+            action={
+              // The document library is a different question from these folders
+              // - papers by kind, rather than one applicant's completeness - so
+              // it is linked from here rather than folded into it.
+              <Button variant="ghost" size="sm" asChild>
+                <Link to="/documents">
+                  Browse documents <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              </Button>
+            }
+          >
             <div className="space-y-2.5">
               {applicants_by_folder?.map((folder) => (
                 <div key={folder.folder} className="rounded-lg border bg-muted/30 p-3">
@@ -194,6 +218,7 @@ export default function Dashboard() {
           </Panel>
         </Cell>
       </Bento>
+
     </>
   )
 }
@@ -210,15 +235,20 @@ function Cell({ span, children }) {
  * what stops a bento from looking like cards that happened to land near each
  * other.
  */
-function Panel({ title, description, icon: Icon, children, className }) {
+function Panel({ title, description, icon: Icon, action, children, className }) {
   return (
     <Card className={cn('flex h-full flex-col', className)}>
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
-          {title}
-        </CardTitle>
-        {description && <CardDescription>{description}</CardDescription>}
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <CardTitle className="flex items-center gap-2 text-base">
+              {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
+              {title}
+            </CardTitle>
+            {description && <CardDescription>{description}</CardDescription>}
+          </div>
+          {action}
+        </div>
       </CardHeader>
       <CardContent className="flex-1">{children}</CardContent>
     </Card>

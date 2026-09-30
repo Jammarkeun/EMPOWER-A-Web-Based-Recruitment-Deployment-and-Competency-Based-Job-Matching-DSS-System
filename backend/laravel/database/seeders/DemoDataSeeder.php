@@ -11,6 +11,9 @@ use App\Models\ApplicantSkill;
 use App\Models\ClientCompany;
 use App\Models\ClientDepartment;
 use App\Models\CriteriaCatalog;
+use App\Models\Employee;
+use App\Models\EmployeeViolation;
+use App\Models\JobPosition;
 use App\Models\JobRequest;
 use App\Models\RequestCriteria;
 use App\Models\RequirementType;
@@ -65,11 +68,55 @@ class DemoDataSeeder extends Seeder
             );
         }
 
+        /*
+         * The roles this client hires for.
+         *
+         * This is the list the application form offers, so the demo has to have
+         * one: an empty dropdown is indistinguishable from a broken one. The
+         * titles are the company's own rather than the generic set, because a
+         * food manufacturer does not hire welders and a demo that says otherwise
+         * invites the wrong questions.
+         */
+        $positionTitles = [
+            'Production Helper' => 'General production line work on an eight-hour shift.',
+            'Packaging Staff' => 'Packing and labelling finished product.',
+            'Warehouse Staff' => 'Receiving, stacking, and dispatch. Involves lifting.',
+            'Machine Operator' => 'Operating and cleaning production machinery.',
+            'Quality Control Inspector' => 'Checking output against product standards.',
+            'Utility / Sanitation Staff' => 'Cleaning and sanitation of the production area.',
+        ];
+
+        $positions = [];
+        foreach ($positionTitles as $title => $description) {
+            $positions[$title] = JobPosition::updateOrCreate(
+                ['client_company_id' => $company->id, 'position_title' => $title],
+                [
+                    'position_code' => $codes->position(),
+                    'description' => $description,
+                    'status' => 'active',
+                    'created_by' => $hr->id,
+                ]
+            );
+        }
+
+        // One with no company, so the agency's own general pool is visible on
+        // the form alongside the named client's vacancies.
+        JobPosition::updateOrCreate(
+            ['client_company_id' => null, 'position_title' => 'General Worker'],
+            [
+                'position_code' => $codes->position(),
+                'description' => 'Held in the agency pool and matched to client requests as they arrive.',
+                'status' => 'active',
+                'created_by' => $hr->id,
+            ]
+        );
+
         $request = JobRequest::updateOrCreate(
             ['request_code' => 'JR-'.now()->year.'-00001'],
             [
                 'client_company_id' => $company->id,
                 'client_department_id' => $departments['PROD']->id,
+                'job_position_id' => $positions['Production Helper']->id,
                 'position_title' => 'Production Helper',
                 'required_education' => 'High School Graduate',
                 'required_experience_months' => 6,
@@ -90,6 +137,7 @@ class DemoDataSeeder extends Seeder
 
         $this->attachCriteria($request, $hr);
         $this->seedApplicants($hr, $codes, $folders);
+        $this->seedDisciplinaryExamples($hr);
     }
 
     /**
@@ -249,6 +297,50 @@ class DemoDataSeeder extends Seeder
                     'expiry_date' => $status === 'verified' && $type->has_expiry
                         ? now()->addMonths(6)->toDateString()
                         : null,
+                ]
+            );
+        }
+    }
+
+    /**
+     * A disciplinary record that demonstrates the one-year rule.
+     *
+     * Deliberately mixed: offences inside the window and offences outside it,
+     * against whichever employee already exists. Without both, the screen looks
+     * the same whether or not the rule is implemented — and the distinction
+     * between "on file" and "still counting" is the whole point of it.
+     *
+     * Does nothing when there is no employee yet, since a demo violation
+     * against nobody helps no one.
+     */
+    private function seedDisciplinaryExamples(User $hr): void
+    {
+        $employee = Employee::where('employment_status', 'active')->orderBy('id')->first();
+
+        if (! $employee) {
+            return;
+        }
+
+        $examples = [
+            // Aged out: on file, in reports, no longer counting.
+            ['months' => 15, 'type' => 'late', 'description' => 'Late on three consecutive shifts.'],
+            ['months' => 13, 'type' => 'absences', 'description' => 'Unnotified absence.'],
+            // Still counting.
+            ['months' => 4, 'type' => 'awol', 'description' => 'Absent without leave for one shift.'],
+            ['months' => 1, 'type' => 'late', 'description' => 'Reported forty minutes after shift start.'],
+        ];
+
+        foreach ($examples as $example) {
+            EmployeeViolation::firstOrCreate(
+                [
+                    'employee_id' => $employee->id,
+                    'violation_date' => now()->subMonths($example['months'])->toDateString(),
+                    'violation_type' => $example['type'],
+                ],
+                [
+                    'description' => $example['description'],
+                    'issued_by' => $hr->id,
+                    'status' => $example['months'] > 12 ? 'resolved' : 'open',
                 ]
             );
         }

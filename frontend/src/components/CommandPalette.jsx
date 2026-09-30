@@ -28,7 +28,8 @@ export default function CommandPalette() {
 
   const inputRef = React.useRef(null)
   const navigate = useNavigate()
-  const debouncedQuery = useDebounced(query, 250)
+  const deferredQuery = React.useDeferredValue(query)
+  const debouncedQuery = useDebounced(deferredQuery, 250)
 
   // Flattened so arrow keys can move across group boundaries without the user
   // thinking about groups at all.
@@ -69,26 +70,26 @@ export default function CommandPalette() {
       return
     }
 
-    let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
 
-    get('/search', { q: debouncedQuery })
+    get('/search', { q: debouncedQuery }, { signal: controller.signal })
       .then((response) => {
         // Guards against a slower earlier request overwriting newer results.
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setGroups(response.data.groups)
           setActiveIndex(0)
         }
       })
-      .catch(() => {
-        if (!cancelled) setGroups([])
+      .catch((error) => {
+        if (!controller.signal.aborted && error?.status !== undefined) setGroups([])
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted) setLoading(false)
       })
 
     return () => {
-      cancelled = true
+      controller.abort()
     }
   }, [debouncedQuery, open])
 
@@ -236,7 +237,7 @@ function SearchTrigger({ onOpen }) {
   return (
     <button
       onClick={onOpen}
-      className="flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className="flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:w-52"
       aria-label="Search everything"
     >
       <Search className="h-3.5 w-3.5" />

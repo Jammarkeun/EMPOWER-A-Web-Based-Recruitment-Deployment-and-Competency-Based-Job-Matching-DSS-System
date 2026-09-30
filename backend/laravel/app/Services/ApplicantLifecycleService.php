@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Exceptions\InvalidTransitionException;
 use App\Models\Applicant;
 use App\Models\ApplicationStatusHistory;
+use App\Models\Archive;
 use App\Models\User;
 use App\Notifications\ApplicationStatusChanged;
 use Illuminate\Support\Facades\DB;
@@ -57,6 +58,36 @@ class ApplicantLifecycleService
                 oldValues: ['current_status' => $from],
                 newValues: ['current_status' => $toStatus, 'reason' => $reason],
             );
+
+            if ($toStatus === 'archived') {
+                Archive::firstOrCreate(
+                    [
+                        'entity_type' => 'applicant',
+                        'entity_id' => $applicant->id,
+                    ],
+                    [
+                        'archive_reason' => $reason,
+                        'snapshot_json' => [
+                            'person' => $applicant->only([
+                                'applicant_code', 'first_name', 'middle_name', 'last_name',
+                                'birth_date', 'sex', 'contact_number', 'email', 'present_address',
+                            ]),
+                            'status_history' => $applicant->statusHistory()
+                                ->latest('changed_at')
+                                ->get()
+                                ->map(fn (ApplicationStatusHistory $history) => [
+                                    'from' => $history->from_status,
+                                    'to' => $history->to_status,
+                                    'reason' => $history->reason,
+                                    'at' => $history->changed_at?->toIso8601String(),
+                                ])->all(),
+                            'archived_reason' => $reason,
+                        ],
+                        'archived_by' => $actor->id,
+                        'archived_at' => now(),
+                    ]
+                );
+            }
 
             return $applicant->refresh();
         });
@@ -193,6 +224,35 @@ class ApplicantLifecycleService
             );
         }
 
+        /*
+         * Training comes before a client ever sees the candidate.
+         *
+         * The agency is unambiguous that every worker is trained before being
+         * placed: they are called in, told to complete their documents,
+         * scheduled for training, and only then taken to the client. Allowing
+         * "ready for deployment" to jump straight to client evaluation let that
+         * step be skipped entirely, which made the training module decorative.
+         *
+         * Enforced here rather than by removing the transition from the map,
+         * because the map is also what the interface reads to offer the next
+         * steps — and the honest answer is that this move is possible, just not
+         * yet. The message says which step is missing rather than reporting an
+         * illegal transition, which tells nobody anything.
+         *
+         * Configurable because a genuinely trained worker being redeployed
+         * should not need a developer to lift the gate.
+         */
+        if (
+            $toStatus === 'client_evaluation'
+            && config('empower.require_training_before_deployment', true)
+            && ! $this->hasCompletedTraining($applicant)
+        ) {
+            throw new RuntimeException(
+                'This applicant has not completed training yet. CDE trains every worker before '
+                .'endorsing them to a client, so schedule and complete their training first.'
+            );
+        }
+
         $folder = $this->folders->determine($applicant);
 
         match ($toStatus) {
@@ -210,6 +270,27 @@ class ApplicantLifecycleService
             ),
             default => null,
         };
+    }
+
+    /**
+     * Whether this applicant has actually been through training.
+     *
+     * Two ways of having done so, and both are honest. A completed enrolment is
+     * the record the training module writes; already being past
+     * `training_completed` in the lifecycle covers an applicant whose training
+     * was recorded before this gate existed, or handled outside the module.
+     * Requiring only the enrolment row would have stranded every applicant
+     * already mid-process on the day this shipped.
+     */
+    private function hasCompletedTraining(Applicant $applicant): bool
+    {
+        if ($applicant->current_status === 'training_completed') {
+            return true;
+        }
+
+        return $applicant->trainingEnrollments()
+            ->where('completion_status', 'completed')
+            ->exists();
     }
 
     private function requireFolder(string $actual, array $accepted, string $message): void

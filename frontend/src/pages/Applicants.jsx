@@ -58,6 +58,24 @@ export default function Applicants() {
 
   const filtered = Boolean(search || status || folder || awaiting)
 
+  const [selectedIds, setSelectedIds] = React.useState([])
+
+  const allSelected = data?.length > 0 && selectedIds.length === data.length
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelectedIds([])
+    } else {
+      setSelectedIds(data.map((a) => a.id))
+    }
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    )
+  }
+
   function updateFilter(key, value) {
     const next = new URLSearchParams(searchParams)
     if (value) next.set(key, value)
@@ -174,6 +192,15 @@ export default function Applicants() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      className="h-4 w-4 rounded border-input"
+                      aria-label="Select all applicants"
+                    />
+                  </TableHead>
                   <TableHead>Applicant</TableHead>
                   <TableHead>Code</TableHead>
                   <TableHead>Position sought</TableHead>
@@ -184,7 +211,16 @@ export default function Applicants() {
               </TableHeader>
               <TableBody>
                 {data.map((applicant) => (
-                  <TableRow key={applicant.id}>
+                  <TableRow key={applicant.id} className={selectedIds.includes(applicant.id) ? 'bg-muted/50' : ''}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(applicant.id)}
+                        onChange={() => toggleSelect(applicant.id)}
+                        className="h-4 w-4 rounded border-input"
+                        aria-label={`Select ${applicant.full_name}`}
+                      />
+                    </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Link
@@ -193,13 +229,6 @@ export default function Applicants() {
                         >
                           {applicant.full_name}
                         </Link>
-                        {/*
-                          Marked in the list rather than only on the record.
-                          These details were typed in by the applicant and
-                          nobody has checked them against an ID yet, which is
-                          exactly what a reader needs to know before acting on
-                          what they see.
-                        */}
                         {applicant.awaiting_identity_check && (
                           <Badge tone="warning" className="text-[10px]">
                             Not yet verified
@@ -235,6 +264,19 @@ export default function Applicants() {
           </>
         )}
       </Card>
+
+      {/* Floating Bulk Action Toolbar */}
+      {selectedIds.length > 0 && (
+        <div className="fixed bottom-6 right-6 z-40 flex items-center gap-3 rounded-xl border bg-card/95 px-4 py-3 shadow-xl backdrop-blur border-primary/30">
+          <span className="text-sm font-semibold">
+            {selectedIds.length} applicant{selectedIds.length > 1 ? 's' : ''} selected
+          </span>
+          <div className="h-4 w-px bg-border" />
+          <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>
+            Deselect
+          </Button>
+        </div>
+      )}
 
       <NewApplicantDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreated={refetch} />
     </>

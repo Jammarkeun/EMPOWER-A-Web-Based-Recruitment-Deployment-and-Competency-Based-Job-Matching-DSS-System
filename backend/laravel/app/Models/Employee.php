@@ -69,6 +69,38 @@ class Employee extends Model
         return $this->hasMany(EmployeeViolation::class)->orderByDesc('violation_date');
     }
 
+    /**
+     * Offences still counting against this employee.
+     *
+     * The agency's record clears after a year, so this is the number that
+     * matters operationally — the full history stays on `violations()` for
+     * reporting and for showing a pattern of behaviour.
+     */
+    public function activeViolations(): HasMany
+    {
+        return $this->violations()->active();
+    }
+
+    /**
+     * Whether this employee has reached the client's review threshold.
+     *
+     * Deliberately named for what it does. It does not terminate anybody and
+     * must never be read as though it did: reaching the threshold raises the
+     * question, and an administrator answers it. CDE's current policy is the
+     * fourth offence, which is configuration rather than code because it is
+     * their handbook and not our rule.
+     */
+    public function reachedViolationThreshold(): bool
+    {
+        $threshold = (int) config('empower.violations.termination_threshold', 4);
+
+        if ($threshold < 1) {
+            return false;
+        }
+
+        return $this->activeViolations()->count() >= $threshold;
+    }
+
     public function resignation(): HasOne
     {
         return $this->hasOne(Resignation::class)->latestOfMany();

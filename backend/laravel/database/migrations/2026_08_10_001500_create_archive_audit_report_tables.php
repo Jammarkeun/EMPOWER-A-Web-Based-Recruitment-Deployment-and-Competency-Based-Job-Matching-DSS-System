@@ -22,7 +22,7 @@ return new class extends Migration
             $table->jsonb('snapshot_json');
 
             $table->foreignId('archived_by')->constrained('users');
-            $table->timestamp('archived_at');
+            $table->timestamp('archived_at')->useCurrent();
             $table->timestamps();
 
             $table->index(['entity_type', 'entity_id'], 'idx_archives_entity');
@@ -66,7 +66,7 @@ return new class extends Migration
             $table->string('export_format', 20);                  // pdf | xlsx | csv
             $table->string('status', 30)->default('queued');      // queued | processing | completed | failed
             $table->foreignId('requested_by')->constrained('users');
-            $table->timestamp('requested_at');
+            $table->timestamp('requested_at')->useCurrent();
             $table->timestamp('completed_at')->nullable();
             $table->string('error_message', 255)->nullable();
             $table->timestamps();

@@ -8,7 +8,9 @@ use App\Http\Resources\RequestCriterionResource;
 use App\Http\Responses\ApiResponse;
 use App\Models\ClientCompany;
 use App\Models\ClientDepartment;
+use App\Models\CompanyCriteria;
 use App\Models\CriteriaCatalog;
+use App\Models\JobPosition;
 use App\Models\JobRequest;
 use App\Models\JobRequestMatch;
 use App\Models\RequestCriteria;
@@ -65,7 +67,11 @@ class JobRequestController extends Controller
         $data = $request->validate([
             'client_company_id' => ['required', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['required', 'integer', 'exists:client_departments,id'],
-            'position_title' => ['required', 'string', 'max:150'],
+            // Either name the role or pick it from the company's list. Naming a
+            // new one creates the position, which is what keeps the applicant's
+            // dropdown in step with the work the agency actually has.
+            'job_position_id' => ['nullable', 'integer', 'exists:job_positions,id'],
+            'position_title' => ['required_without:job_position_id', 'string', 'max:150'],
             'required_education' => ['nullable', 'string', 'max:150'],
             'required_experience_months' => ['nullable', 'integer', 'min:0', 'max:600'],
             'required_certifications' => ['nullable', 'string'],
@@ -93,8 +99,14 @@ class JobRequestController extends Controller
             return ApiResponse::error('The selected department does not belong to that client company.', 422);
         }
 
+        $position = $this->resolvePosition($company, $data, $request->user()->id);
+
         $jobRequest = JobRequest::create(array_merge($data, [
             'request_code' => $this->codes->jobRequest(),
+            'job_position_id' => $position->id,
+            // Kept in step with the position when one was chosen, so the two
+            // never disagree about what the job is called.
+            'position_title' => $position->position_title,
             'created_by' => $request->user()->id,
         ]));
 
@@ -104,6 +116,59 @@ class JobRequestController extends Controller
             new JobRequestResource($jobRequest->load(['company', 'department'])),
             'Manpower request recorded'
         );
+    }
+
+    /**
+     * The position this request is for, creating it if the title is a new one.
+     *
+     * The find-or-create is the mechanism that keeps the applicant's list of
+     * positions honest without anyone having to maintain it as a separate
+     * chore. A client asks for a role the agency has not placed before, HR
+     * records the request in the ordinary way, and the role is on the
+     * application form from that moment.
+     *
+     * Matching is case-insensitive so "Production Helper" typed one day and
+     * "production helper" the next remain a single job rather than two.
+     */
+    private function resolvePosition(ClientCompany $company, array $data, int $actorId): JobPosition
+    {
+        if (! empty($data['job_position_id'])) {
+            $position = JobPosition::findOrFail($data['job_position_id']);
+
+            abort_if(
+                ! is_null($position->client_company_id)
+                    && (int) $position->client_company_id !== (int) $company->id,
+                422,
+                'That position belongs to a different client company.'
+            );
+
+            return $position;
+        }
+
+        $title = trim($data['position_title']);
+
+        $existing = JobPosition::where('client_company_id', $company->id)
+            ->whereRaw('LOWER(position_title) = ?', [mb_strtolower($title)])
+            ->first();
+
+        if ($existing) {
+            // A role being asked for again is a role the agency still places,
+            // so a previously withdrawn position comes back into use rather
+            // than leaving the request pointing at something switched off.
+            if (! $existing->isActive()) {
+                $existing->update(['status' => 'active']);
+            }
+
+            return $existing;
+        }
+
+        return JobPosition::create([
+            'position_code' => $this->codes->position(),
+            'client_company_id' => $company->id,
+            'position_title' => $title,
+            'status' => 'active',
+            'created_by' => $actorId,
+        ]);
     }
 
     public function show(JobRequest $jobRequest): JsonResponse
@@ -192,12 +257,78 @@ class JobRequestController extends Controller
     {
         $this->authorize('view', $jobRequest);
 
+        $configured = $jobRequest->criteria()->with('criterion')->get();
+
+        /*
+         * A request with nothing set yet is offered the client's own standing
+         * requirements as a starting point.
+         *
+         * Every request for the same client used to begin from a blank slate, so
+         * whoever raised it had to remember what that client cares about — and
+         * two officers would weight the same position differently. These are
+         * suggestions, not rules: they are only proposed while the request has
+         * no criteria of its own, and saving is still a deliberate act.
+         */
+        $suggested = [];
+
+        if ($configured->isEmpty() && $jobRequest->client_company_id) {
+            $suggested = CompanyCriteria::with('criterion')
+                ->where('client_company_id', $jobRequest->client_company_id)
+                ->get()
+                ->map(fn (CompanyCriteria $c) => [
+                    'criteria_code' => $c->criterion?->criteria_code,
+                    'criteria_name' => $c->criterion?->criteria_name,
+                    'mandatory_flag' => $c->mandatory_flag,
+                    'weight_score' => (float) $c->weight_score,
+                    'expected_value' => $c->expected_value,
+                    'min_value' => $c->min_value !== null ? (float) $c->min_value : null,
+                    'max_value' => $c->max_value !== null ? (float) $c->max_value : null,
+                    'note' => $c->note,
+                ])
+                ->filter(fn ($row) => $row['criteria_code'] !== null)
+                ->values()
+                ->all();
+        }
+
         return ApiResponse::success([
-            'catalog' => CriteriaCatalog::active()->orderBy('criteria_name')->get(),
-            'configured' => RequestCriterionResource::collection(
-                $jobRequest->criteria()->with('criterion')->get()
-            ),
+            'catalog' => $this->catalogue(),
+            'configured' => RequestCriterionResource::collection($configured),
+            'suggested_from_company' => $suggested,
+            'company_name' => $jobRequest->company?->company_name,
         ]);
+    }
+
+    /**
+     * The criteria catalogue, with what each one's expected value accepts.
+     *
+     * `accepts` is the shape of the answer, not a suggestion: `list` criteria -
+     * skills and certifications - hold whatever competencies this particular
+     * client requires, and holding any one of them satisfies the criterion.
+     * `choice` criteria have a fixed vocabulary the scoring engine recognises,
+     * published here so the form offers it rather than leaving an officer to
+     * guess the spelling of "college_graduate".
+     *
+     * Getting that wrong is not a validation error, which is exactly why it
+     * needs solving in the form: an unrecognised value simply never matches, so
+     * the criterion silently scores nobody and explains nothing.
+     */
+    private function catalogue()
+    {
+        return CriteriaCatalog::active()
+            ->orderBy('criteria_name')
+            ->get()
+            ->map(function (CriteriaCatalog $criterion) {
+                $options = CompetencyScoringService::acceptedValues($criterion->criteria_code);
+
+                return array_merge($criterion->toArray(), [
+                    'accepts' => match (true) {
+                        $options !== null => 'choice',
+                        $criterion->value_type === 'text' => 'list',
+                        default => 'none',
+                    },
+                    'options' => $options,
+                ]);
+            });
     }
 
     /**

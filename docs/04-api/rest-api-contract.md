@@ -112,6 +112,35 @@ onto a client's shortlist. See `POST /applicants/{id}/verify-identity`.
 }
 ```
 
+### GET /register/positions
+- Public: Yes.
+- Purpose: the positions an applicant may apply for. The application form is
+  built from this and nothing else, so a role added for a new client company
+  appears on it without a front-end change.
+- Only active positions of active client companies are returned. A position with
+  no company belongs to the agency's own pool. `is_hiring_now` says whether the
+  position has an open manpower request behind it — both kinds are worth
+  applying for, and saying which is which is more honest than one flat list.
+- Response 200:
+
+```json
+{
+  "success": true,
+  "data": {
+    "positions": [
+      {
+        "id": 3,
+        "position_code": "POS-2026-00004",
+        "position_title": "Packaging Staff",
+        "description": "Packing and labelling finished product.",
+        "company": "Best Tiwi Food Products Corporation",
+        "is_hiring_now": true
+      }
+    ]
+  }
+}
+```
+
 ### POST /register/check-email
 - Public: Yes. Throttled to 20 requests per minute.
 - Request: `{ "email": "ana@example.com" }`
@@ -132,12 +161,25 @@ onto a client's shortlist. See `POST /applicants/{id}/verify-identity`.
   "birth_date": "2002-03-14",
   "contact_number": "09171234567",
   "present_address": "Brgy. Pagsawitan, Sta. Cruz, Laguna",
-  "preferred_position": "Production Helper",
+  "preferred_position_id": 3,
   "email": "ana.reyes@example.com",
   "password": "secret1234",
   "password_confirmation": "secret1234"
 }
 ```
+
+- `preferred_position_id` is a reference from `GET /register/positions`, not a
+  job title. Storing the reference is what lets the agency rename a position
+  later without orphaning everyone who applied for it; the wording the applicant
+  was shown is kept alongside it as a record of what they were told they applied
+  for.
+- It is **required whenever any position is on offer**, and optional when none
+  is. An agency between contracts still accepts applicants, and a form that
+  could not be submitted because no client was currently hiring would turn away
+  the very people the pool exists to hold.
+- A position withdrawn between the page loading and the form being submitted
+  returns **422** with a message telling the applicant to choose another, rather
+  than a validation error implying they did something wrong.
 
 - Response 201: returns a Bearer token so the applicant is signed in
   immediately, along with the reference number to quote at the office.
@@ -212,9 +254,89 @@ Request:
 ### POST /clients/{id}/departments
 ### PUT /clients/{id}/departments/{departmentId}
 
+### GET /clients/{id}/departments/{departmentId}/employees
+- Who is currently placed in one of a client's departments.
+- **Nested under the client on purpose.** The company is part of the address
+  rather than a filter the caller may drop, so a department belonging to another
+  client does not resolve at all — the answer is **404**, not 403, because
+  saying "forbidden" would confirm the department exists somewhere.
+- Requires **both** `clients.view` and `employees.view`. Seeing a company is not
+  the same as seeing the names and employment status of its workers, and a role
+  that may read a client's requests has no automatic claim on its payroll.
+- Employees are read from `employees.current_department_id`, which the
+  deployment and reassignment services already maintain — so a worker moved
+  between departments leaves one list and appears in the other with no separate
+  bookkeeping and no join table.
+- Ordered current staff first, then former, by surname within each. Former
+  employees are still listed: their placement is a matter of record.
+- Response 200:
+
+```json
+{
+  "success": true,
+  "message": "Chocolate Department",
+  "data": {
+    "department": {
+      "id": 3,
+      "department_name": "Chocolate Department",
+      "department_code": "CHOCO",
+      "employees_count": 12,
+      "former_employees_count": 2,
+      "job_requests_count": 4
+    },
+    "company": { "id": 1, "company_name": "Best Tiwi Food Products Corporation" },
+    "employees": [
+      {
+        "id": 87,
+        "employee_number": "EMP-2026-00123",
+        "full_name": "Andrea Santos",
+        "current_position_title": "Production Staff",
+        "current_supervisor_name": "Mark Reyes",
+        "employment_status": "active",
+        "hire_date": "2026-08-03"
+      }
+    ]
+  },
+  "meta": { "current_page": 1, "per_page": 50, "total": 14 }
+}
+```
+
+`GET /clients/{id}/departments` carries the same two counts against every
+department, so the list can show a headcount without a request per row.
+`employees_count` is who works there **now**; `former_employees_count` is what
+is left in the history, so a department that has lost its whole team reads as
+empty rather than as though its records had gone missing.
+
+### GET /clients/{id}/positions
+- The roles this client hires for, with `open_request_count` and
+  `applicant_count` against each so a position's demand is visible without
+  opening another screen.
+
+### POST /clients/{id}/positions
+- Requires `clients.update`.
+- Request: `{ "position_title": "Machine Operator", "description": "...", "status": "active" }`
+- Adding a position here puts it on the public application form immediately.
+
+### PUT /clients/{id}/positions/{positionId}
+- Requires `clients.update`. Accepts `position_title`, `description`, `status`.
+- Setting `status` to `inactive` **withdraws** the position: it leaves the
+  application form but is not deleted, because the job requests and deployments
+  referencing it are history and must keep reading correctly.
+
+### GET /positions
+- Every position, for the staff screens that attach one to a request or an
+  applicant. Filterable by `client_company_id` and `status`.
+
 Business rules:
 - Department name must be unique per client.
-- Inactive client cannot receive new job request.
+- Position title must be unique **per client**, not globally — two clients may
+  both hire welders.
+- A position with a null `client_company_id` belongs to the agency's own pool.
+- Recording a manpower request for a title the client has not used before
+  creates the position, matched case-insensitively so "Production Helper" and
+  "production helper" stay one role.
+- Inactive client cannot receive new job request, and its positions are not
+  offered to applicants.
 
 ## Job Request Management
 
@@ -354,9 +476,42 @@ audit entry naming the officer, then transitions to `initial_screening`.
 
 ### GET /requirement-types
 ### GET /applicants/{id}/requirements
-### POST /applicants/{id}/requirements/{requirementTypeId}/upload
-Multipart fields:
-- file, expiry_date, remarks.
+
+There is deliberately **no staff upload route**. Applicants upload their own
+documents through the portal, and for a walk-in the officer verifies the
+original across the counter without a file ever being stored. Staff uploading on
+an applicant's behalf blurred who actually submitted what, and the audit trail
+could no longer answer it.
+
+Each requirement reports three independent facts, which earlier versions
+conflated:
+
+| Field | Answers |
+| --- | --- |
+| `upload_status` | Is there a stored file? (`uploaded` / `not_uploaded`) |
+| `status` | What did the officer decide? (`missing`, `submitted`, `pending`, `verified`, `rejected`, `needs_correction`, `expired`) |
+| `review_state` | Where does this stand, in the words shown to the applicant? |
+
+`review_state` is derived, never stored, and is one of `not_uploaded`,
+`uploaded` ("Upload successful"), `under_review` ("Being checked"), `verified`,
+`rejected`, `needs_correction`, `expired`. The distinction that matters is
+between the middle two: both are `status: submitted` in the database, and they
+are told apart by `first_viewed_at` — whether a member of staff has actually
+opened the file. A stored document is **not** under review merely because the
+upload succeeded.
+
+### GET /applicants/{id}/requirements/{requirementTypeId}/download
+- Mints a short-lived signed URL, and **records that review has begun**:
+  `first_viewed_at` and `first_viewed_by` are set on the first opening only, so
+  the answer to "has anyone looked at this?" does not move every time the file
+  is reopened.
+- Every opening is audited, not only the first — for a document covered by
+  RA 10173, who looked at it is the question that matters most.
+- Returns the updated requirement alongside the URL, so the screen that opened
+  it can correct the row in place rather than reloading and losing the reader's
+  position in a long checklist.
+- `GET /documents/file/{requirementId}` in the document library does exactly the
+  same thing, because it is the same act on the same row.
 
 ### PATCH /applicants/{id}/requirements/{requirementTypeId}
 Request:
@@ -364,10 +519,16 @@ Request:
 ```json
 {
   "status": "verified",
-  "remarks": "Clear and valid",
-  "verified_at": "2026-08-04T10:15:00+08:00"
+  "verification_method": "walk_in",
+  "verification_note": "Original sighted at the counter",
+  "remarks": "Clear and valid"
 }
 ```
+
+### POST /applicants/{id}/requirements/verify-batch
+- Verifies several requirements at once, for the counter case where an applicant
+  hands over a folder and every paper in it is in order. Verify-only: rejecting
+  needs a reason written against a specific document.
 
 ### GET /applicants/{id}/folder-category
 - Returns folder_3, folder_2, or folder_1 with explanation.
@@ -375,6 +536,12 @@ Request:
 Rules:
 - Folder category is derived and read-only.
 - Rejected status requires rejection_reason.
+- Verification does **not** require a stored file: a walk-in applicant's
+  originals are checked across the counter, and `verification_method` records
+  how the check was performed.
+- An applicant replacing a document clears `first_viewed_at`. A replacement is a
+  different document, and the review the previous file had is not review of
+  this one.
 
 ## Competency Matching
 
@@ -413,6 +580,23 @@ Response 200:
   }
 }
 ```
+
+The catalogue returned by `GET /job-requests/{id}/criteria` carries two extra
+fields per criterion that the form needs:
+
+| `accepts` | Meaning |
+| --- | --- |
+| `list` | Free text, as many as the client requires — skills and certifications. Holding **any one** satisfies the criterion. Stored comma-separated in `expected_value`. |
+| `choice` | A fixed vocabulary the engine recognises, supplied in `options` (education levels, gender). |
+| `none` | Measured numerically; `min_value`/`max_value` apply instead. |
+
+This matters because an unrecognised expected value is **not** a validation
+error — it simply never matches, so the criterion silently scores nobody and
+explains nothing. Publishing the vocabulary is what stops an officer typing
+"College Graduate" where the engine looks for `college_graduate`.
+
+`GET /clients/{id}/criteria` returns the same two fields, so the company-level
+form and the request-level form offer identical vocabulary.
 
 ### GET /job-requests/{id}/rankings
 ### POST /job-requests/{id}/shortlist
@@ -468,10 +652,25 @@ Request:
 }
 ```
 
+The body is the client company's own **deployment details** form, which the
+agency described as filled in by the client and entered by the admin: which
+department, from when, under which supervisor, and with which employee and
+biometric number. The system records what the client decided; it does not decide
+it.
+
 Response:
 - Creates deployment.
 - Converts applicant to employee.
 - Updates request fulfillment counters.
+- Walks the applicant through any remaining lifecycle steps to `active`, each
+  one historised, so the timeline does not jump from screening to employed.
+
+Refused (400) unless **all** of the following hold:
+- the request can still take a worker and its client company is active;
+- the applicant is `approved` or `ready_for_deployment`;
+- the applicant is in **Folder 1** — primary and final requirements verified;
+- the applicant is not already actively deployed;
+- the applicant has **not declined the placement**.
 
 ### GET /deployments
 ### GET /deployments/{id}
@@ -536,6 +735,118 @@ Termination payload:
 Rules:
 - Separation completion updates employee status.
 - Archiving is enabled only after closure checks pass.
+
+## Notifications and Preferences
+
+### GET /notifications/unread-count
+- Returns the badge figure **and** the same figure broken down by category, in
+  one request:
+
+```json
+{ "data": { "unread_count": 5, "by_category": { "application": 3, "requirements": 2 } } }
+```
+
+- The categories are a partition of `unread_count`, not a second tally — which
+  is what stops the bell and the per-section sidebar counts from disagreeing.
+  The client polls this once and reads it everywhere.
+- Categories are `application`, `requirements`, `deployment`, `general`, taken
+  from the notification's own payload. A category with nothing unread is absent
+  rather than zero.
+- Grouped in PHP rather than SQL on purpose: a JSON path expression is spelled
+  differently on MySQL, PostgreSQL and SQLite, and one person's unread
+  notifications are a handful of rows.
+
+### GET /auth/notification-preferences
+### PATCH /auth/notification-preferences
+- `{ "preferences": { "application": true, "requirements": false } }`
+- Available to every signed-in user. Unrecognised keys are discarded, so a
+  hand-made request cannot write preferences nothing will read.
+- A muted category stops producing notifications at all —
+  `EmpowerNotification::via()` returns no channels — so the badge, the panel and
+  the preference agree by construction rather than by filtering after the fact.
+- **Absent preferences mean everything is on.** "Never configured" and
+  "configured to nothing" are deliberately different, which is why the column is
+  nullable.
+- Muting suppresses the alert only. Documents are still verified and placements
+  still recorded; nothing in the recruitment process depends on a notification
+  having been delivered.
+
+## Applicant and Employee Portal
+
+Prefixed `/portal` and gated by the `portal` middleware. **No endpoint here
+accepts a record identifier.** Each resolves the applicant or employee from the
+signed-in user's own link, so there is nothing in a URL for a curious user to
+change. Portal accounts hold no staff permissions at all.
+
+### GET /portal
+- The landing view: current status in plain language, the stage number, what
+  documents are outstanding, employment details if any, and recent activity.
+- `placement_decision_due` is true only while a client is considering the
+  applicant (`client_evaluation` or `approved`) and they have not yet answered.
+
+### GET /portal/documents
+- The applicant's own checklist, each row carrying `review_state` and
+  `review_state_label` as described under Requirement Management.
+
+### POST /portal/documents/{requirementTypeId}/upload
+- Multipart: `file`, and `expiry_date` where the document expires.
+- Lands in `status: submitted` with `review_state: uploaded` — "Upload
+  successful". Verification stays with HR against the physical original, so
+  **this cannot make anybody deployable**.
+- Returns the updated requirement, so the page can correct one row rather than
+  reloading and losing the applicant's place in the checklist.
+- Refused (409) for a document the office has already accepted.
+
+### POST /portal/documents/check-readable
+- Reads a document without storing it, so an applicant can find out at home that
+  a photo is too blurred to use. Throttled to 10 per hour: each call is roughly
+  forty seconds of CPU on the recognition service.
+
+### GET /portal/documents/{requirementTypeId}/download
+- A short-lived link to the applicant's own document. Deliberately does **not**
+  set `first_viewed_at`: an applicant reading what they sent is not the office
+  reviewing it.
+
+`GET /portal` also returns a `deployment` block, which is **null until the
+applicant is genuinely placed**. It requires both signals to agree: the
+lifecycle status is `deployed` or `active`, *and* an active deployment row
+exists. Being approved by the client, being ready for deployment, or having
+every document verified all leave it null — congratulating somebody at those
+points would be telling them they have a job they have not got. Every value in
+it is read from the deployment the client company filled in, so it survives a
+refresh, a new session, and a different device.
+
+### GET /portal/profile
+- The applicant's own record, split into `identity` (read-only), `editable`, and
+  `account`, with `locked_fields_reason` explaining why the first is read-only.
+
+### PATCH /portal/profile
+- Accepts `contact_number`, `email`, `availability_date` and nothing else. Name,
+  date of birth, and address were verified against documents at the office, and
+  a verified record must not drift away from the paperwork supporting it.
+
+### POST /portal/placement-response
+- Request: `{ "response": "accepted" | "declined", "note": "optional" }`
+- The one decision in the recruitment process that belongs to the applicant. The
+  agency's process has the candidate decide, after training, whether they still
+  want the job.
+- Records `placement_response`, `placement_responded_at` and the note; audits
+  it; notifies HR. **Changes no status** — the client's approval and the
+  agency's decision are separate acts that still have to happen, and what a
+  withdrawal means for someone's place in the pool is the agency's judgment.
+- Refused (409) when no placement is awaiting an answer, and when one has
+  already been given.
+- A declined placement blocks `POST /deployments` until HR clears it.
+
+### GET /portal/employment, POST /portal/resignation
+- The employee half of the portal: current placement, deployment history,
+  disciplinary record, and filing a resignation for HR to process.
+
+Rules:
+- Applicants can never set a review or lifecycle status. There is no route, and
+  the fields are not mass assignable.
+- Staff are refused by the `portal` middleware, exactly as portal users are
+  refused by the staff routes.
 
 ## Archive and Audit
 

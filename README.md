@@ -49,7 +49,7 @@ deliberate act by a person.
 | Layer | |
 | --- | --- |
 | API | Laravel 12, PHP 8.3, Sanctum tokens, spatie/laravel-permission |
-| Database | Supabase (PostgreSQL 17) |
+| Database | MySQL/MariaDB locally for demos; Supabase (PostgreSQL 17) for the final defense |
 | Documents | Supabase Storage, private bucket, expiring signed URLs |
 | Frontend | React 18, Vite, Tailwind CSS, Chart.js |
 | Document reading | FastAPI + PaddleOCR |
@@ -94,6 +94,7 @@ On Windows, **double-click `run.cmd`** — or from a terminal:
 
 ```
 .\run.cmd            # API + frontend + OCR
+.\run.cmd -Supabase  # run against Supabase for this session only
 .\run.cmd -NoOcr     # skip document reading
 .\run.cmd -Stop      # shut everything down
 ```
@@ -102,6 +103,54 @@ It wraps `start.ps1`. Use the wrapper rather than the `.ps1` directly: Windows
 ships with the PowerShell execution policy set to `Restricted`, which refuses
 to run any script file, and `run.cmd` bypasses that for the single command
 instead of requiring a change to the machine's security settings.
+
+### Which database it uses
+
+The project runs on **two** database platforms, chosen by one line in `.env`:
+
+| | | |
+| --- | --- | --- |
+| `DB_CONNECTION=mysql` | Local XAMPP | Development and demos. The dashboard loads in about 0.8s. |
+| `DB_CONNECTION=pgsql` | Supabase | The final defense. The same dashboard takes about 4.7s, because every query is a round trip to Singapore. |
+
+XAMPP ships **MariaDB**, and that is fine. Laravel compiles queries for it
+through the same MySQL grammar it uses for Oracle MySQL, so the SQL is already
+MySQL-standard and the eventual move to Supabase is unaffected — the differences
+that matter there are PostgreSQL-versus-MySQL, and those are handled in the code
+(date formatting in `DashboardController::monthlyTrend()`, and `useCurrent()` on
+the non-nullable timestamp columns).
+
+Both sets of credentials live in `.env` at once, so switching loses neither.
+For a one-off run against Supabase without editing anything:
+
+```
+.\run.cmd -Supabase
+```
+
+That sets the connection for that session only — close the window and you are
+back on the local demo database.
+
+**Setting up the local database once:**
+
+```sql
+CREATE DATABASE empower CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+```bash
+php backend/laravel/artisan migrate --seed
+```
+
+**Moving data between them** — for the final defense, once the demo data is
+worth keeping:
+
+```bash
+php backend/laravel/artisan empower:copy-database --from=mysql --to=pgsql
+```
+
+Migrate the target first; the command copies rows, not structure. It empties
+each target table before filling it, only ever touches EMPOWER's own tables, and
+resets PostgreSQL's id sequences afterwards — without that last step the copy
+looks fine and then the first new record fails with a duplicate key error.
 
 Otherwise, in three terminals:
 

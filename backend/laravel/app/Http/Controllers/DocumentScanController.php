@@ -3,12 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Http\Responses\ApiResponse;
+use App\Jobs\ProcessDocumentScan;
 use App\Models\Applicant;
-use App\Services\AuditService;
+use App\Models\DocumentScan;
 use App\Services\OcrService;
+use App\Services\DocumentUploadPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 /**
  * Reads an uploaded document and proposes applicant details.
@@ -23,7 +27,7 @@ class DocumentScanController extends Controller
 {
     public function __construct(
         private readonly OcrService $ocr,
-        private readonly AuditService $audit,
+        private readonly DocumentUploadPolicy $uploads,
     ) {
     }
 
@@ -44,52 +48,56 @@ class DocumentScanController extends Controller
         $this->authorize('create', Applicant::class);
 
         $request->validate([
-            'file' => [
-                'required',
-                'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
+            'file' => $this->uploads->rules(),
             'document_type' => [
                 'nullable',
                 Rule::in(['auto', 'resume', 'id', 'umid', 'philsys', 'drivers_license']),
             ],
         ]);
 
-        $result = $this->ocr->scan(
-            $request->file('file'),
-            $request->input('document_type', 'auto')
-        );
-
-        if (! $result['success']) {
-            // 200 rather than an error status: a document that could not be read
-            // is a normal outcome the user acts on, not a failure of the request.
-            return ApiResponse::success(
-                ['fields' => [], 'readable' => false],
-                $result['message']
-            );
+        $file = $request->file('file');
+        $this->uploads->assertSafe($file);
+        $path = 'ocr-scans/'.Str::uuid().'-'.basename($file->getClientOriginalName());
+        if (! Storage::disk('local')->putFileAs('ocr-scans', $file, basename($path))) {
+            return ApiResponse::error('The scan could not be queued. Please try again.', 503);
         }
 
-        // Recorded because a scan means a document containing personal
-        // information passed through the system, even though nothing was saved.
-        $this->audit->record(
-            action: 'create',
-            module: 'applicants',
-            newValues: [
-                'document_scan' => $result['document_type'],
-                'fields_proposed' => array_keys($result['fields']),
-                'confidence' => $result['meta']['recognition_confidence'] ?? null,
-            ],
-        );
+        $scan = DocumentScan::create([
+            'user_id' => $request->user()->id,
+            'stored_path' => $path,
+            'original_name' => $file->getClientOriginalName(),
+            'mime_type' => $file->getMimeType(),
+            'document_type' => $request->input('document_type', 'auto'),
+            'status' => 'queued',
+        ]);
+
+        ProcessDocumentScan::dispatch($scan->id);
 
         return ApiResponse::success([
-            'readable' => true,
-            'fields' => $result['fields'],
-            'document_type' => $result['document_type'],
-            'meta' => $result['meta'],
-            // Repeated in the payload so no client can treat these as final by
-            // accident.
-            'notice' => 'These are proposed values read from the document. Check each one before saving.',
-        ], $result['message']);
+            'scan_id' => $scan->id,
+            'status' => $scan->status,
+            'poll_url' => url('/api/v1/document-scan/status/'.$scan->id),
+        ], 'Document scan queued', 202);
+    }
+
+    public function result(Request $request, DocumentScan $scan): JsonResponse
+    {
+        abort_unless($scan->user_id === $request->user()->id, 404);
+
+        $payload = ['scan_id' => $scan->id, 'status' => $scan->status];
+        if ($scan->status === 'completed') {
+            $result = $scan->result ?? [];
+            $payload += [
+                'readable' => (bool) ($result['success'] ?? false),
+                'fields' => $result['fields'] ?? [],
+                'document_type' => $result['document_type'] ?? 'unknown',
+                'meta' => $result['meta'] ?? [],
+                'notice' => 'These are proposed values read from the document. Check each one before saving.',
+            ];
+        } elseif ($scan->status === 'failed') {
+            $payload += ['readable' => false, 'fields' => [], 'message' => $scan->error_message];
+        }
+
+        return ApiResponse::success($payload);
     }
 }

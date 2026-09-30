@@ -37,6 +37,26 @@ class ApplicantResource extends JsonResource
             'provincial_address' => $this->provincial_address,
 
             'preferred_position' => $this->preferred_position,
+            'preferred_position_id' => $this->preferred_position_id,
+
+            // The applicant's own answer to an offer of work, which is theirs to
+            // give and nobody else's to enter. Shown to HR because deploying
+            // somebody who has declined is refused, and the reason should be on
+            // the screen rather than only in the error.
+            // Why an application stopped, where one did. Countable, so the
+            // agency can see how many people it loses to each cause.
+            'disposition_reason' => $this->disposition_reason,
+            'disposition_label' => match ($this->disposition_reason) {
+                'incomplete_requirements' => 'Incomplete requirements',
+                'not_suitable' => 'Not suitable for the job',
+                'other' => 'Other',
+                default => null,
+            },
+            'disposition_note' => $this->disposition_note,
+
+            'placement_response' => $this->placement_response,
+            'placement_responded_at' => $this->placement_responded_at?->toIso8601String(),
+            'placement_response_note' => $this->placement_response_note,
             'availability_date' => $this->availability_date?->toDateString(),
             'distance_km' => $this->distance_km,
             'communication_rating' => $this->communication_rating,

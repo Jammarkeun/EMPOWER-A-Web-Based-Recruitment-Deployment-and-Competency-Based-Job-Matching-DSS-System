@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 
 import cv2
 import numpy as np
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 import extraction
@@ -33,10 +33,10 @@ logger = logging.getLogger("empower.ocr")
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 5  # résumés run to two or three; beyond that it is not a résumé
+MAX_IMAGE_PIXELS = 49_000_000
 
 ACCEPTED_TYPES = {
-    "image/jpeg", "image/jpg", "image/png", "image/webp", "image/bmp",
-    "image/tiff", "application/pdf",
+    "image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf",
 }
 
 # Set OCR_SERVICE_TOKEN in both this service and Laravel to require a shared
@@ -175,13 +175,32 @@ def health() -> dict:
 
 
 @app.post("/ocr/parse", dependencies=[Depends(verify_token)])
-async def parse(file: UploadFile = File(...), document_type: str = "auto") -> JSONResponse:
+async def parse(
+    request: Request,
+    file: UploadFile = File(...),
+    document_type: str = "auto",
+) -> JSONResponse:
     """
     Read a document and return its text plus proposed applicant fields.
     """
     started = time.perf_counter()
 
-    contents = await file.read()
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_UPLOAD_BYTES + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="The upload is larger than the allowed limit.")
+
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"The file exceeds the {MAX_UPLOAD_BYTES / 1048576:.0f} MB limit.",
+            )
+        chunks.append(chunk)
+
+    contents = b"".join(chunks)
     _validate_upload(file, contents)
 
     try:
@@ -295,6 +314,9 @@ def _load_pages(contents: bytes, content_type: str) -> list[np.ndarray]:
     if image is None:
         raise ValueError("not a decodable image")
 
+    if image.shape[0] * image.shape[1] > MAX_IMAGE_PIXELS:
+        raise ValueError("image dimensions are too large")
+
     return [image]
 
 
@@ -310,13 +332,21 @@ def _render_pdf(contents: bytes) -> list[np.ndarray]:
     import pypdfium2 as pdfium
 
     document = pdfium.PdfDocument(io.BytesIO(contents))
-    page_count = min(len(document), MAX_PDF_PAGES)
+    if len(document) > MAX_PDF_PAGES:
+        raise ValueError(f"PDF has {len(document)} pages; the limit is {MAX_PDF_PAGES}")
+
+    page_count = len(document)
 
     pages: list[np.ndarray] = []
     for index in range(page_count):
         page = document[index]
+        page_width, page_height = page.get_size()
+        if page_width * 200 / 72 * page_height * 200 / 72 > MAX_IMAGE_PIXELS:
+            raise ValueError("PDF page dimensions are too large")
         bitmap = page.render(scale=200 / 72)
         image = np.array(bitmap.to_pil().convert("RGB"))
+        if image.shape[0] * image.shape[1] > MAX_IMAGE_PIXELS:
+            raise ValueError("PDF page dimensions are too large")
         pages.append(cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
     return pages

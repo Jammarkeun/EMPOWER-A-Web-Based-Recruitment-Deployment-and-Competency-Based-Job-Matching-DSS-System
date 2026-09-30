@@ -78,7 +78,7 @@ class OcrService
 
         try {
             $request = Http::timeout($timeout)
-                ->attach('file', file_get_contents($file->getRealPath()), $file->getClientOriginalName());
+                ->attach('file', fopen($file->getRealPath(), 'rb'), $file->getClientOriginalName());
 
             if ($token = config('ocr.token')) {
                 $request = $request->withHeaders(['X-OCR-Token' => $token]);

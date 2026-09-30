@@ -22,7 +22,8 @@
 
 param(
     [switch]$NoOcr,
-    [switch]$Stop
+    [switch]$Stop,
+    [switch]$Supabase
 )
 
 $ErrorActionPreference = 'Stop'
@@ -105,14 +106,42 @@ Write-Ok "Frontend dependencies present"
 # most common cause of the application appearing broken, and it is worth finding
 # out here rather than at the login screen.
 Write-Host ""
+# -Supabase overrides DB_CONNECTION for this run only, without editing .env.
+# An operating-system environment variable takes precedence over the .env file,
+# so the switch is temporary by construction - close the window and the project
+# is back on the local demo database.
+if ($Supabase) {
+    $env:DB_CONNECTION = 'pgsql'
+    Write-Warn "Running against Supabase for this session (.env is unchanged)"
+    Write-Host ""
+}
+
 Write-Host "Checking the database" -ForegroundColor White
 Write-Host ""
 
+# The project runs on either local MySQL or Supabase, chosen by DB_CONNECTION,
+# so the check has to report whichever is actually configured.
+#
+# 'artisan db:show' is deliberately NOT used here. On MariaDB it reads
+# performance_schema.session_status, a table MariaDB does not have, so it fails
+# even when the database is perfectly reachable - which previously produced a
+# confident "Could not reach Supabase" while the system ran happily on MySQL.
+# A plain SELECT 1 works everywhere.
 Push-Location (Join-Path $root 'backend\laravel')
 try {
-    $probe = & php artisan db:show --json 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Ok "Supabase reachable"
+    $driver = & php -r "require 'vendor/autoload.php'; `$app = require 'bootstrap/app.php'; `$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); echo config('database.default');" 2>$null
+
+    $probe = & php artisan tinker --execute="DB::select('select 1'); echo 'ok';" 2>$null
+
+    if ($LASTEXITCODE -eq 0 -and $probe -match 'ok') {
+        if ($driver -eq 'mysql') {
+            Write-Ok "Local MySQL reachable (demo database)"
+        } else {
+            Write-Ok "Supabase reachable"
+        }
+    } elseif ($driver -eq 'mysql') {
+        Write-Warn "Could not reach the local MySQL database."
+        Write-Warn "Start MySQL in the XAMPP Control Panel, then run this again."
     } else {
         Write-Warn "Could not reach Supabase."
         Write-Warn "A free-tier project pauses after about a week idle. Open the"
@@ -154,6 +183,17 @@ if (Test-Port 5173) {
            "npm run dev"
     Start-Process powershell -ArgumentList '-NoExit', '-Command', $cmd
     Write-Ok "Frontend         http://localhost:5173"
+}
+
+$queueRunning = Get-CimInstance Win32_Process -Filter "Name = 'php.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match 'queue:work' }
+
+if (-not $queueRunning) {
+    $cmd = "Set-Location '$root\backend\laravel'; " +
+           "Write-Host 'EMPOWER queue worker running' -ForegroundColor Cyan; " +
+           "php artisan queue:work --tries=2 --timeout=180"
+    Start-Process powershell -ArgumentList '-NoExit', '-Command', $cmd
+    Write-Ok "Queue worker      document scans and background jobs"
 }
 
 if (-not $NoOcr) {

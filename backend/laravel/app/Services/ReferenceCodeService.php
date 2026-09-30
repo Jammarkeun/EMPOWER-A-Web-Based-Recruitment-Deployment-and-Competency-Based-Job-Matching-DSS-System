@@ -43,6 +43,11 @@ class ReferenceCodeService
         return $this->next('client_companies', 'company_code', config('empower.code_prefixes.client'));
     }
 
+    public function position(): string
+    {
+        return $this->next('job_positions', 'position_code', config('empower.code_prefixes.position'));
+    }
+
     private function next(string $table, string $column, string $prefix): string
     {
         $year = now()->year;

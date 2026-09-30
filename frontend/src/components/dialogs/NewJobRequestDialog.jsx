@@ -19,6 +19,7 @@ import { Field, FormGrid } from '@/components/ui/form'
 export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
   const [companies, setCompanies] = React.useState([])
   const [departments, setDepartments] = React.useState([])
+  const [positions, setPositions] = React.useState([])
   const [form, setForm] = React.useState(emptyForm())
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
@@ -42,6 +43,7 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
   React.useEffect(() => {
     if (!form.client_company_id) {
       setDepartments([])
+      setPositions([])
       return
     }
 
@@ -54,6 +56,12 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
         // either way.
         toast.error('Could not load departments', error.message)
       })
+
+    // This client's own roles. A position list is never a blocker — a role that
+    // is not there yet can simply be named — so a failure here stays quiet.
+    get('/positions', { client_company_id: form.client_company_id, status: 'active' })
+      .then((response) => setPositions(response.data.positions ?? []))
+      .catch(() => setPositions([]))
   }, [form.client_company_id])
 
   function set(field, value) {
@@ -67,6 +75,16 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
 
     try {
       const payload = Object.fromEntries(Object.entries(form).filter(([, v]) => v !== ''))
+
+      // "new" is a marker for this form, not an identifier. Sent as-is it would
+      // fail the server's exists rule with a message about a position the user
+      // never chose.
+      if (payload.job_position_id === 'new') delete payload.job_position_id
+
+      // Naming a role and picking one are alternatives, so only the answer the
+      // user actually gave is sent.
+      if (payload.job_position_id) delete payload.position_title
+
       const response = await post('/job-requests', payload)
 
       toast.success('Request recorded', `${response.data.request_code} created. Set its criteria next.`)
@@ -135,9 +153,60 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
               </Select>
             </Field>
 
-            <Field label="Position title" htmlFor="position_title" required error={errors.position_title?.[0]}>
-              <Input value={form.position_title} onChange={(e) => set('position_title', e.target.value)} />
+            {/*
+              Pick the client's existing role, or name a new one.
+              Choosing from the list keeps the request pointing at the same
+              position an applicant applied for; naming a new one creates it, so
+              a role the client has not asked for before is on the application
+              form from the moment it is first requested.
+            */}
+            <Field
+              label="Position"
+              htmlFor="job_position_id"
+              required
+              error={errors.job_position_id?.[0] ?? errors.position_title?.[0]}
+              hint={
+                !form.client_company_id
+                  ? 'Select a client company first'
+                  : positions.length === 0
+                    ? 'This client has no positions yet — name the role below'
+                    : undefined
+              }
+            >
+              <Select
+                id="job_position_id"
+                value={form.job_position_id}
+                onChange={(e) => set('job_position_id', e.target.value)}
+                disabled={!form.client_company_id}
+              >
+                <option value="">
+                  {positions.length === 0 ? 'Name a new role…' : 'Select a position'}
+                </option>
+                {positions.map((position) => (
+                  <option key={position.id} value={position.id}>
+                    {position.position_title}
+                  </option>
+                ))}
+                <option value="new">Other — a role not listed here</option>
+              </Select>
             </Field>
+
+            {(form.job_position_id === '' || form.job_position_id === 'new') && (
+              <Field
+                label="New position title"
+                htmlFor="position_title"
+                required
+                error={errors.position_title?.[0]}
+                hint="Added to this client's positions and offered to applicants."
+              >
+                <Input
+                  id="position_title"
+                  value={form.position_title}
+                  onChange={(e) => set('position_title', e.target.value)}
+                  placeholder="e.g. Forklift Operator"
+                />
+              </Field>
+            )}
 
             <Field label="Workers needed" htmlFor="workers_needed" required error={errors.workers_needed?.[0]}>
               <Input
@@ -222,6 +291,7 @@ function emptyForm() {
   return {
     client_company_id: '',
     client_department_id: '',
+    job_position_id: '',
     position_title: '',
     workers_needed: '1',
     date_requested: new Date().toISOString().slice(0, 10),

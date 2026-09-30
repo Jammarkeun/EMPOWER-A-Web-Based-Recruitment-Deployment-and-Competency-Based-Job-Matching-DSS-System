@@ -13,10 +13,11 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
-import { get } from '@/lib/api'
+import { getCached } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import AuthLayout from '@/components/AuthLayout'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { Field } from '@/components/ui/form'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -66,6 +67,15 @@ export default function Register() {
   const [checklist, setChecklist] = React.useState(null)
   const [done, setDone] = React.useState(null)
 
+  /*
+   * The positions on offer, read from the system rather than written here.
+   *
+   * `null` means still loading and `[]` means genuinely nothing on offer, and
+   * the form has to tell those apart: an empty dropdown with no explanation
+   * looks like a fault, and the two states need different words.
+   */
+  const [positions, setPositions] = React.useState(null)
+
   const [form, setForm] = React.useState({
     first_name: '',
     middle_name: '',
@@ -74,7 +84,7 @@ export default function Register() {
     birth_date: '',
     contact_number: '',
     present_address: '',
-    preferred_position: '',
+    preferred_position_id: '',
     email: '',
     password: '',
     password_confirmation: '',
@@ -86,11 +96,19 @@ export default function Register() {
   const [submitting, setSubmitting] = React.useState(false)
 
   React.useEffect(() => {
-    get('/register/requirements')
+    getCached('/register/requirements')
       .then((response) => setChecklist(response.data))
       // The checklist is helpful, not essential. If it cannot be loaded the
       // person can still register, so this failure stays quiet.
       .catch(() => setChecklist({ primary: [], final: [], office: null }))
+
+    getCached('/register/positions')
+      .then((response) => setPositions(response.data.positions ?? []))
+      // Falling back to an empty list is honest here rather than convenient: if
+      // we cannot say what work is available, we should not invent any. The
+      // field explains itself in that state, and the server accepts a blank
+      // choice when nothing is on offer, so the applicant is never stuck.
+      .catch(() => setPositions([]))
   }, [])
 
   if (loading) {
@@ -125,7 +143,10 @@ export default function Register() {
         // the record does not end up with meaningless values.
         middle_name: form.middle_name || null,
         sex: form.sex || null,
-        preferred_position: form.preferred_position || null,
+        // A select yields a string; the API wants the reference as a number.
+        preferred_position_id: form.preferred_position_id
+          ? Number(form.preferred_position_id)
+          : null,
       })
       setDone(result)
       setStep('done')
@@ -261,17 +282,12 @@ export default function Register() {
                           required
                         />
                       </Field>
-                      <Field
-                        label="Position you are applying for"
-                        htmlFor="preferred_position"
-                        error={errors.preferred_position?.[0]}
-                      >
-                        <Input
-                          value={form.preferred_position}
-                          onChange={(e) => set('preferred_position', e.target.value)}
-                          placeholder="e.g. Production Helper"
-                        />
-                      </Field>
+                      <PositionField
+                        positions={positions}
+                        value={form.preferred_position_id}
+                        error={errors.preferred_position_id?.[0]}
+                        onChange={(value) => set('preferred_position_id', value)}
+                      />
                     </div>
 
                     <Field
@@ -398,6 +414,88 @@ export default function Register() {
           {step === 'done' && <SuccessStep result={done} office={checklist?.office} onGo={() => navigate('/portal')} />}
       </>
     </AuthLayout>
+  )
+}
+
+/**
+ * The position being applied for, chosen from what the agency actually places.
+ *
+ * This used to be a free-text box, which produced applications for jobs CDE does
+ * not place and three spellings of the same role, none of which could be matched
+ * against a client's request. The list comes from the API, so a role added for a
+ * new client company appears here without anyone touching this file.
+ *
+ * The three states are told apart deliberately. Loading says so; an empty list
+ * says why it is empty and that applying is still worthwhile; and a populated
+ * list groups by the company hiring, because "Production Helper at Best Tiwi"
+ * is a more useful thing to choose than "Production Helper".
+ */
+function PositionField({ positions, value, error, onChange }) {
+  if (positions === null) {
+    return (
+      <Field label="Position you are applying for" htmlFor="preferred_position_id">
+        <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-muted/40 px-3 text-sm text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading available positions…
+        </div>
+      </Field>
+    )
+  }
+
+  if (positions.length === 0) {
+    return (
+      <Field
+        label="Position you are applying for"
+        htmlFor="preferred_position_id"
+        hint="You can still register. Our staff will match you to work as it comes in."
+      >
+        <div className="flex h-9 items-center rounded-md border border-dashed border-input px-3 text-sm text-muted-foreground">
+          No available positions at this time
+        </div>
+      </Field>
+    )
+  }
+
+  // Grouped by the company hiring so the choice carries its context. Positions
+  // the agency holds on its own account have no company and are listed first,
+  // under wording that explains what they are.
+  const groups = new Map()
+  for (const position of positions) {
+    const key = position.company ?? ''
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(position)
+  }
+
+  const ordered = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
+
+  return (
+    <Field
+      label="Position you are applying for"
+      htmlFor="preferred_position_id"
+      required
+      error={error}
+      hint="Choose the closest match. Our staff can change this when you visit."
+    >
+      <Select
+        id="preferred_position_id"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={!!error}
+        required
+      >
+        <option value="">Select a position</option>
+        {ordered.map(([company, items]) => (
+          <optgroup key={company || 'agency'} label={company || 'General — matched to work as it arrives'}>
+            {items.map((position) => (
+              <option key={position.id} value={position.id}>
+                {position.position_title}
+                {position.is_hiring_now ? ' — hiring now' : ''}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </Select>
+    </Field>
   )
 }
 

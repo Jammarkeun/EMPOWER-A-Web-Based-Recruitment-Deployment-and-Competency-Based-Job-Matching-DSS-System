@@ -25,6 +25,7 @@ import { formatDate, humanise } from '@/lib/utils'
 import { FillBar } from './JobRequests'
 import CriteriaDialog from '@/components/dialogs/CriteriaDialog'
 import DeployDialog from '@/components/dialogs/DeployDialog'
+import MatchBreakdownDialog from '@/components/dialogs/MatchBreakdownDialog'
 
 export default function JobRequestDetail() {
   const { id } = useParams()
@@ -37,6 +38,7 @@ export default function JobRequestDetail() {
   const [evaluating, setEvaluating] = React.useState(false)
   const [criteriaOpen, setCriteriaOpen] = React.useState(false)
   const [deployTarget, setDeployTarget] = React.useState(null)
+  const [breakdownTarget, setBreakdownTarget] = React.useState(null)
 
   async function handleEvaluate() {
     setEvaluating(true)
@@ -129,7 +131,7 @@ export default function JobRequestDetail() {
           <CardContent className="flex items-start gap-3 py-4">
             <Info className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
             <div>
-              <p className="text-sm font-medium">Competency criteria have not been set</p>
+              <p className="text-sm font-medium">No criteria set for this position yet</p>
               <p className="text-sm text-muted-foreground">
                 Set the criteria and their weights before running an evaluation, so the ranking
                 reflects what this client actually needs.
@@ -153,6 +155,7 @@ export default function JobRequestDetail() {
             canShortlist={can('matching.shortlist')}
             jobRequestId={id}
             onDeploy={setDeployTarget}
+            onBreakdown={setBreakdownTarget}
             onChanged={() => {
               rankings.refetch()
               request.refetch()
@@ -186,6 +189,13 @@ export default function JobRequestDetail() {
           request.refetch()
         }}
       />
+
+      <MatchBreakdownDialog
+        open={Boolean(breakdownTarget)}
+        onOpenChange={(open) => !open && setBreakdownTarget(null)}
+        candidate={breakdownTarget}
+        jobPosition={job.position_title}
+      />
     </>
   )
 }
@@ -198,7 +208,7 @@ export default function JobRequestDetail() {
  * and a ranking they cannot explain is not defensible to the client or to the
  * applicant who was passed over.
  */
-function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDeploy, onChanged }) {
+function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDeploy, onBreakdown, onChanged }) {
   const [expanded, setExpanded] = React.useState(null)
   const [shortlisting, setShortlisting] = React.useState(false)
   const [selected, setSelected] = React.useState([])
@@ -308,12 +318,28 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
               </div>
 
               <div className="flex shrink-0 items-center gap-3">
-                <div className="text-right">
-                  <p className="text-xl font-semibold tabular-nums">{match.percentage_score}%</p>
-                  <p className="text-xs text-muted-foreground">
-                    {match.raw_score} of {match.max_score}
-                  </p>
-                </div>
+                {onBreakdown ? (
+                  <button
+                    type="button"
+                    onClick={() => onBreakdown(match)}
+                    className="group text-right transition-transform hover:scale-105"
+                    title="Click to view full competency match breakdown"
+                  >
+                    <p className="text-xl font-semibold tabular-nums text-primary group-hover:underline">
+                      {match.percentage_score}%
+                    </p>
+                    <p className="text-xs text-muted-foreground group-hover:text-primary">
+                      View Trace Details ↗
+                    </p>
+                  </button>
+                ) : (
+                  <div className="text-right">
+                    <p className="text-xl font-semibold tabular-nums">{match.percentage_score}%</p>
+                    <p className="text-xs text-muted-foreground">
+                      {match.raw_score} of {match.max_score}
+                    </p>
+                  </div>
+                )}
 
                 {canDeploy && match.hard_filter_pass && (
                   <Button size="sm" variant="outline" onClick={() => onDeploy(match)}>

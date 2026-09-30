@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
 import { Loader2, ShieldAlert } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { NotificationsProvider } from '@/contexts/NotificationsContext'
 import AppLayout from '@/components/AppLayout'
 import { Button } from '@/components/ui/button'
 
@@ -15,6 +16,7 @@ import JobRequests from '@/pages/JobRequests'
 import JobRequestDetail from '@/pages/JobRequestDetail'
 import Clients from '@/pages/Clients'
 import ClientDetail from '@/pages/ClientDetail'
+import DepartmentDetail from '@/pages/DepartmentDetail'
 import Employees from '@/pages/Employees'
 import EmployeeDetail from '@/pages/EmployeeDetail'
 import Deployments from '@/pages/Deployments'
@@ -23,6 +25,7 @@ import Separations from '@/pages/Separations'
 import Archives from '@/pages/Archives'
 import AuditLogs from '@/pages/AuditLogs'
 import Reports from '@/pages/Reports'
+import Documents from '@/pages/Documents'
 import Users from '@/pages/Users'
 import Settings from '@/pages/Settings'
 
@@ -30,9 +33,22 @@ import PortalLayout from '@/pages/portal/PortalLayout'
 import PortalOverview from '@/pages/portal/PortalOverview'
 import PortalDocuments from '@/pages/portal/PortalDocuments'
 import PortalEmployment from '@/pages/portal/PortalEmployment'
+import PortalProfile from '@/pages/portal/PortalProfile'
+import PortalSettings from '@/pages/portal/PortalSettings'
 
 export default function App() {
+  const { isAuthenticated } = useAuth()
+
   return (
+    /*
+     * One source for every unread count on screen.
+     *
+     * Mounted here rather than inside each layout so the figure survives moving
+     * between the staff system and the portal, and so it polls exactly once
+     * regardless of how many badges are displayed. Disabled while signed out,
+     * because an unauthenticated poll would be a 401 a minute.
+     */
+    <NotificationsProvider enabled={isAuthenticated}>
     <Routes>
       {/* Public front door. Signed-in visitors are redirected onward by the
           Landing component itself, so a bookmark of "/" behaves sensibly for
@@ -62,6 +78,8 @@ export default function App() {
         <Route index element={<PortalOverview />} />
         <Route path="documents" element={<PortalDocuments />} />
         <Route path="employment" element={<PortalEmployment />} />
+        <Route path="profile" element={<PortalProfile />} />
+        <Route path="settings" element={<PortalSettings />} />
       </Route>
 
       {/* Staff system. */}
@@ -92,7 +110,21 @@ export default function App() {
         <Route path="/clients" element={<Guard permission="clients.view"><Clients /></Guard>} />
         <Route path="/clients/:id" element={<Guard permission="clients.view"><ClientDetail /></Guard>} />
 
+        {/* One client's department, and the people placed in it. Gated on
+            employees.view rather than clients.view: seeing a company is not the
+            same as seeing the names and employment status of its workers, and
+            the API draws the line in the same place. */}
+        <Route
+          path="/clients/:id/departments/:departmentId"
+          element={<Guard permission="employees.view"><DepartmentDetail /></Guard>}
+        />
+
         <Route path="/reports" element={<Guard permission="reports.view"><Reports /></Guard>} />
+
+        {/* The document library. Gated on applicants.view because that is whose
+            documents these are; anyone who may not see an applicant has no
+            business browsing their papers by type either. */}
+        <Route path="/documents" element={<Guard permission="applicants.view"><Documents /></Guard>} />
 
         <Route path="/archives" element={<Guard permission="archives.view"><Archives /></Guard>} />
         <Route path="/audit-logs" element={<Guard permission="audit.view"><AuditLogs /></Guard>} />
@@ -106,6 +138,7 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
+    </NotificationsProvider>
   )
 }
 

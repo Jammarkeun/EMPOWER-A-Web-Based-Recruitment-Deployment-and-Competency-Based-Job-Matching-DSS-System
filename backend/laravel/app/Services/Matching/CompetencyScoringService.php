@@ -38,6 +38,29 @@ class CompetencyScoringService
         'postgraduate' => 7,
     ];
 
+    /**
+     * The values a criterion's "expected" field will actually accept.
+     *
+     * Published so the criteria form can offer them rather than asking an
+     * officer to guess the spelling. A value the scorer does not recognise is
+     * not a validation error - it simply never matches - so the form quietly
+     * producing "College Graduate" where the engine looks for
+     * "college_graduate" would leave a criterion that scores nobody and says
+     * nothing about why.
+     *
+     * `null` means the criterion takes free text: skills and certifications are
+     * whatever this client happens to require, and no fixed list could hold
+     * them.
+     */
+    public static function acceptedValues(string $criteriaCode): ?array
+    {
+        return match ($criteriaCode) {
+            'education' => array_keys(self::EDUCATION_RANK),
+            'gender' => ['any', 'male', 'female'],
+            default => null,
+        };
+    }
+
     public function __construct(private readonly AuditService $audit)
     {
     }

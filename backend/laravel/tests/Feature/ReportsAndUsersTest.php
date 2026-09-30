@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Models\Employee;
 use App\Services\Reporting\ReportBuilder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -225,5 +226,41 @@ class ReportsAndUsersTest extends TestCase
             'applicant_id' => $applicant->id,
             'email' => 'second@example.test',
         ])->assertStatus(409);
+    }
+
+    public function test_portal_access_rejects_both_person_identifiers(): void
+    {
+        $admin = $this->adminUser();
+        $applicant = $this->applicant($admin);
+        $otherApplicant = $this->applicant($admin, ['first_name' => 'Other']);
+        $employee = Employee::create([
+            'applicant_id' => $otherApplicant->id,
+            'employee_number' => 'EMP-TEST-'.uniqid(),
+            'hire_date' => now()->toDateString(),
+            'created_by' => $admin->id,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $this->postJson('/api/v1/users/portal-access', [
+            'applicant_id' => $applicant->id,
+            'employee_id' => $employee->id,
+            'email' => 'ambiguous.portal@example.test',
+        ])->assertStatus(422)->assertJsonValidationErrors(['applicant_id', 'employee_id']);
+    }
+
+    public function test_staff_passwords_follow_the_central_policy(): void
+    {
+        Sanctum::actingAs($this->adminUser());
+
+        $this->postJson('/api/v1/users', [
+            'first_name' => 'Short',
+            'last_name' => 'Password',
+            'email' => 'short.password@cdemanpower.local',
+            'user_type' => 'hr',
+            'role' => 'hr',
+            'password' => 'short-pass',
+            'password_confirmation' => 'short-pass',
+        ])->assertStatus(422)->assertJsonValidationErrors('password');
     }
 }

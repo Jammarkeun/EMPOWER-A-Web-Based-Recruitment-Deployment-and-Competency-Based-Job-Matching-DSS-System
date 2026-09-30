@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
+import { EmptyState, ErrorState, SkeletonRows, VirtualizedList } from '@/components/ui/states'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
 import { Pagination } from './Applicants'
 
@@ -85,55 +85,57 @@ export default function Archives() {
           />
         ) : (
           <>
-            <ul className="divide-y">
-              {data.map((archive) => {
-                const person = archive.snapshot_json?.person
-                const employee = archive.snapshot_json?.employee
-                const name = person
-                  ? [person.first_name, person.middle_name, person.last_name].filter(Boolean).join(' ')
-                  : `Record #${archive.entity_id}`
-
-                return (
-                  <li key={archive.id} className="p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-medium">{name}</p>
-                          <Badge tone="muted">{humanise(archive.entity_type)}</Badge>
-                        </div>
-                        <p className="mt-0.5 text-sm text-muted-foreground">{archive.archive_reason}</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          Archived {formatDateTime(archive.archived_at)}
-                          {employee?.employee_number && ` · ${employee.employee_number}`}
-                        </p>
-                      </div>
-
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setExpanded(expanded === archive.id ? null : archive.id)}
-                        aria-expanded={expanded === archive.id}
-                      >
-                        {expanded === archive.id ? (
-                          <ChevronDown className="h-4 w-4" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4" />
-                        )}
-                        Full record
-                      </Button>
-                    </div>
-
-                    {expanded === archive.id && <ArchiveSnapshot snapshot={archive.snapshot_json} />}
-                  </li>
-                )
-              })}
-            </ul>
+            <VirtualizedList
+              items={data}
+              itemHeight={112}
+              virtualize={!expanded}
+              className="divide-y"
+              renderItem={(archive) => <ArchiveRow archive={archive} expanded={expanded} setExpanded={setExpanded} />}
+            />
 
             <Pagination meta={meta} onPage={setPage} />
           </>
         )}
       </Card>
     </>
+  )
+}
+
+function ArchiveRow({ archive, expanded, setExpanded }) {
+  const person = archive.snapshot_json?.person
+  const employee = archive.snapshot_json?.employee
+  const name = person
+    ? [person.first_name, person.middle_name, person.last_name].filter(Boolean).join(' ')
+    : `Record #${archive.entity_id}`
+
+  return (
+    <div className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-medium">{name}</p>
+            <Badge tone="muted">{humanise(archive.entity_type)}</Badge>
+          </div>
+          <p className="mt-0.5 text-sm text-muted-foreground">{archive.archive_reason}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Archived {formatDateTime(archive.archived_at)}
+            {employee?.employee_number && ` · ${employee.employee_number}`}
+          </p>
+        </div>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setExpanded(expanded === archive.id ? null : archive.id)}
+          aria-expanded={expanded === archive.id}
+        >
+          {expanded === archive.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          Full record
+        </Button>
+      </div>
+
+      {expanded === archive.id && <ArchiveSnapshot snapshot={archive.snapshot_json} />}
+    </div>
   )
 }
 

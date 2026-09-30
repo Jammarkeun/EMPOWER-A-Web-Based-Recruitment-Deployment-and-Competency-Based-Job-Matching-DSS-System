@@ -1,8 +1,8 @@
 import * as React from 'react'
 import { useParams } from 'react-router-dom'
 import {
-  Upload,
-  Download,
+  Eye,
+  Info,
   CheckCircle2,
   XCircle,
   Clock,
@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
-import { get, patch, post, upload } from '@/lib/api'
+import { get, patch, post } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -26,25 +26,20 @@ import { Select } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Field } from '@/components/ui/form'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { formatDate, formatDateTime, humanise } from '@/lib/utils'
+import { formatDate, formatDateTime, humanise, cn } from '@/lib/utils'
 import { PortalAccessDialog } from '@/pages/Users'
+import ApplicantProgress from '@/components/ApplicantProgress'
+import DeployApplicantDialog from '@/components/dialogs/DeployApplicantDialog'
 
 export default function ApplicantDetail() {
   const { id } = useParams()
   const { can } = useAuth()
   const toast = useToast()
 
-  const { data, loading, error, refetch } = useApi(`/applicants/${id}`)
-  const [statusOpen, setStatusOpen] = React.useState(false)
+  const { data, loading, error, refetch, setData } = useApi(`/applicants/${id}`)
   const [portalOpen, setPortalOpen] = React.useState(false)
+  const [deployOpen, setDeployOpen] = React.useState(false)
+  const [moving, setMoving] = React.useState(false)
 
   if (loading) return <LoadingState label="Loading applicant…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
@@ -78,25 +73,11 @@ export default function ApplicantDetail() {
                 Portal access
               </Button>
             )}
-            {/*
-              While an online registrant is unverified there is exactly one thing
-              to do with the record, and it is offered in the panel below. Showing
-              "Move to next stage" here would only lead to a refusal.
-            */}
-            {can('applicants.change_status') &&
-              !applicant.awaiting_identity_check &&
-              allowed_transitions?.length > 0 && (
-                <Button onClick={() => setStatusOpen(true)}>
-                  <ArrowRight className="h-4 w-4" />
-                  Move to next stage
-                </Button>
-              )}
           </>
         }
       />
 
-      <div className="mb-5 flex flex-wrap items-center gap-2">
-        <StatusBadge status={applicant.current_status} />
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <StatusBadge status={applicant.folder_category} label={folder.label} />
         {folder.is_deployment_ready && (
           <Badge tone="success">
@@ -110,6 +91,82 @@ export default function ApplicantDetail() {
         <IdentityCheckPanel applicant={applicant} onChanged={refetch} />
       )}
 
+      {/*
+        The recruitment path, shown rather than hidden behind a dropdown of
+        fifteen statuses. An officer can see where the applicant is and what the
+        single next step is, instead of having to know the whole map.
+      */}
+      {!applicant.awaiting_identity_check && (
+        <div className="mb-5">
+          <ApplicantProgress
+            applicant={applicant}
+            transitions={allowed_transitions}
+            busy={moving}
+            canChange={can('applicants.change_status')}
+            onMove={async (status) => {
+              // Deployment is the one move that needs facts the status cannot
+              // carry - which client, which position, from when - so it opens a
+              // short form instead of moving straight away.
+              if (status === 'deployed') {
+                setDeployOpen(true)
+                return
+              }
+
+              /*
+               * Archiving asks why, as a chosen reason rather than a sentence.
+               *
+               * CDE named two causes an application stops - the requirements
+               * were never completed, or the person was not suitable for the
+               * work - and the agency cannot see how many it loses to each if
+               * the answer is typed differently every time.
+               */
+              let disposition = null
+
+              if (status === 'archived') {
+                disposition = window.prompt(
+                  'Why is this application not proceeding? Enter 1 for incomplete requirements, 2 for not suitable for the job, or 3 for other:',
+                  '1'
+                )
+
+                // Cancelled: leave the applicant where they are rather than
+                // archiving them with no reason on the record.
+                if (disposition === null) return
+
+                disposition = { 1: 'incomplete_requirements', 2: 'not_suitable', 3: 'other' }[
+                  disposition.trim()
+                ]
+
+                if (!disposition) {
+                  toast.error('Not archived', 'Choose 1, 2 or 3 so the reason can be reported on.')
+                  return
+                }
+              }
+
+              setMoving(true)
+              try {
+                const response = await patch(`/applicants/${applicant.id}/status`, {
+                  to_status: status,
+                  ...(disposition ? { disposition_reason: disposition } : {}),
+                })
+                setData((current) => ({
+                  ...current,
+                  applicant: { ...current.applicant, ...response.data.applicant },
+                  allowed_transitions: response.data.allowed_transitions,
+                }))
+                toast.success('Stage updated', `Now ${humanise(status)}.`)
+              } catch (error) {
+                toast.error(
+                  error.isConflict ? 'This move is not allowed' : 'Could not update stage',
+                  error.message
+                )
+              } finally {
+                setMoving(false)
+              }
+            }}
+          />
+        </div>
+      )}
+
       <FolderStatus folder={folder} />
 
       <Tabs defaultValue="requirements" className="mt-5">
@@ -120,7 +177,26 @@ export default function ApplicantDetail() {
         </TabsList>
 
         <TabsContent value="requirements">
-          <RequirementsPanel applicant={applicant} onChanged={refetch} />
+          {/*
+            Verifying a document updates this page in place rather than
+            refetching it. A refetch remounts the whole applicant view and
+            throws the reader back to the top, which meant scrolling down to
+            find your place again after every single document.
+          */}
+          <RequirementsPanel
+            applicant={applicant}
+            onChanged={(result) =>
+              setData((current) => ({
+                ...current,
+                folder: result?.folder ?? current.folder,
+                applicant: {
+                  ...current.applicant,
+                  current_status: result?.applicant_status ?? current.applicant.current_status,
+                  requirements: result?.requirements ?? current.applicant.requirements,
+                },
+              }))
+            }
+          />
         </TabsContent>
 
         <TabsContent value="profile">
@@ -139,12 +215,11 @@ export default function ApplicantDetail() {
         personName={applicant.full_name}
       />
 
-      <StatusDialog
-        open={statusOpen}
-        onOpenChange={setStatusOpen}
+      <DeployApplicantDialog
         applicant={applicant}
-        transitions={allowed_transitions}
-        onChanged={refetch}
+        open={deployOpen}
+        onOpenChange={setDeployOpen}
+        onDeployed={refetch}
       />
     </>
   )
@@ -302,43 +377,97 @@ function FolderStatus({ folder }) {
   )
 }
 
+/**
+ * How a verification status is presented.
+ *
+ * Deliberately separate from whether a file exists. The two were previously one
+ * value, which is what made "not uploaded" read as "not verified" — and left
+ * walk-in applicants looking permanently incomplete when their papers had in
+ * fact been checked across the counter.
+ */
+/*
+ * Keyed on review_state rather than status, which splits the old catch-all
+ * "Pending" into the two things it was hiding: a document that has arrived and
+ * one somebody has actually opened. Officers see the same words the applicant
+ * does, so a query at the counter — "it still says being checked" — refers to
+ * something both people can see on their own screen.
+ */
+const VERIFICATION = {
+  verified: { label: 'Verified', tone: 'success', icon: CheckCircle2 },
+  rejected: { label: 'Rejected', tone: 'destructive', icon: XCircle },
+  needs_correction: { label: 'Needs correction', tone: 'warning', icon: AlertTriangle },
+  expired: { label: 'Expired', tone: 'destructive', icon: AlertTriangle },
+  under_review: { label: 'Being checked', tone: 'info', icon: Eye },
+  uploaded: { label: 'Upload received', tone: 'info', icon: Clock },
+  not_uploaded: { label: 'Awaiting', tone: 'muted', icon: Clock },
+}
+
+function verificationOf(requirement) {
+  return VERIFICATION[requirement.review_state] ?? VERIFICATION.not_uploaded
+}
+
 function RequirementsPanel({ applicant, onChanged }) {
   const { can } = useAuth()
   const toast = useToast()
+
+  /*
+   * The rows are held locally rather than read straight from the parent.
+   *
+   * Verifying used to trigger a full refetch of the applicant, which remounted
+   * the page and threw the reader back to the top — so after every single
+   * document you had to scroll down and find your place again. Patching the row
+   * in place keeps the position, and the parent is told separately so the folder
+   * badge above stays truthful.
+   */
+  const [rows, setRows] = React.useState(applicant.requirements ?? [])
+  const [selected, setSelected] = React.useState(() => new Set())
   const [busy, setBusy] = React.useState(null)
+  const [bulkBusy, setBulkBusy] = React.useState(false)
+
+  React.useEffect(() => {
+    setRows(applicant.requirements ?? [])
+  }, [applicant.requirements])
 
   const grouped = React.useMemo(() => {
     const groups = { primary: [], final: [] }
-    for (const requirement of applicant.requirements ?? []) {
+    for (const requirement of rows) {
       groups[requirement.requirement_group]?.push(requirement)
     }
     return groups
-  }, [applicant.requirements])
+  }, [rows])
 
-  async function handleUpload(requirement, file) {
-    if (!file) return
+  const mayVerify = can('requirements.verify')
 
-    setBusy(requirement.requirement_type_id)
-    const formData = new FormData()
-    formData.append('file', file)
+  /** Anything not already verified is worth offering for a bulk check. */
+  const selectable = React.useMemo(
+    () => rows.filter((r) => r.status !== 'verified').map((r) => r.requirement_type_id),
+    [rows]
+  )
 
-    // The server requires an expiry for documents that lapse. Defaulting to six
-    // months keeps the common case one click, and HR can correct it after.
-    if (requirement.requirement_code && ['police_clearance', 'barangay_clearance', 'drug_test', 'urine_test', 'stool_test', 'hepatitis_b', 'health_card', 'medical_result'].includes(requirement.requirement_code)) {
-      const expiry = new Date()
-      expiry.setMonth(expiry.getMonth() + 6)
-      formData.append('expiry_date', expiry.toISOString().slice(0, 10))
-    }
+  function toggle(typeId) {
+    setSelected((current) => {
+      const next = new Set(current)
+      next.has(typeId) ? next.delete(typeId) : next.add(typeId)
+      return next
+    })
+  }
 
-    try {
-      await upload(`/applicants/${applicant.id}/requirements/${requirement.requirement_type_id}/upload`, formData)
-      toast.success('Document uploaded', `${requirement.requirement_name} is now awaiting verification.`)
-      onChanged()
-    } catch (error) {
-      toast.error('Upload failed', error.message)
-    } finally {
-      setBusy(null)
-    }
+  function toggleGroup(groupRows) {
+    const ids = groupRows.filter((r) => r.status !== 'verified').map((r) => r.requirement_type_id)
+    const allOn = ids.length > 0 && ids.every((id) => selected.has(id))
+
+    setSelected((current) => {
+      const next = new Set(current)
+      ids.forEach((id) => (allOn ? next.delete(id) : next.add(id)))
+      return next
+    })
+  }
+
+  /** Replaces one row in place, leaving the scroll position untouched. */
+  function patchRow(updated) {
+    setRows((current) =>
+      current.map((r) => (r.requirement_type_id === updated.requirement_type_id ? updated : r))
+    )
   }
 
   async function handleVerify(requirement, status) {
@@ -346,6 +475,7 @@ function RequirementsPanel({ applicant, onChanged }) {
 
     try {
       const body = { status }
+
       if (status === 'rejected') {
         const reason = window.prompt('Why is this document being rejected?')
         if (!reason) {
@@ -360,11 +490,13 @@ function RequirementsPanel({ applicant, onChanged }) {
         body
       )
 
+      patchRow(response.data.requirement)
+      onChanged(response.data)
+
       toast.success(
-        status === 'verified' ? 'Document verified' : 'Document updated',
-        `Folder is now ${response.data.folder.label}.`
+        status === 'verified' ? 'Verified' : 'Document updated',
+        `${requirement.requirement_name} — folder is now ${response.data.folder.label}.`
       )
-      onChanged()
     } catch (error) {
       toast.error('Could not update document', error.message)
     } finally {
@@ -372,16 +504,47 @@ function RequirementsPanel({ applicant, onChanged }) {
     }
   }
 
+  async function verifySelected() {
+    if (selected.size === 0) return
+
+    setBulkBusy(true)
+
+    try {
+      const response = await post(`/applicants/${applicant.id}/requirements/verify-batch`, {
+        requirement_type_ids: [...selected],
+      })
+
+      setRows(response.data.requirements)
+      setSelected(new Set())
+      onChanged(response.data)
+
+      toast.success(response.message, `Folder is now ${response.data.folder.label}.`)
+    } catch (error) {
+      toast.error('Could not verify the selected documents', error.message)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  /**
+   * Opening a document is also what starts its review, so the row is corrected
+   * from the response rather than left claiming the document is untouched. The
+   * applicant is being told at that same moment that somebody is looking at it,
+   * and the two screens should not disagree.
+   */
   async function handleDownload(requirement) {
     try {
       const response = await get(
         `/applicants/${applicant.id}/requirements/${requirement.requirement_type_id}/download`
       )
+
+      if (response.data.requirement) patchRow(response.data.requirement)
+
       const opened = window.open(response.data.url, '_blank', 'noopener')
 
       // A blocked popup is the one failure that otherwise looks like nothing
-      // happened at all: the request succeeded, so no error is thrown, and the
-      // user is left clicking a button that appears dead.
+      // happened: the request succeeded, so nothing throws, and the button
+      // simply appears dead.
       if (!opened) {
         toast.warning(
           'Your browser blocked the document',
@@ -395,89 +558,232 @@ function RequirementsPanel({ applicant, onChanged }) {
 
   return (
     <div className="space-y-4">
-      {['primary', 'final'].map((group) => (
-        <Card key={group}>
-          <CardHeader>
-            <CardTitle>{group === 'primary' ? 'Primary requirements' : 'Final requirements'}</CardTitle>
-            <CardDescription>
-              {group === 'primary'
-                ? 'Collected during screening.'
-                : 'Medical results, collected once the applicant is close to placement.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="divide-y">
-            {grouped[group].map((requirement) => (
-              <div key={requirement.id} className="flex flex-wrap items-center gap-3 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-medium">{requirement.requirement_name}</p>
-                    <StatusBadge status={requirement.status} />
-                    {requirement.is_expired && <Badge tone="destructive">Expired</Badge>}
-                  </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {requirement.file_name ? (
-                      <>
-                        {requirement.file_name}
-                        {requirement.expiry_date && <> · expires {formatDate(requirement.expiry_date)}</>}
-                        {requirement.verified_by && <> · verified by {requirement.verified_by}</>}
-                      </>
-                    ) : (
-                      'No document uploaded'
-                    )}
-                  </p>
-                  {requirement.rejection_reason && (
-                    <p className="mt-0.5 text-xs text-destructive">Rejected: {requirement.rejection_reason}</p>
-                  )}
+      {/*
+        Said once, at the top. Staff no longer upload on an applicant's behalf,
+        and without this the missing Upload button reads as something broken
+        rather than as a deliberate rule.
+      */}
+      <div className="flex gap-2.5 rounded-lg border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <p>
+          Applicants upload their own documents. For a walk-in, check the original across the
+          counter and mark it verified here — no file is needed.
+        </p>
+      </div>
+
+      {/* The bulk bar only appears once something is ticked, so it never sits
+          there as dead furniture. */}
+      {mayVerify && selected.size > 0 && (
+        <div className="sticky top-16 z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/40 bg-card px-4 py-2.5 shadow-sm">
+          <p className="text-sm">
+            <span className="font-semibold">{selected.size}</span> selected
+          </p>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())} disabled={bulkBusy}>
+              Clear
+            </Button>
+            <Button size="sm" onClick={verifySelected} disabled={bulkBusy}>
+              {bulkBusy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-3.5 w-3.5" />
+              )}
+              Verify selected
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {['primary', 'final'].map((group) => {
+        const groupRows = grouped[group]
+        if (groupRows.length === 0) return null
+
+        const groupSelectable = groupRows.filter((r) => r.status !== 'verified')
+        const allSelected =
+          groupSelectable.length > 0 &&
+          groupSelectable.every((r) => selected.has(r.requirement_type_id))
+
+        return (
+          <Card key={group}>
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">
+                    {group === 'primary' ? 'Main requirements' : 'Medical requirements'}
+                  </CardTitle>
+                  <CardDescription>
+                    {group === 'primary'
+                      ? 'Collected during screening.'
+                      : 'Collected once the applicant is close to placement.'}
+                  </CardDescription>
                 </div>
 
-                <div className="flex shrink-0 items-center gap-1.5">
-                  {busy === requirement.requirement_type_id ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                  ) : (
-                    <>
-                      {requirement.has_file && (
-                        <Button variant="ghost" size="sm" onClick={() => handleDownload(requirement)}>
-                          <Download className="h-3.5 w-3.5" />
-                          View
-                        </Button>
-                      )}
-
-                      {can('requirements.upload') && (
-                        <label className="cursor-pointer">
-                          <input
-                            type="file"
-                            className="sr-only"
-                            accept=".pdf,.jpg,.jpeg,.png,.webp"
-                            onChange={(e) => handleUpload(requirement, e.target.files?.[0])}
-                          />
-                          <span className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium hover:bg-accent">
-                            <Upload className="h-3.5 w-3.5" />
-                            {requirement.has_file ? 'Replace' : 'Upload'}
-                          </span>
-                        </label>
-                      )}
-
-                      {can('requirements.verify') && requirement.has_file && requirement.status !== 'verified' && (
-                        <Button variant="ghost" size="sm" onClick={() => handleVerify(requirement, 'verified')}>
-                          <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                          Verify
-                        </Button>
-                      )}
-
-                      {can('requirements.verify') && requirement.has_file && requirement.status !== 'rejected' && (
-                        <Button variant="ghost" size="sm" onClick={() => handleVerify(requirement, 'rejected')}>
-                          <XCircle className="h-3.5 w-3.5 text-destructive" />
-                          Reject
-                        </Button>
-                      )}
-                    </>
-                  )}
-                </div>
+                {mayVerify && groupSelectable.length > 0 && (
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={() => toggleGroup(groupRows)}
+                      className="h-4 w-4 cursor-pointer rounded border-input accent-primary"
+                    />
+                    Select all outstanding
+                  </label>
+                )}
               </div>
-            ))}
-          </CardContent>
-        </Card>
-      ))}
+            </CardHeader>
+
+            <CardContent className="divide-y">
+              {groupRows.map((requirement) => {
+                const verification = verificationOf(requirement)
+                const VerificationIcon = verification.icon
+                const isSelected = selected.has(requirement.requirement_type_id)
+                const canSelect = mayVerify && requirement.status !== 'verified'
+
+                return (
+                  <div
+                    key={requirement.requirement_type_id}
+                    className={cn(
+                      '-mx-2 flex flex-wrap items-center gap-3 rounded-md px-2 py-3 transition-colors',
+                      isSelected && 'bg-primary/[0.04]'
+                    )}
+                  >
+                    {/* Checkbox, not a radio: several documents are checked
+                        together at the counter and verified in one go. */}
+                    {mayVerify && (
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        disabled={!canSelect}
+                        onChange={() => toggle(requirement.requirement_type_id)}
+                        aria-label={`Select ${requirement.requirement_name}`}
+                        className="h-4 w-4 shrink-0 cursor-pointer rounded border-input accent-primary disabled:cursor-not-allowed disabled:opacity-30"
+                      />
+                    )}
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-medium">{requirement.requirement_name}</p>
+                        {!requirement.is_required && (
+                          <Badge tone="outline" className="text-[10px]">
+                            Optional
+                          </Badge>
+                        )}
+                      </div>
+
+                      {/* The two facts, side by side and never conflated. */}
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1',
+                            requirement.has_file ? 'text-foreground/70' : 'text-muted-foreground'
+                          )}
+                        >
+                          {requirement.has_file ? (
+                            <>
+                              <FileText className="h-3 w-3" />
+                              {requirement.file_name}
+                            </>
+                          ) : (
+                            <>
+                              <FileText className="h-3 w-3 opacity-40" />
+                              No file uploaded
+                            </>
+                          )}
+                        </span>
+
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 font-medium',
+                            verification.tone === 'success' && 'text-success',
+                            verification.tone === 'destructive' && 'text-destructive',
+                            verification.tone === 'warning' && 'text-warning',
+                            verification.tone === 'info' && 'text-primary',
+                            verification.tone === 'muted' && 'text-muted-foreground'
+                          )}
+                        >
+                          <VerificationIcon className="h-3 w-3" />
+                          {verification.label}
+                        </span>
+
+                        {requirement.verification_method_label && (
+                          <span className="text-muted-foreground">
+                            {requirement.verification_method_label}
+                          </span>
+                        )}
+                        {requirement.verified_by && (
+                          <span className="text-muted-foreground">by {requirement.verified_by}</span>
+                        )}
+                        {/* Who started the review, when nobody has decided yet.
+                            It answers "is a colleague already on this?" before
+                            two officers check the same folder. */}
+                        {!requirement.verified_by && requirement.first_viewed_by && (
+                          <span className="text-muted-foreground">
+                            opened by {requirement.first_viewed_by}
+                          </span>
+                        )}
+                        {requirement.expiry_date && (
+                          <span className="text-muted-foreground">
+                            expires {formatDate(requirement.expiry_date)}
+                          </span>
+                        )}
+                      </div>
+
+                      {requirement.rejection_reason && (
+                        <p className="mt-1 text-xs text-destructive">
+                          {requirement.rejection_reason}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-1">
+                      {busy === requirement.requirement_type_id ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                      ) : (
+                        <>
+                          {requirement.has_file && (
+                            <Button variant="ghost" size="sm" onClick={() => handleDownload(requirement)}>
+                              <Eye className="h-3.5 w-3.5" />
+                              View
+                            </Button>
+                          )}
+
+                          {/* Available with or without a file: the officer may
+                              be holding the original. */}
+                          {mayVerify && requirement.status !== 'verified' && (
+                            <Button variant="ghost" size="sm" onClick={() => handleVerify(requirement, 'verified')}>
+                              <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                              Verify
+                            </Button>
+                          )}
+
+                          {mayVerify && requirement.status === 'verified' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleVerify(requirement, 'needs_correction')}
+                              title="Mark this document as needing correction"
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5 text-warning" />
+                              Undo
+                            </Button>
+                          )}
+
+                          {mayVerify && requirement.has_file && requirement.status !== 'rejected' && (
+                            <Button variant="ghost" size="sm" onClick={() => handleVerify(requirement, 'rejected')}>
+                              <XCircle className="h-3.5 w-3.5 text-destructive" />
+                              Reject
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </CardContent>
+          </Card>
+        )
+      })}
     </div>
   )
 }
@@ -631,78 +937,5 @@ function TimelinePanel({ applicantId }) {
         </ol>
       </CardContent>
     </Card>
-  )
-}
-
-function StatusDialog({ open, onOpenChange, applicant, transitions, onChanged }) {
-  const [status, setStatus] = React.useState('')
-  const [reason, setReason] = React.useState('')
-  const [submitting, setSubmitting] = React.useState(false)
-  const toast = useToast()
-
-  React.useEffect(() => {
-    if (open) {
-      setStatus(transitions?.[0] ?? '')
-      setReason('')
-    }
-  }, [open, transitions])
-
-  async function handleSubmit(event) {
-    event.preventDefault()
-    setSubmitting(true)
-
-    try {
-      await patch(`/applicants/${applicant.id}/status`, { to_status: status, reason: reason || undefined })
-      toast.success('Status updated', `Now ${humanise(status)}.`)
-      onOpenChange(false)
-      onChanged()
-    } catch (error) {
-      // A 409 means the move is blocked by a business rule, such as documents
-      // still outstanding. The server's message names the reason, so it is
-      // shown verbatim rather than replaced with something generic.
-      toast.error(error.isConflict ? 'This move is not allowed' : 'Could not update status', error.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Move to next stage</DialogTitle>
-          <DialogDescription>
-            Only stages that follow {humanise(applicant.current_status)} are offered. Document
-            requirements are checked before the change is applied.
-          </DialogDescription>
-        </DialogHeader>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Field label="New status" htmlFor="to_status" required>
-            <Select value={status} onChange={(e) => setStatus(e.target.value)}>
-              {transitions?.map((value) => (
-                <option key={value} value={value}>
-                  {humanise(value)}
-                </option>
-              ))}
-            </Select>
-          </Field>
-
-          <Field label="Reason" htmlFor="reason" hint="Recorded in the applicant's history">
-            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Optional note" />
-          </Field>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={submitting || !status}>
-              {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Update status
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   )
 }

@@ -4,9 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Http\Responses\ApiResponse;
 use App\Models\Applicant;
+use App\Models\JobPosition;
 use App\Models\RequirementType;
 use App\Models\User;
 use App\Notifications\ApplicantSelfRegistered;
+use App\Rules\PasswordPolicy;
 use App\Services\AuditService;
 use App\Services\ReferenceCodeService;
 use Illuminate\Http\JsonResponse;
@@ -69,14 +71,57 @@ class RegistrationController extends Controller
             'birth_date' => ['required', 'date', 'before:'.now()->subYears(15)->toDateString()],
             'contact_number' => ['required', 'string', 'max:40'],
             'present_address' => ['required', 'string', 'max:255'],
-            'preferred_position' => ['nullable', 'string', 'max:150'],
+
+            /*
+             * The position is chosen from the list, not typed.
+             *
+             * Free text produced applications for jobs the agency does not
+             * place and three spellings of the same role, none of which could
+             * be matched against a client's request. Storing the reference
+             * rather than the words also means renaming a position later does
+             * not orphan everyone who applied for it.
+             *
+             * Required only while there is something to choose. An agency
+             * between contracts still accepts applicants, and a form that
+             * cannot be submitted because no client is currently hiring would
+             * turn away the people the pool exists to hold.
+             */
+            'preferred_position_id' => [
+                Rule::requiredIf(fn () => JobPosition::openForApplication()->exists()),
+                'nullable',
+                'integer',
+                Rule::exists('job_positions', 'id')->whereNull('deleted_at'),
+            ],
 
             'email' => ['required', 'email', 'max:190', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'password' => ['required', 'string', 'confirmed', new PasswordPolicy()],
         ], [
             'birth_date.before' => 'You must be at least 15 years old to apply.',
             'email.unique' => 'An account already exists for this email address. Try signing in instead.',
+            'preferred_position_id.required' => 'Please choose the position you are applying for.',
+            'preferred_position_id.exists' => 'That position is no longer available. Please choose another.',
         ]);
+
+        /*
+         * Checked separately from `exists` so the message can say what actually
+         * happened. A position withdrawn between the page loading and the form
+         * being submitted is a real race - vacancies close - and "no longer
+         * available, please choose another" is a far better answer than a
+         * validation error implying the applicant did something wrong.
+         */
+        $position = null;
+
+        if (! empty($data['preferred_position_id'])) {
+            $position = JobPosition::openForApplication()
+                ->find($data['preferred_position_id']);
+
+            if (! $position) {
+                return ApiResponse::error(
+                    'That position is no longer being offered. Please go back and choose another.',
+                    422
+                );
+            }
+        }
 
         /*
          * Reject an obvious re-registration.
@@ -100,7 +145,7 @@ class RegistrationController extends Controller
             );
         }
 
-        [$applicant, $user, $token] = DB::transaction(function () use ($data) {
+        [$applicant, $user, $token] = DB::transaction(function () use ($data, $position) {
             $applicant = Applicant::create([
                 'applicant_code' => $this->codes->applicant(),
                 'source_channel' => 'online',
@@ -112,7 +157,12 @@ class RegistrationController extends Controller
                 'contact_number' => $data['contact_number'],
                 'email' => $data['email'],
                 'present_address' => $data['present_address'],
-                'preferred_position' => $data['preferred_position'] ?? null,
+                'preferred_position_id' => $position?->id,
+                // The title as well as the reference. The reference is what the
+                // system matches on; this is the wording the applicant was
+                // shown, and a record of what they were told they applied for
+                // should not silently change if the position is renamed.
+                'preferred_position' => $position?->position_title,
                 'application_date' => now()->toDateString(),
                 // Nobody created this on the applicant's behalf, so there is no
                 // staff member to attribute it to.
@@ -169,6 +219,7 @@ class RegistrationController extends Controller
             newValues: [
                 'self_registered' => true,
                 'applicant_code' => $applicant->applicant_code,
+                'applied_for' => $position?->position_title,
                 'awaiting_identity_check' => true,
             ],
         );

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { FileText, Download, Loader2, FileSpreadsheet, Printer, BarChart3 } from 'lucide-react'
-import { api, get, post } from '@/lib/api'
+import { api, get, getCached, post } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
@@ -34,6 +34,8 @@ const FILTER_LABELS = {
   date_to: 'To date',
   year: 'Year',
   client_company_id: 'Client company',
+  client_department_id: 'Department',
+  position_title: 'Position',
   current_status: 'Application status',
   employment_status: 'Employment status',
   folder_category: 'Document folder',
@@ -52,22 +54,58 @@ export default function Reports() {
   const [selected, setSelected] = React.useState(null)
   const [filters, setFilters] = React.useState({})
   const [clients, setClients] = React.useState([])
+  const [departments, setDepartments] = React.useState([])
+  const [positions, setPositions] = React.useState([])
   const [preview, setPreview] = React.useState(null)
   const [loading, setLoading] = React.useState(false)
   const [exporting, setExporting] = React.useState(null)
 
   React.useEffect(() => {
-    get('/reports')
+    getCached('/reports')
       .then((response) => {
         setCatalogue(response.data.types)
-        setSelected(response.data.types[0] ?? null)
+
+        /*
+         * Only picks a default when nothing is chosen yet.
+         *
+         * This effect runs twice under React's development double-invoke, so
+         * two catalogue requests are in flight at once. Assigning the first
+         * report unconditionally meant the slower response landed after the
+         * user had already clicked one and silently put the selection back to
+         * "Applicant Report" — so choosing any other report appeared to do
+         * nothing at all. The slower the API, the wider that window: against
+         * Supabase it was reliable enough to look like a broken button.
+         */
+        setSelected((current) => current ?? response.data.types[0] ?? null)
       })
       .catch((error) => toast.error('Could not load reports', error.message))
 
     get('/clients', { status: 'active', per_page: 100 })
       .then((response) => setClients(response.data))
       .catch(() => setClients([]))
+
+    // Distinct titles, because two clients may both hire a Production Helper
+    // and the filter is on the title the placement recorded.
+    getCached('/positions')
+      .then((response) =>
+        setPositions([...new Set((response.data.positions ?? []).map((p) => p.position_title))].sort())
+      )
+      .catch(() => setPositions([]))
   }, [])
+
+  // Departments belong to a company, so the list follows whichever is chosen.
+  React.useEffect(() => {
+    const companyId = filters.client_company_id
+
+    if (!companyId) {
+      setDepartments([])
+      return
+    }
+
+    get(`/clients/${companyId}/departments`)
+      .then((response) => setDepartments(response.data ?? []))
+      .catch(() => setDepartments([]))
+  }, [filters.client_company_id])
 
   // Filters from the previous report rarely apply to the next one, so they are
   // cleared when the selection changes rather than silently carried over.
@@ -124,6 +162,36 @@ export default function Reports() {
         { report_type: selected.key, format, filters: cleanFilters(filters) },
         { responseType: 'blob' }
       )
+
+      if (response.status === 202) {
+        const queued = JSON.parse(await response.data.text())
+        const exportId = queued.data.export_id
+
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+          const status = await get(`/reports/exports/${exportId}`)
+
+          if (status.data.status === 'failed') {
+            throw new Error(status.data.message ?? 'The queued report failed.')
+          }
+
+          if (status.data.status === 'completed') {
+            const file = await api.get(`/reports/exports/${exportId}/download`, { responseType: 'blob' })
+            const url = URL.createObjectURL(file.data)
+            const link = document.createElement('a')
+            link.href = url
+            link.download = `${selected.key}.${format}`
+            document.body.appendChild(link)
+            link.click()
+            link.remove()
+            URL.revokeObjectURL(url)
+            toast.success('Report downloaded', link.download)
+            return
+          }
+        }
+
+        throw new Error('The report is taking longer than expected. Check Reports again shortly.')
+      }
 
       const disposition = response.headers['content-disposition'] ?? ''
       const match = disposition.match(/filename="?([^"]+)"?/)
@@ -195,7 +263,21 @@ export default function Reports() {
                     name={key}
                     value={filters[key] ?? ''}
                     clients={clients}
-                    onChange={(value) => setFilters((current) => ({ ...current, [key]: value }))}
+                    departments={departments}
+                    positions={positions}
+                    companySelected={!!filters.client_company_id}
+                    onChange={(value) =>
+                      setFilters((current) => {
+                        const next = { ...current, [key]: value }
+
+                        // A department chosen under one client is meaningless
+                        // under another, and leaving it set would silently
+                        // return nothing at all.
+                        if (key === 'client_company_id') next.client_department_id = ''
+
+                        return next
+                      })
+                    }
                   />
                 ))}
               </CardContent>
@@ -310,13 +392,13 @@ function ReportPreview({ preview }) {
   )
 }
 
-function FilterInput({ name, value, onChange, clients }) {
+function FilterInput({ name, value, onChange, clients, departments, positions, companySelected }) {
   const label = FILTER_LABELS[name] ?? name
 
   if (name === 'date_from' || name === 'date_to') {
     return (
       <Field label={label} htmlFor={name}>
-        <Input type="date" value={value} onChange={(e) => onChange(e.target.value)} />
+        <Input id={name} type="date" value={value} onChange={(e) => onChange(e.target.value)} />
       </Field>
     )
   }
@@ -325,7 +407,7 @@ function FilterInput({ name, value, onChange, clients }) {
     const thisYear = new Date().getFullYear()
     return (
       <Field label={label} htmlFor={name}>
-        <Select value={value} onChange={(e) => onChange(e.target.value)} placeholder={String(thisYear)}>
+        <Select id={name} value={value} onChange={(e) => onChange(e.target.value)} placeholder={String(thisYear)}>
           {[0, 1, 2, 3, 4].map((offset) => (
             <option key={offset} value={thisYear - offset}>
               {thisYear - offset}
@@ -339,10 +421,57 @@ function FilterInput({ name, value, onChange, clients }) {
   if (name === 'client_company_id') {
     return (
       <Field label={label} htmlFor={name}>
-        <Select value={value} onChange={(e) => onChange(e.target.value)} placeholder="All clients">
+        <Select id={name} value={value} onChange={(e) => onChange(e.target.value)} placeholder="All clients">
           {clients.map((client) => (
             <option key={client.id} value={client.id}>
               {client.company_name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    )
+  }
+
+  /*
+   * A department belongs to one company, so choosing one without saying whose
+   * is not a question the data can answer. Rather than listing every
+   * department across every client and letting the two filters contradict each
+   * other, this waits for the company and says so.
+   */
+  if (name === 'client_department_id') {
+    return (
+      <Field
+        label={label}
+        htmlFor={name}
+        hint={!companySelected ? 'Choose a client company first' : undefined}
+      >
+        <Select
+          id={name}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={companySelected ? 'All departments' : 'Select a client first'}
+          disabled={!companySelected}
+        >
+          {departments.map((department) => (
+            <option key={department.id} value={department.id}>
+              {department.department_name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    )
+  }
+
+  // Filtered by title, because the title is what the placement records actually
+  // store. The options are the positions the system knows about, so the value
+  // is chosen rather than typed and cannot drift from the column.
+  if (name === 'position_title') {
+    return (
+      <Field label={label} htmlFor={name}>
+        <Select id={name} value={value} onChange={(e) => onChange(e.target.value)} placeholder="All positions">
+          {positions.map((title) => (
+            <option key={title} value={title}>
+              {title}
             </option>
           ))}
         </Select>
@@ -354,7 +483,7 @@ function FilterInput({ name, value, onChange, clients }) {
 
   return (
     <Field label={label} htmlFor={name}>
-      <Select value={value} onChange={(e) => onChange(e.target.value)} placeholder="All">
+      <Select id={name} value={value} onChange={(e) => onChange(e.target.value)} placeholder="All">
         {options.map((option) => (
           <option key={option} value={option}>
             {option.split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')}

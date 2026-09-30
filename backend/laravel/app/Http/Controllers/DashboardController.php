@@ -14,6 +14,7 @@ use App\Models\Termination;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -29,10 +30,16 @@ class DashboardController extends Controller
     {
         $this->authorize('viewDashboard');
 
-        $months = (int) $request->integer('months', 6);
+        $data = $request->validate([
+            'months' => ['nullable', 'integer', 'between:1,36'],
+        ]);
+        $months = (int) ($data['months'] ?? 6);
         $since = now()->subMonths($months)->startOfMonth();
 
-        return ApiResponse::success([
+        $summary = Cache::remember(
+            'empower.dashboard.summary.'.($request->integer('months', 6)),
+            now()->addSeconds(30),
+            fn () => [
             'headline' => $this->headline(),
             'attention' => $this->attention(),
             'applicants_by_status' => $this->applicantsByStage(),
@@ -42,7 +49,10 @@ class DashboardController extends Controller
             'monthly_trend' => $this->monthlyTrend($since),
             'open_requests' => $this->openRequests(),
             'generated_at' => now()->toIso8601String(),
-        ]);
+            ]
+        );
+
+        return ApiResponse::success($summary);
     }
 
     /*
@@ -304,23 +314,28 @@ class DashboardController extends Controller
      */
     private function monthlyTrend(Carbon $since): array
     {
+        /*
+         * Grouping a date into a "YYYY-MM" bucket is spelled differently on
+         * every engine this project runs on, and there is no portable form.
+         *
+         * All three branches are needed. PostgreSQL is the final-defense
+         * platform, MySQL is what the local demo runs on, and SQLite is what
+         * the test suite uses. An earlier version had only the first two and
+         * sent MySQL down the SQLite path, which fails outright: MySQL has no
+         * strftime, so every dashboard load would have died on the trend chart.
+         */
+        $period = match (DB::connection()->getDriverName()) {
+            'pgsql' => fn (string $c) => "TO_CHAR({$c}, 'YYYY-MM')",
+            'mysql', 'mariadb' => fn (string $c) => "DATE_FORMAT({$c}, '%Y-%m')",
+            default => fn (string $c) => "strftime('%Y-%m', {$c})",
+        };
+
         $bucket = fn (string $table, string $column, ?array $where = null) => DB::table($table)
-            ->selectRaw("TO_CHAR({$column}, 'YYYY-MM') AS period, COUNT(*) AS total")
+            ->selectRaw($period($column).' AS period, COUNT(*) AS total')
             ->whereDate($column, '>=', $since)
             ->when($where, fn ($q) => $q->where($where[0], $where[1]))
             ->groupBy('period')
             ->pluck('total', 'period');
-
-        // SQLite has no TO_CHAR; the test suite runs there, so fall back to
-        // strftime when the driver is not PostgreSQL.
-        if (DB::connection()->getDriverName() !== 'pgsql') {
-            $bucket = fn (string $table, string $column, ?array $where = null) => DB::table($table)
-                ->selectRaw("strftime('%Y-%m', {$column}) AS period, COUNT(*) AS total")
-                ->whereDate($column, '>=', $since)
-                ->when($where, fn ($q) => $q->where($where[0], $where[1]))
-                ->groupBy('period')
-                ->pluck('total', 'period');
-        }
 
         $applications = $bucket('applicants', 'application_date');
         $deployments = $bucket('deployments', 'deployment_date');

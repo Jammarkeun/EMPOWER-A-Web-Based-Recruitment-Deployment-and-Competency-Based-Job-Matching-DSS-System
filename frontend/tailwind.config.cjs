@@ -52,6 +52,15 @@ module.exports = {
           DEFAULT: 'hsl(var(--warning))',
           foreground: 'hsl(var(--warning-foreground))',
         },
+        // The agency's navy, worn by the sidebar in both themes.
+        sidebar: {
+          DEFAULT: 'hsl(var(--sidebar))',
+          foreground: 'hsl(var(--sidebar-foreground))',
+          muted: 'hsl(var(--sidebar-muted))',
+          hover: 'hsl(var(--sidebar-hover))',
+          active: 'hsl(var(--sidebar-active))',
+          border: 'hsl(var(--sidebar-border))',
+        },
       },
       borderRadius: {
         lg: 'var(--radius)',

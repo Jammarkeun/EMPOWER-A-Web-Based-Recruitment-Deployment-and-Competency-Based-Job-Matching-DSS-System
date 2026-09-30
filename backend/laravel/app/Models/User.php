@@ -61,7 +61,46 @@ class User extends Authenticatable
             'last_login_at' => 'datetime',
             'password' => 'hashed',
             'is_active' => 'boolean',
+            'notification_preferences' => 'array',
         ];
+    }
+
+    /**
+     * The notification categories that exist, and what they cover.
+     *
+     * Held here rather than in a config file because the list is derived from
+     * the notification classes themselves - a category is only real if
+     * something sends it - and this is the model that has to answer questions
+     * about them.
+     */
+    public const NOTIFICATION_CATEGORIES = [
+        'application' => 'Application updates',
+        'requirements' => 'Document reviews',
+        'deployment' => 'Placement and deployment',
+        'general' => 'Everything else',
+    ];
+
+    /**
+     * Whether this user still wants to hear about a category.
+     *
+     * Absent preferences mean yes. Somebody who has never opened the settings
+     * screen should receive everything, so "not configured" and "configured to
+     * nothing" have to be different answers - which is why the column is
+     * nullable rather than defaulting to an empty object.
+     *
+     * An unrecognised category also returns true. A new kind of notification
+     * added later should reach people by default rather than being silently
+     * suppressed for every account that saved preferences before it existed.
+     */
+    public function wantsNotification(string $category): bool
+    {
+        $preferences = $this->notification_preferences;
+
+        if (! is_array($preferences) || ! array_key_exists($category, $preferences)) {
+            return true;
+        }
+
+        return (bool) $preferences[$category];
     }
 
     protected $appends = ['full_name'];

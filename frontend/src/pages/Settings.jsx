@@ -10,6 +10,8 @@ import {
   FileText,
   Scale,
   Building2,
+  ShieldAlert,
+  Archive,
   Sun,
   Moon,
   Monitor,
@@ -21,6 +23,7 @@ import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import NotificationPreferences from '@/components/NotificationPreferences'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -84,7 +87,7 @@ export default function Settings() {
         <TabsList>
           <TabsTrigger value="account">My account</TabsTrigger>
           {canViewSystem && <TabsTrigger value="documents">Documents</TabsTrigger>}
-          {canViewSystem && <TabsTrigger value="competency">Competency</TabsTrigger>}
+          {canViewSystem && <TabsTrigger value="competency">Criteria</TabsTrigger>}
           {canViewSystem && <TabsTrigger value="system">System</TabsTrigger>}
         </TabsList>
 
@@ -314,6 +317,11 @@ function AccountTab() {
             </div>
           </CardContent>
         </Card>
+
+        {/* The same control the portal offers, from the same component: the
+            categories and the behaviour are identical, and two copies would be
+            two things to keep in step. */}
+        <NotificationPreferences />
       </div>
     </div>
   )
@@ -468,7 +476,7 @@ function CompetencyTab({ data, canEdit, onChanged }) {
       <Card>
         <CardHeader className="flex-row items-start justify-between space-y-0">
           <div className="space-y-1">
-            <CardTitle className="text-base">Competency criteria</CardTitle>
+            <CardTitle className="text-base">Criteria</CardTitle>
             <CardDescription>
               The factors HR can attach to a manpower request. Weights are set per request, not
               here.
@@ -551,6 +559,31 @@ function SystemTab({ data, canEdit, onChanged }) {
         onSaved={onChanged}
         title="Document reading"
         description="Automatic reading of uploaded resumes and IDs."
+      />
+
+      {/*
+        The client's own handbook, not the system's rules.
+        A disciplinary record clearing after a year and a fourth offence putting
+        somebody up for review are CDE's decisions, so they live here rather
+        than in the code — and an agency that changes its policy should not
+        need a developer.
+      */}
+      <SettingsGroup
+        group={data.groups?.policy}
+        canEdit={canEdit}
+        onSaved={onChanged}
+        title="Disciplinary and workflow policy"
+        description="Reaching the review threshold flags an employee for an administrator. It never terminates anybody on its own."
+        icon={ShieldAlert}
+      />
+
+      <SettingsGroup
+        group={data.groups?.retention}
+        canEdit={canEdit}
+        onSaved={onChanged}
+        title="Record retention"
+        description="These decide when a record is offered for archiving. Nothing is ever deleted automatically."
+        icon={Archive}
       />
     </div>
   )
@@ -865,7 +898,7 @@ function NewCriterionDialog({ open, onOpenChange, onCreated }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add a competency criterion</DialogTitle>
+          <DialogTitle>Add a criterion</DialogTitle>
           <DialogDescription>
             A factor HR can weigh when ranking applicants. The weight is chosen per request.
           </DialogDescription>

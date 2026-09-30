@@ -48,6 +48,25 @@
     --input: 214 30% 89%;
     --ring: 221 70% 34%;
 
+    /*
+     * The sidebar wears the agency's own colour.
+     *
+     * hsl(229 95% 25%) is #03197C sampled from the CDE logo, not an
+     * approximation of it — which is what lets the logo sit on the sidebar with
+     * its baked-in background invisible, exactly as it does on the sign-in
+     * panel. The navy is identical in both themes: a client's identity should
+     * not change because the user prefers dark mode.
+     *
+     * Everything painted on it is defined here rather than as one-off opacity
+     * values in the markup, so the contrast decisions live in one place.
+     */
+    --sidebar: 229 95% 25%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-muted: 214 45% 78%;
+    --sidebar-hover: 229 60% 34%;
+    --sidebar-active: 213 90% 72%;
+    --sidebar-border: 229 55% 36%;
+
     --radius: 0.5rem;
   }
 
@@ -90,6 +109,18 @@
     --border: 217 28% 21%;
     --input: 217 28% 21%;
     --ring: 213 80% 62%;
+
+    /*
+     * Deliberately the same navy as light mode - it is the brand, not a theme
+     * surface. Only the lines and hover states are eased back, because the same
+     * separation reads louder against a dark page than a light one.
+     */
+    --sidebar: 229 95% 25%;
+    --sidebar-foreground: 210 35% 94%;
+    --sidebar-muted: 214 35% 72%;
+    --sidebar-hover: 229 55% 31%;
+    --sidebar-active: 213 85% 70%;
+    --sidebar-border: 229 45% 30%;
   }
 
   * {
@@ -121,6 +152,15 @@
 }
 
 @layer utilities {
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Wide content scrolls inside its own container so the page body never
      scrolls sideways on a laptop screen. */
   .table-scroll {

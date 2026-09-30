@@ -1,6 +1,20 @@
 import * as React from 'react'
-import { CheckCircle2, Circle, Clock, AlertTriangle, Briefcase, MapPin } from 'lucide-react'
+import {
+  CheckCircle2,
+  Circle,
+  Clock,
+  AlertTriangle,
+  Briefcase,
+  MapPin,
+  Loader2,
+  PartyPopper,
+  Phone,
+  MessageCircle,
+} from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
+import { post } from '@/lib/api'
+import { useToast } from '@/components/ui/toast'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { LoadingState, ErrorState } from '@/components/ui/states'
@@ -86,8 +100,164 @@ function VisitOfficeCard({ office, bringNow, neededLater, code }) {
   )
 }
 
+/**
+ * Deployment, confirmed.
+ *
+ * The agency's process ends when the client's completed deployment details are
+ * entered and the applicant becomes an employee. This is the moment someone has
+ * been waiting weeks for, so it is the first thing on the page and it says the
+ * plain thing — but it is still an agency record rather than a celebration, so
+ * the details sit right beneath it: where to report, to which department, under
+ * whom, from when, and the employee number they will be asked for.
+ *
+ * Every value is read from the deployment; nothing here is composed. A missing
+ * supervisor shows as absent rather than as a guess.
+ */
+function DeployedCard({ name, deployment }) {
+  const details = [
+    ['Company', deployment.company],
+    ['Department', deployment.department],
+    ['Position', deployment.position],
+    ['Supervisor', deployment.supervisor],
+    ['Start date', deployment.deployment_date ? formatDate(deployment.deployment_date) : null],
+    ['Employee number', deployment.employee_number],
+    ['Biometric number', deployment.biometric_number],
+  ].filter(([, value]) => value)
+
+  return (
+    <Card className="border-success/50 bg-success/[0.06]">
+      <CardHeader className="pb-3">
+        <div className="flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-success/15">
+            <PartyPopper className="h-5 w-5 text-success" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <CardTitle className="text-base">Congratulations, {name}!</CardTitle>
+            <CardDescription>
+              You have been deployed. Your placement details are below — bring your employee number
+              on your first day.
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent>
+        <dl className="grid gap-3 sm:grid-cols-2">
+          {details.map(([label, value]) => (
+            <div key={label}>
+              <dt className="text-xs text-muted-foreground">{label}</dt>
+              <dd className="text-sm font-medium">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * The offer of work, and the applicant's answer to it.
+ *
+ * Deliberately a decision rather than an acknowledgement: both answers are
+ * offered with equal weight, because the agency's process treats declining as a
+ * normal outcome rather than a failure. Someone who has now seen the site, the
+ * shift, and the journey is entitled to say no, and it is far better for
+ * everyone that they say it here than by not turning up.
+ *
+ * Answering changes no status. The client's decision and the agency's are
+ * separate acts and both still have to happen; this only records what the
+ * applicant said, so that it stops living in whoever took the phone call.
+ */
+function PlacementDecisionCard({ position, company, onAnswered }) {
+  const toast = useToast()
+  const [choice, setChoice] = React.useState(null)
+  const [note, setNote] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+
+  async function answer(response) {
+    if (busy) return
+
+    setBusy(true)
+    setChoice(response)
+
+    try {
+      const result = await post('/portal/placement-response', {
+        response,
+        note: note.trim() || null,
+      })
+
+      toast.success(
+        response === 'accepted' ? 'Thank you' : 'Thank you for telling us',
+        result.message
+      )
+      onAnswered(result.data)
+    } catch (err) {
+      toast.error('Could not send your answer', err.message)
+      setChoice(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card className="border-primary/40 bg-primary/[0.04]">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Briefcase className="h-4 w-4 text-primary" />
+          Do you still want this placement?
+        </CardTitle>
+        <CardDescription>
+          {position
+            ? `A client company is considering you for ${position}${company ? ` at ${company}` : ''}.`
+            : 'A client company is considering you for a placement.'}{' '}
+          Before we go further, please tell us whether you still want the job.
+        </CardDescription>
+      </CardHeader>
+
+      <CardContent className="space-y-3">
+        <label className="block text-sm" htmlFor="placement_note">
+          <span className="text-muted-foreground">
+            Anything you would like us to know (optional)
+          </span>
+          <textarea
+            id="placement_note"
+            rows={2}
+            value={note}
+            disabled={busy}
+            onChange={(event) => setNote(event.target.value)}
+            maxLength={255}
+            className="mt-1 w-full rounded-md border border-input bg-card px-3 py-2 text-sm shadow-sm disabled:opacity-50"
+            placeholder="For example, the shift or the travel."
+          />
+        </label>
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button className="sm:flex-1" onClick={() => answer('accepted')} disabled={busy}>
+            {busy && choice === 'accepted' && <Loader2 className="h-4 w-4 animate-spin" />}
+            {busy && choice === 'accepted' ? 'Sending…' : 'Yes, I want this job'}
+          </Button>
+          <Button
+            variant="outline"
+            className="sm:flex-1"
+            onClick={() => answer('declined')}
+            disabled={busy}
+          >
+            {busy && choice === 'declined' && <Loader2 className="h-4 w-4 animate-spin" />}
+            {busy && choice === 'declined' ? 'Sending…' : 'No, not this one'}
+          </Button>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Saying no does not remove you from our records. We will keep looking for work that suits
+          you better.
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function PortalOverview() {
-  const { data, loading, error, refetch } = useApi('/portal')
+  const { data, loading, error, refetch, setData } = useApi('/portal')
 
   if (loading) return <LoadingState label="Loading your application…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
@@ -97,12 +267,75 @@ export default function PortalOverview() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Hello, {person.full_name.split(' ')[0]}</h1>
-        <p className="text-sm text-muted-foreground">
-          Reference number <span className="font-mono">{person.applicant_code}</span>
-        </p>
+      {/* The greeting names the applicant from their own record, and the avatar
+          beside it is the same identity the sidebar and header show. */}
+      <div className="flex items-center gap-3">
+        <span
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground"
+          aria-hidden="true"
+        >
+          {person.initials}
+        </span>
+        <div className="min-w-0">
+          <h1 className="truncate text-xl font-semibold tracking-tight">
+            Hello, {person.first_name || person.full_name.split(' ')[0]}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Reference number <span className="font-mono">{person.applicant_code}</span>
+            {application.position ? ` · Applying for ${application.position}` : ''}
+          </p>
+        </div>
       </div>
+
+      {/*
+        The end of the process, and the only point at which it is true.
+        Rendered from the deployment record itself, so it survives a refresh, a
+        new session, and a different device.
+      */}
+      {data.deployment && (
+        <DeployedCard name={person.first_name || person.full_name.split(' ')[0]} deployment={data.deployment} />
+      )}
+
+      {/*
+        The one decision in this process that belongs to the applicant. The
+        agency's own account of how it works is explicit that after training the
+        candidate decides whether they still want the job — and until now there
+        was nowhere for them to say so, and no record of it when they did.
+      */}
+      {application.placement_decision_due && (
+        <PlacementDecisionCard
+          position={application.position}
+          company={application.position_company}
+          onAnswered={(answer) =>
+            setData((current) => ({
+              ...current,
+              application: {
+                ...current.application,
+                placement_decision_due: false,
+                placement_response: answer.placement_response,
+                placement_responded_at: answer.placement_responded_at,
+              },
+            }))
+          }
+        />
+      )}
+
+      {application.placement_response && (
+        <Card className="border-dashed">
+          <CardContent className="flex items-start gap-2.5 pt-5">
+            {application.placement_response === 'accepted' ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+            ) : (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            )}
+            <p className="text-sm text-muted-foreground">
+              {application.placement_response === 'accepted'
+                ? 'You told us you want to go ahead with this placement. Our staff will be in touch with the details.'
+                : 'You told us you did not want this placement. Our staff will contact you about other work.'}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/*
         Someone who registered online is waiting on exactly one thing, and it is
@@ -128,6 +361,31 @@ export default function PortalOverview() {
             </p>
             <p className="mt-1 text-lg font-semibold">{application.status_label}</p>
             <p className="mt-1.5 text-sm text-muted-foreground">{application.explanation}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {application.office && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <MessageCircle className="h-4 w-4 text-primary" />
+              Need help?
+            </CardTitle>
+            <CardDescription>Contact the CDE office about your application.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <p className="font-medium">{application.office.name}</p>
+            {application.office.address && <p className="text-muted-foreground">{application.office.address}</p>}
+            {application.office.contact && (
+              <a
+                href={`tel:${application.office.contact}`}
+                className="inline-flex items-center gap-2 text-primary hover:underline"
+              >
+                <Phone className="h-3.5 w-3.5" />
+                {application.office.contact}
+              </a>
+            )}
           </CardContent>
         </Card>
       )}

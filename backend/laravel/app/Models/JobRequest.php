@@ -18,6 +18,7 @@ class JobRequest extends Model
         'request_code',
         'client_company_id',
         'client_department_id',
+        'job_position_id',
         'position_title',
         'required_education',
         'required_experience_months',
@@ -56,6 +57,17 @@ class JobRequest extends Model
     public function department(): BelongsTo
     {
         return $this->belongsTo(ClientDepartment::class, 'client_department_id');
+    }
+
+    /**
+     * The role this request is for.
+     *
+     * position_title is kept alongside it as the wording used when the request
+     * was raised, so renaming a position later does not rewrite history.
+     */
+    public function position(): BelongsTo
+    {
+        return $this->belongsTo(JobPosition::class, 'job_position_id');
     }
 
     public function criteria(): HasMany

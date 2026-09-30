@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { Loader2, Plus, FileWarning, Truck, Clock } from 'lucide-react'
+import { Loader2, Plus, FileWarning, Truck, Clock, AlertTriangle } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
 import { post } from '@/lib/api'
@@ -23,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatDate, formatDateTime, humanise } from '@/lib/utils'
+import { cn, formatDate, formatDateTime, humanise } from '@/lib/utils'
 
 export default function EmployeeDetail() {
   const { id } = useParams()
@@ -178,20 +178,32 @@ export default function EmployeeDetail() {
             <CardHeader>
               <CardTitle>Disciplinary record</CardTitle>
               <CardDescription>
-                Kept as part of the permanent employee file. These records support any later
-                termination and are never deleted.
+                The full history is kept. An offence older than the agency's window stays on file
+                and in reports but stops counting towards the review threshold.
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
+              <ViolationPolicySummary violations={employee.violations} />
+
               {!employee.violations?.length ? (
                 <EmptyState icon={FileWarning} title="No violations recorded" description="A clean disciplinary record." />
               ) : (
                 <ul className="divide-y">
                   {employee.violations.map((violation) => (
-                    <li key={violation.id} className="py-3">
+                    <li
+                      key={violation.id}
+                      // Expired offences recede rather than disappear: still
+                      // readable, visibly no longer counting.
+                      className={cn('py-3', violation.is_expired && 'opacity-60')}
+                    >
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge tone="warning">{violation.type_label}</Badge>
                         <StatusBadge status={violation.status} />
+                        {violation.is_expired ? (
+                          <Badge tone="muted">No longer counting</Badge>
+                        ) : (
+                          <Badge tone="destructive">Counting</Badge>
+                        )}
                         <span className="text-xs text-muted-foreground">
                           {formatDate(violation.violation_date)}
                         </span>
@@ -200,9 +212,12 @@ export default function EmployeeDetail() {
                       {violation.penalty && (
                         <p className="mt-0.5 text-xs text-muted-foreground">Penalty: {violation.penalty}</p>
                       )}
-                      {violation.issued_by && (
-                        <p className="mt-0.5 text-xs text-muted-foreground">Issued by {violation.issued_by}</p>
-                      )}
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {violation.issued_by ? `Issued by ${violation.issued_by}. ` : ''}
+                        {violation.is_expired
+                          ? `Stopped counting ${formatDate(violation.expires_on)}.`
+                          : `Counts until ${formatDate(violation.expires_on)}.`}
+                      </p>
                     </li>
                   ))}
                 </ul>
@@ -464,5 +479,53 @@ function SeparationDialog({ open, onOpenChange, employeeId, onSaved }) {
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/**
+ * Where this employee stands against the client's disciplinary policy.
+ *
+ * Two numbers that are easy to conflate and must not be: how many offences are
+ * on file, and how many still count. CDE's record clears after a year, so an
+ * employee with six historical offences may be nowhere near review — and the
+ * screen has to say which is which before anybody acts on it.
+ *
+ * Reaching the threshold is stated as a prompt to review, never as an outcome.
+ * The system does not terminate anybody; an administrator decides.
+ */
+function ViolationPolicySummary({ violations }) {
+  const rows = violations ?? []
+
+  if (rows.length === 0) return null
+
+  const active = rows.filter((v) => !v.is_expired)
+  const expired = rows.length - active.length
+
+  // Read from the rows themselves rather than a second request: every row
+  // already carries whether it counts, so the count cannot disagree with the list.
+  const flagged = active.length >= 4
+
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border px-3 py-2.5 text-sm',
+        flagged ? 'border-warning/50 bg-warning/[0.06]' : 'bg-muted/40'
+      )}
+    >
+      <span>
+        <span className="font-semibold tabular-nums">{active.length}</span> counting
+      </span>
+      {expired > 0 && (
+        <span className="text-muted-foreground">
+          <span className="tabular-nums">{expired}</span> no longer counting
+        </span>
+      )}
+      {flagged && (
+        <span className="flex items-center gap-1.5 text-warning">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          At the review threshold — an administrator should review this record.
+        </span>
+      )}
+    </div>
   )
 }

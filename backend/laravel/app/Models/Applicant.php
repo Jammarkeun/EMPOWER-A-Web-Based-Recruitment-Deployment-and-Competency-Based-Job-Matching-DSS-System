@@ -35,6 +35,7 @@ class Applicant extends Model
         'present_address',
         'provincial_address',
         'preferred_position',
+        'preferred_position_id',
         'availability_date',
         'distance_km',
         'communication_rating',
@@ -58,6 +59,7 @@ class Applicant extends Model
             'birth_date' => 'date',
             'availability_date' => 'date',
             'application_date' => 'date',
+            'placement_responded_at' => 'datetime',
             'self_registered_at' => 'datetime',
             'identity_verified_at' => 'datetime',
             'height_cm' => 'decimal:2',
@@ -88,6 +90,18 @@ class Applicant extends Model
     }
 
     // ---------------------------------------------------------------- relations
+
+    /**
+     * The position the applicant asked for.
+     *
+     * preferred_position holds the wording shown to them when they chose it, so
+     * a record still reads correctly if the position is renamed or withdrawn
+     * afterwards. This relation is the reference that survives either.
+     */
+    public function preferredPosition(): BelongsTo
+    {
+        return $this->belongsTo(JobPosition::class, 'preferred_position_id');
+    }
 
     public function educations(): HasMany
     {

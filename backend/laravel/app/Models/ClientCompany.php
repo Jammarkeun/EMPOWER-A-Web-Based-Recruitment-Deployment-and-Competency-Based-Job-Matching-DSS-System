@@ -38,6 +38,12 @@ class ClientCompany extends Model
         return $this->hasMany(JobRequest::class);
     }
 
+    /** The roles this company hires for, and the list its applicants choose from. */
+    public function positions(): HasMany
+    {
+        return $this->hasMany(JobPosition::class);
+    }
+
     public function deployments(): HasMany
     {
         return $this->hasMany(Deployment::class);

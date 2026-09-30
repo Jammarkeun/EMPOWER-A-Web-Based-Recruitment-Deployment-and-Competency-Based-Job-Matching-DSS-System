@@ -22,3 +22,8 @@ Schedule::command('empower:check-expiring-documents --days=30')
     ->dailyAt('06:00')
     ->timezone('Asia/Manila')
     ->withoutOverlapping();
+
+Schedule::command('empower:check-document-storage')
+    ->weeklyOn(0, '02:00')
+    ->timezone('Asia/Manila')
+    ->withoutOverlapping();

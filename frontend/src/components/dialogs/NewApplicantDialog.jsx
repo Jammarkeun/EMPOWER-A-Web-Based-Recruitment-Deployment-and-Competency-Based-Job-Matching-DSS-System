@@ -27,7 +27,7 @@ const EMPTY = {
   contact_number: '',
   email: '',
   present_address: '',
-  preferred_position: '',
+  preferred_position_id: '',
   application_date: new Date().toISOString().slice(0, 10),
 }
 
@@ -53,6 +53,10 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
   const [scanned, setScanned] = React.useState({})
   const [scanMeta, setScanMeta] = React.useState(null)
 
+  // The roles the agency places, read from the system rather than typed. Kept
+  // as a list rather than nullable so the field can render before it arrives.
+  const [positions, setPositions] = React.useState([])
+
   React.useEffect(() => {
     if (open) {
       setForm(EMPTY)
@@ -65,6 +69,13 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
       get('/document-scan/status')
         .then((response) => setScanAvailable(response.data.available))
         .catch(() => setScanAvailable(false))
+
+      // Every position, not only those currently hiring: an officer at the
+      // counter records what the person came in for, and a role between
+      // requests is still a role.
+      get('/positions', { status: 'active' })
+        .then((response) => setPositions(response.data.positions ?? []))
+        .catch(() => setPositions([]))
     }
   }, [open])
 
@@ -91,13 +102,27 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
 
     try {
       const response = await upload('/document-scan', formData)
+      const scanId = response.data.scan_id
+      let result
 
-      if (!response.data.readable) {
-        toast.error('Could not read the document', response.message)
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        const status = await get(`/document-scan/status/${scanId}`)
+        result = status.data
+        if (result.status === 'completed' || result.status === 'failed') break
+      }
+
+      if (!result || result.status === 'processing' || result.status === 'queued') {
+        toast.error('Document scan timed out', 'Please enter the details manually or try again.')
         return
       }
 
-      const fields = response.data.fields
+      if (!result.readable) {
+        toast.error('Could not read the document', result.message)
+        return
+      }
+
+      const fields = result.fields
       const applied = {}
       const flags = {}
 
@@ -108,7 +133,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
 
       setForm((current) => ({ ...current, ...applied }))
       setScanned(flags)
-      setScanMeta(response.data.meta)
+      setScanMeta(result.meta)
 
       const needsCheck = Object.values(fields).filter((f) => f.needs_review).length
       toast.success(
@@ -255,8 +280,29 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
           </Field>
 
           <FormGrid>
-            <Field label="Position sought" htmlFor="preferred_position" error={errors.preferred_position?.[0]}>
-              <Input value={form.preferred_position} onChange={(e) => set('preferred_position', e.target.value)} />
+            {/* The same list applicants choose from, so a walk-in recorded at
+                the counter and an online registration end up pointing at the
+                same role rather than at two spellings of it. */}
+            <Field
+              label="Position sought"
+              htmlFor="preferred_position_id"
+              error={errors.preferred_position_id?.[0]}
+              hint={positions.length === 0 ? 'No positions configured yet' : undefined}
+            >
+              <Select
+                id="preferred_position_id"
+                value={form.preferred_position_id}
+                onChange={(e) => set('preferred_position_id', e.target.value)}
+                disabled={positions.length === 0}
+              >
+                <option value="">Not specified</option>
+                {positions.map((position) => (
+                  <option key={position.id} value={position.id}>
+                    {position.position_title}
+                    {position.company ? ` — ${position.company}` : ''}
+                  </option>
+                ))}
+              </Select>
             </Field>
 
             <Field label="Application date" htmlFor="application_date" required error={errors.application_date?.[0]}>

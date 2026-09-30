@@ -8,6 +8,8 @@ use App\Models\Applicant;
 use App\Models\ApplicantRequirement;
 use App\Models\Employee;
 use App\Models\RequirementType;
+use App\Models\User;
+use App\Notifications\PlacementResponseRecorded;
 use App\Services\AuditService;
 use App\Services\DocumentStorageService;
 use App\Services\FolderCategoryService;
@@ -16,6 +18,7 @@ use App\Services\SeparationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 /**
  * Self-service portal for applicants and employees.
@@ -44,19 +47,26 @@ class PortalController extends Controller
         $applicant = $this->applicant($request);
         $employee = $this->employee($request);
 
-        $applicant->load(['requirements.requirementType', 'statusHistory']);
+        $applicant->load(['requirements.requirementType', 'statusHistory', 'preferredPosition.company']);
         $folder = $this->folders->explain($applicant);
 
         return ApiResponse::success([
             'person' => [
                 'full_name' => $applicant->full_name,
+                'first_name' => $applicant->first_name,
                 'applicant_code' => $applicant->applicant_code,
                 'contact_number' => $applicant->contact_number,
                 'email' => $applicant->email,
                 'present_address' => $applicant->present_address,
+                // Initials for the header avatar. Built on the server from the
+                // name already being sent, so the client never has to guess how
+                // to abbreviate a name it did not parse.
+                'initials' => $this->initials($applicant->first_name, $applicant->last_name),
             ],
             'application' => [
                 'status' => $applicant->current_status,
+                'position' => $applicant->preferred_position,
+                'position_company' => $applicant->preferredPosition?->company?->company_name,
                 'status_label' => ucwords(str_replace('_', ' ', $applicant->current_status)),
                 'explanation' => $this->explainStatus($applicant->current_status),
                 'applied_on' => $applicant->application_date?->toDateString(),
@@ -72,6 +82,18 @@ class PortalController extends Controller
                     'address' => config('empower.organisation.address'),
                     'contact' => config('empower.organisation.contact'),
                 ] : null,
+
+                /*
+                 * The one decision in the process that is the applicant's own.
+                 *
+                 * The agency's account of its own workflow is explicit that
+                 * after training the candidate decides whether they still want
+                 * the job. Asking here means the answer is on the record
+                 * instead of in whoever took the phone call.
+                 */
+                'placement_decision_due' => $this->awaitingPlacementResponse($applicant),
+                'placement_response' => $applicant->placement_response,
+                'placement_responded_at' => $applicant->placement_responded_at?->toIso8601String(),
             ],
             'documents' => [
                 'folder_label' => $folder['label'],
@@ -88,6 +110,27 @@ class PortalController extends Controller
                 'verified_count' => $applicant->requirements->where('status', 'verified')->count(),
                 'total_count' => $applicant->requirements->count(),
             ],
+            /*
+             * The placement itself, and only once it genuinely exists.
+             *
+             * The agency's process ends with the client's completed deployment
+             * details being entered by admin — that act is what creates the
+             * deployment record and moves the applicant to "deployed" and then
+             * "active". Nothing earlier counts: being approved by the client,
+             * being ready for deployment, having every document verified, all
+             * of those still leave somebody who has not been placed, and
+             * congratulating them would be telling them they have a job they
+             * have not got.
+             *
+             * So this is derived from the deployment row rather than from a
+             * status alone. Both have to agree: the lifecycle says deployed,
+             * and there is an active placement to point at. That also makes it
+             * survive a refresh, a new session, and a different device, because
+             * it is a fact on the record rather than something the browser was
+             * told once.
+             */
+            'deployment' => $this->activePlacement($applicant, $employee),
+
             'employment' => $employee ? [
                 'employee_number' => $employee->employee_number,
                 'position' => $employee->current_position_title,
@@ -198,6 +241,14 @@ class PortalController extends Controller
                 // open upload from becoming a way to self-certify.
                 'status' => 'submitted',
                 'submitted_at' => now(),
+
+                // A replacement is a different document. Whatever review the
+                // previous file had is not review of this one, so the record of
+                // it is cleared rather than inherited - otherwise a fresh upload
+                // would announce itself as already being checked.
+                'first_viewed_at' => null,
+                'first_viewed_by' => null,
+
                 'verified_at' => null,
                 'verified_by' => null,
                 'rejection_reason' => null,
@@ -329,6 +380,127 @@ class PortalController extends Controller
     }
 
     /**
+     * The applicant's own record, as they are allowed to see it.
+     *
+     * Assembled from the authenticated account rather than from anything the
+     * client sends, like everything else here. The read-only half is shown as
+     * well as the editable half on purpose: an applicant who can see the date of
+     * birth on file is an applicant who can spot that it is wrong and say so at
+     * the counter, which is cheaper for everyone than discovering it during a
+     * client's background check.
+     */
+    public function profile(Request $request): JsonResponse
+    {
+        $applicant = $this->applicant($request);
+        $applicant->load('preferredPosition.company');
+        $user = $request->user();
+
+        return ApiResponse::success([
+            'identity' => [
+                'full_name' => $applicant->full_name,
+                'first_name' => $applicant->first_name,
+                'middle_name' => $applicant->middle_name,
+                'last_name' => $applicant->last_name,
+                'initials' => $this->initials($applicant->first_name, $applicant->last_name),
+                'applicant_code' => $applicant->applicant_code,
+                'birth_date' => $applicant->birth_date?->toDateString(),
+                'age' => $applicant->age,
+                'sex' => $applicant->sex,
+                'civil_status' => $applicant->civil_status,
+                'present_address' => $applicant->present_address,
+                'applied_on' => $applicant->application_date?->toDateString(),
+                'position' => $applicant->preferred_position,
+                'position_company' => $applicant->preferredPosition?->company?->company_name,
+            ],
+
+            // Exactly the fields updateProfile() accepts, so the form is built
+            // from the same list the API enforces and the two cannot drift.
+            'editable' => [
+                'contact_number' => $applicant->contact_number,
+                'email' => $applicant->email,
+                'availability_date' => $applicant->availability_date?->toDateString(),
+            ],
+
+            'account' => [
+                'email' => $user->email,
+                'user_type' => $user->user_type,
+                'last_login_at' => $user->last_login_at?->toIso8601String(),
+            ],
+
+            /*
+             * Why the rest of the record cannot be edited here, said plainly.
+             *
+             * Without this the read-only fields look like an oversight, and the
+             * applicant's next move is a phone call asking how to change their
+             * name.
+             */
+            'locked_fields_reason' => 'Your name, date of birth, and address were checked against '
+                .'your documents at the office. Ask our staff if any of them need correcting.',
+        ]);
+    }
+
+    /**
+     * Records the applicant's answer to an offer of work.
+     *
+     * The agency's process gives the candidate a say: after training, having
+     * seen the site and the shift, they decide whether they still want the job.
+     * Accepting changes no status - the client's approval and the agency's
+     * decision are separate matters and both still have to happen. Declining
+     * does not archive them either. Both are recorded as facts for HR to act on,
+     * because deciding what a withdrawal means for someone's place in the pool
+     * is a judgment the agency makes, not something a form should do to them.
+     */
+    public function respondToPlacement(Request $request): JsonResponse
+    {
+        $applicant = $this->applicant($request);
+
+        if (! $this->awaitingPlacementResponse($applicant)) {
+            return ApiResponse::error(
+                'There is no placement waiting for your answer at the moment.',
+                409
+            );
+        }
+
+        $data = $request->validate([
+            'response' => ['required', Rule::in(['accepted', 'declined'])],
+            'note' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $applicant->forceFill([
+            'placement_response' => $data['response'],
+            'placement_responded_at' => now(),
+            'placement_response_note' => $data['note'] ?? null,
+        ])->save();
+
+        $this->audit->record(
+            action: 'update',
+            module: 'portal',
+            recordType: Applicant::class,
+            recordId: $applicant->id,
+            newValues: [
+                'placement_response' => $data['response'],
+                'answered_by' => 'applicant',
+                'note' => $data['note'] ?? null,
+            ],
+        );
+
+        // The office needs to know, and quickly: a decline means the client is
+        // expecting somebody who is not coming.
+        User::query()
+            ->whereIn('user_type', ['admin', 'hr'])
+            ->where('is_active', true)
+            ->get()
+            ->each->notify(new PlacementResponseRecorded($applicant, $data['response']));
+
+        return ApiResponse::success([
+            'placement_response' => $applicant->placement_response,
+            'placement_responded_at' => $applicant->placement_responded_at?->toIso8601String(),
+        ], $data['response'] === 'accepted'
+            ? 'Thank you. We have told the office you want to go ahead.'
+            : 'Thank you for letting us know. Our staff will be in touch.');
+    }
+
+    /**
      * Limited profile maintenance.
      *
      * Contact details only. Name, date of birth, and address were verified
@@ -447,9 +619,83 @@ class PortalController extends Controller
         return $applicant;
     }
 
+    /**
+     * The employment record behind this account, however it is reachable.
+     *
+     * A portal account created during registration is linked by `applicant_id`
+     * and nothing else. Deployment creates an employee against that applicant
+     * but does not rewrite the account, so reading `user->employee` alone finds
+     * nothing for exactly the people who have just been placed — the account
+     * says "applicant" while the person is an employee.
+     *
+     * The applicant's own `employee` relation is the authoritative link, since
+     * it is written by the deployment itself. Falling back to it is what makes
+     * a newly deployed applicant see their placement without an administrator
+     * having to re-provision their login first.
+     */
     private function employee(Request $request): ?Employee
     {
-        return $request->user()->employee?->load(['currentCompany', 'currentDepartment']);
+        $employee = $request->user()->employee
+            ?? $request->user()->applicant?->employee;
+
+        return $employee?->load(['currentCompany', 'currentDepartment']);
+    }
+
+    /**
+     * Whether the applicant has an offer of work in front of them right now.
+     *
+     * Only during client evaluation and approval. Before that there is no job to
+     * accept, and once deployed the question has answered itself. Someone who
+     * has already replied is not asked again.
+     */
+    private function awaitingPlacementResponse(Applicant $applicant): bool
+    {
+        return in_array($applicant->current_status, ['client_evaluation', 'approved'], true)
+            && is_null($applicant->placement_response);
+    }
+
+    /**
+     * The applicant's current placement, if they actually have one.
+     *
+     * Returns null unless the lifecycle says deployed **and** there is an
+     * active deployment row behind it. Requiring both is deliberate: a status
+     * moved by hand without a placement, or a placement that has since ended,
+     * should not read as "you have been deployed".
+     *
+     * Every value comes from the deployment the client company filled in. None
+     * of it is composed here, so there is nothing to be wrong about.
+     */
+    private function activePlacement(Applicant $applicant, ?Employee $employee): ?array
+    {
+        if (! in_array($applicant->current_status, ['deployed', 'active'], true)) {
+            return null;
+        }
+
+        $deployment = $employee?->activeDeployment()?->load(['company', 'department']);
+
+        if (! $deployment) {
+            return null;
+        }
+
+        return [
+            'deployment_code' => $deployment->deployment_code,
+            'company' => $deployment->company?->company_name,
+            'department' => $deployment->department?->department_name,
+            'position' => $deployment->position_title,
+            'supervisor' => $deployment->supervisor_name,
+            'deployment_date' => $deployment->deployment_date?->toDateString(),
+            'employee_number' => $employee->employee_number,
+            'biometric_number' => $employee->biometric_number,
+        ];
+    }
+
+    private function initials(?string $first, ?string $last): string
+    {
+        $initials = mb_substr(trim((string) $first), 0, 1).mb_substr(trim((string) $last), 0, 1);
+
+        // Falls back to a placeholder rather than an empty circle, which reads
+        // as a broken image rather than as a person with an unusual name.
+        return mb_strtoupper($initials) ?: '?';
     }
 
     /**

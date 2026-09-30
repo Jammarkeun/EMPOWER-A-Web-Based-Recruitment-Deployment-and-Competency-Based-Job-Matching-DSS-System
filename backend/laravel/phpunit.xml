@@ -29,6 +29,9 @@
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value=":memory:"/>
         <env name="FILESYSTEM_DISK" value="local"/>
+        <!-- Documents go to a disk the tests fake. Without this the storage
+             service wrote to the live Supabase bucket during the suite. -->
+        <env name="DOCUMENT_DISK" value="documents"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
