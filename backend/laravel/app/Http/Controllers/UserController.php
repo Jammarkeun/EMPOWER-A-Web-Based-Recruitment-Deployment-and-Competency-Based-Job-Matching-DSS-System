@@ -4,11 +4,15 @@ namespace App\Http\Controllers;
 
 use App\Http\Responses\ApiResponse;
 use App\Models\Applicant;
+use App\Models\ClientCompany;
+use App\Models\CoordinatorAssignment;
 use App\Models\Employee;
 use App\Models\User;
 use App\Notifications\PasswordChanged;
 use App\Rules\PasswordPolicy;
 use App\Services\AuditService;
+use App\Services\CoordinatorAssignmentService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -28,8 +32,10 @@ use Spatie\Permission\Models\Role;
  */
 class UserController extends Controller
 {
-    public function __construct(private readonly AuditService $audit)
-    {
+    public function __construct(
+        private readonly AuditService $audit,
+        private readonly CoordinatorAssignmentService $assignments,
+    ) {
     }
 
     public function index(Request $request): JsonResponse
@@ -38,13 +44,13 @@ class UserController extends Controller
 
         $filters = $request->validate([
             'search' => ['nullable', 'string', 'max:120'],
-            'user_type' => ['nullable', Rule::in(['admin', 'hr', 'applicant', 'employee'])],
+            'user_type' => ['nullable', Rule::in(['admin', 'hr', 'coordinator', 'applicant', 'employee'])],
             'is_active' => ['nullable', 'boolean'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
         $users = User::query()
-            ->with('roles')
+            ->with(['roles', 'activeCoordinatorAssignment.company'])
             ->when($filters['search'] ?? null, function ($q, $v) {
                 $operator = $q->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
                 $q->where(fn ($sub) => $sub
@@ -74,46 +80,70 @@ class UserController extends Controller
             'last_name' => ['required', 'string', 'max:100'],
             'email' => ['required', 'email', 'max:190', 'unique:users,email'],
             'mobile_number' => ['nullable', 'string', 'max:30'],
-            'user_type' => ['required', Rule::in(['admin', 'hr'])],
-            'role' => ['required', 'string', 'exists:roles,name'],
+            'user_type' => ['required', Rule::in(['admin', 'hr', 'coordinator'])],
+            // A coordinator's role is fixed; staff choose admin or hr.
+            'role' => ['required_unless:user_type,coordinator', 'nullable', 'string', 'exists:roles,name'],
+            // Every coordinator covers a client from the moment the account exists.
+            'client_company_id' => ['required_if:user_type,coordinator', 'nullable', 'integer', 'exists:client_companies,id'],
+            'assignment_remarks' => ['nullable', 'string', 'max:255'],
             'password' => ['required', 'string', 'confirmed', new PasswordPolicy()],
+        ], [
+            'client_company_id.required_if' => 'Choose the client company this coordinator will cover.',
         ]);
 
-        // Staff accounts only. Portal logins are created from the applicant or
-        // employee record through provisionPortalAccess, so an account can never
-        // be linked to the wrong person by typing an ID by hand.
-        $user = User::create([
-            'first_name' => $data['first_name'],
-            'middle_name' => $data['middle_name'] ?? null,
-            'last_name' => $data['last_name'],
-            'email' => $data['email'],
-            'mobile_number' => $data['mobile_number'] ?? null,
-            'password' => Hash::make($data['password']),
-            'user_type' => $data['user_type'],
-            'is_active' => true,
-        ]);
+        $role = $this->roleFor($data['user_type'], $data['role'] ?? null);
 
-        // Set outside the mass assignment: a verification timestamp is a system
-        // fact, and keeping it out of $fillable means no request payload can
-        // ever claim an address is verified.
-        $user->forceFill(['email_verified_at' => now()])->save();
+        // Staff and coordinator accounts only. Portal logins are created from
+        // the applicant or employee record through provisionPortalAccess, so an
+        // account can never be linked to the wrong person by typing an ID.
+        $user = DB::transaction(function () use ($data, $role, $request) {
+            $user = User::create([
+                'first_name' => $data['first_name'],
+                'middle_name' => $data['middle_name'] ?? null,
+                'last_name' => $data['last_name'],
+                'email' => $data['email'],
+                'mobile_number' => $data['mobile_number'] ?? null,
+                'password' => Hash::make($data['password']),
+                'user_type' => $data['user_type'],
+                'is_active' => true,
+            ]);
 
-        $user->syncRoles([$data['role']]);
+            // Set outside the mass assignment: a verification timestamp is a system
+            // fact, and keeping it out of $fillable means no request payload can
+            // ever claim an address is verified.
+            $user->forceFill(['email_verified_at' => now()])->save();
 
-        $this->audit->record('create', 'users', User::class, $user->id, null, [
-            'email' => $data['email'],
-            'user_type' => $data['user_type'],
-            'role' => $data['role'],
-        ]);
+            $user->syncRoles([$role]);
 
-        return ApiResponse::created($this->present($user->fresh('roles')), 'User created');
+            $this->audit->record('create', 'users', User::class, $user->id, null, [
+                'email' => $data['email'],
+                'user_type' => $data['user_type'],
+                'role' => $role,
+            ]);
+
+            if ($data['user_type'] === 'coordinator') {
+                $this->assignments->assign(
+                    $user,
+                    ClientCompany::findOrFail($data['client_company_id']),
+                    $request->user(),
+                    $data['assignment_remarks'] ?? null
+                );
+            }
+
+            return $user;
+        });
+
+        return ApiResponse::created(
+            $this->present($user->fresh(['roles', 'activeCoordinatorAssignment.company'])),
+            'User created'
+        );
     }
 
     public function show(User $user): JsonResponse
     {
         $this->authorize('manageUsers');
 
-        return ApiResponse::success($this->present($user->load('roles', 'applicant', 'employee')));
+        return ApiResponse::success($this->present($user->load('roles', 'applicant', 'employee', 'activeCoordinatorAssignment.company')));
     }
 
     public function update(Request $request, User $user): JsonResponse
@@ -134,6 +164,10 @@ class UserController extends Controller
         $user->update(collect($data)->except('role')->all());
 
         if (isset($data['role'])) {
+            // The role must fit the kind of account: a coordinator stays a
+            // coordinator, and staff cannot be given the coordinator role,
+            // which would leave them without an assignment to scope them.
+            $data['role'] = $this->roleFor($user->user_type, $data['role']);
             $this->assertNotLastAdministrator($user, $data['role']);
             $user->syncRoles([$data['role']]);
         }
@@ -293,6 +327,88 @@ class UserController extends Controller
         ], 'Portal access created');
     }
 
+    /**
+     * Every client a coordinator has covered, newest first.
+     */
+    public function coordinatorAssignments(User $user): JsonResponse
+    {
+        $this->authorize('manageUsers');
+
+        abort_unless($user->isCoordinator(), 404, 'That account is not a coordinator.');
+
+        return ApiResponse::success(
+            $user->coordinatorAssignments()
+                ->with(['company', 'assigner', 'ender'])
+                ->get()
+                ->map(fn (CoordinatorAssignment $a) => [
+                    'id' => $a->id,
+                    'client_company_id' => $a->client_company_id,
+                    'company_name' => $a->company?->company_name,
+                    'status' => $a->status,
+                    'assigned_at' => $a->assigned_at?->toIso8601String(),
+                    'unassigned_at' => $a->unassigned_at?->toIso8601String(),
+                    'assigned_by' => $a->assigner?->full_name,
+                    'ended_by' => $a->ender?->full_name,
+                    'remarks' => $a->remarks,
+                ])
+        );
+    }
+
+    /**
+     * Assigns a coordinator to a client, or moves them to another.
+     *
+     * Takes effect on the coordinator's next request: their access is worked
+     * out from the active assignment every time, so the old client is out of
+     * reach immediately and nothing they did there is altered.
+     */
+    public function assignCoordinator(Request $request, User $user): JsonResponse
+    {
+        $this->authorize('manageUsers');
+
+        abort_unless($user->isCoordinator(), 422, 'Only a coordinator account can be assigned to a client company.');
+
+        $data = $request->validate([
+            'client_company_id' => ['required', 'integer', 'exists:client_companies,id'],
+            'remarks' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $this->assignments->assign(
+            $user,
+            ClientCompany::findOrFail($data['client_company_id']),
+            $request->user(),
+            $data['remarks'] ?? null
+        );
+
+        return ApiResponse::success(
+            $this->present($user->fresh(['roles', 'activeCoordinatorAssignment.company'])),
+            'Coordinator assignment updated'
+        );
+    }
+
+    /**
+     * The role an account of this kind may hold.
+     */
+    private function roleFor(string $userType, ?string $requested): string
+    {
+        if ($userType === 'coordinator') {
+            if ($requested !== null && $requested !== 'coordinator') {
+                throw ValidationException::withMessages([
+                    'role' => ['A coordinator account always has the coordinator role.'],
+                ]);
+            }
+
+            return 'coordinator';
+        }
+
+        if (in_array($requested, ['coordinator', 'portal'], true)) {
+            throw ValidationException::withMessages([
+                'role' => ['That role belongs to a different kind of account. Create a coordinator or portal account instead.'],
+            ]);
+        }
+
+        return $requested ?? $userType;
+    }
+
     public function roles(): JsonResponse
     {
         $this->authorize('manageUsers');
@@ -370,6 +486,13 @@ class UserController extends Controller
             'employee_id' => $user->employee_id,
             'last_login_at' => $user->last_login_at?->toIso8601String(),
             'created_at' => $user->created_at?->toIso8601String(),
+            'coordinator_assignment' => $user->isCoordinator() && $user->relationLoaded('activeCoordinatorAssignment')
+                ? ($user->activeCoordinatorAssignment ? [
+                    'client_company_id' => $user->activeCoordinatorAssignment->client_company_id,
+                    'company_name' => $user->activeCoordinatorAssignment->company?->company_name,
+                    'assigned_at' => $user->activeCoordinatorAssignment->assigned_at?->toIso8601String(),
+                ] : null)
+                : null,
         ];
     }
 }

@@ -10,6 +10,8 @@ import {
   XCircle,
   Info,
   UserPlus,
+  AlertTriangle,
+  Target,
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
@@ -21,7 +23,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
-import { formatDate, humanise } from '@/lib/utils'
+import { formatDate, formatDateTime, humanise } from '@/lib/utils'
+import CriterionDetails from '@/components/CriterionDetails'
 import { FillBar } from './JobRequests'
 import CriteriaDialog from '@/components/dialogs/CriteriaDialog'
 import DeployDialog from '@/components/dialogs/DeployDialog'
@@ -141,6 +144,27 @@ export default function JobRequestDetail() {
         </Card>
       )}
 
+      {job.evaluation?.is_stale && (
+        <Card className="mb-5 border-warning/40 bg-warning/5">
+          <CardContent className="flex flex-wrap items-start gap-3 py-4">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">The criteria changed after this ranking was produced</p>
+              <p className="text-sm text-muted-foreground">
+                Criteria saved {formatDateTime(job.evaluation.criteria_saved_at)}; ranking from{' '}
+                {formatDateTime(job.evaluation.last_evaluated_at)}. Run the evaluation again before relying on it.
+              </p>
+            </div>
+            {can('matching.evaluate') && (
+              <Button size="sm" onClick={handleEvaluate} disabled={evaluating}>
+                {evaluating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                Re-run evaluation
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       <Tabs defaultValue="rankings">
         <TabsList>
           <TabsTrigger value="rankings">Candidate rankings</TabsTrigger>
@@ -168,7 +192,7 @@ export default function JobRequestDetail() {
         </TabsContent>
 
         <TabsContent value="details">
-          <DetailsPanel job={job} />
+          <DetailsPanel job={job} canEdit={can('job_requests.configure_criteria')} onEdit={() => setCriteriaOpen(true)} />
         </TabsContent>
       </Tabs>
 
@@ -176,7 +200,10 @@ export default function JobRequestDetail() {
         open={criteriaOpen}
         onOpenChange={setCriteriaOpen}
         jobRequestId={id}
-        onSaved={request.refetch}
+        onSaved={() => {
+          request.refetch()
+          rankings.refetch()
+        }}
       />
 
       <DeployDialog
@@ -274,10 +301,13 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
       )}
 
       {rankings.data.map((match) => (
-        <Card key={match.id} className={match.hard_filter_pass ? '' : 'opacity-75'}>
+        <Card
+          key={match.id}
+          className={match.hard_filter_pass && match.in_current_pool !== false ? '' : 'opacity-75'}
+        >
           <CardContent className="pt-4">
             <div className="flex flex-wrap items-start gap-3">
-              {canShortlist && match.hard_filter_pass && (
+              {canShortlist && match.hard_filter_pass && match.in_current_pool !== false && (
                 <input
                   type="checkbox"
                   className="mt-1.5 h-4 w-4 rounded border-input"
@@ -293,8 +323,11 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
                 />
               )}
 
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold tabular-nums">
-                {match.rank_order}
+              <div
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold tabular-nums"
+                title={match.rank_order ? `Rank ${match.rank_order}` : 'No longer ranked'}
+              >
+                {match.rank_order ?? '—'}
               </div>
 
               <div className="min-w-0 flex-1">
@@ -307,6 +340,27 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
                   </Link>
                   <StatusBadge status={match.recommendation_level} />
                   {match.is_shortlisted && <Badge tone="info">Shortlisted</Badge>}
+                  {/* Where the person stands now, which may have moved on since
+                      the ranking was produced - deployed here, placed elsewhere,
+                      or closed. */}
+                  {['deployed', 'active', 'resigned', 'terminated', 'archived'].includes(match.current_status) && (
+                    <StatusBadge status={match.current_status} label={`Now ${humanise(match.current_status).toLowerCase()}`} />
+                  )}
+                  {match.in_current_pool === false && (
+                    <Badge tone="muted" title="Kept because they were shortlisted; they have since left the candidate pool.">
+                      No longer in the pool
+                    </Badge>
+                  )}
+                  {match.applied_for_this_position ? (
+                    <Badge tone="success">
+                      <Target className="mr-1 h-3 w-3" />
+                      Applied for this position
+                    </Badge>
+                  ) : (
+                    match.preferred_position && (
+                      <span className="text-xs text-muted-foreground">Applied for: {match.preferred_position}</span>
+                    )
+                  )}
                   {!match.hard_filter_pass && (
                     <Badge tone="destructive">
                       <XCircle className="mr-1 h-3 w-3" />
@@ -341,7 +395,10 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
                   </div>
                 )}
 
-                {canDeploy && match.hard_filter_pass && (
+                {canDeploy &&
+                  match.hard_filter_pass &&
+                  match.in_current_pool !== false &&
+                  ['approved', 'ready_for_deployment'].includes(match.current_status) && (
                   <Button size="sm" variant="outline" onClick={() => onDeploy(match)}>
                     <UserPlus className="h-3.5 w-3.5" />
                     Deploy
@@ -393,8 +450,11 @@ function ScoreBreakdown({ breakdown }) {
                 ) : (
                   <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
                 )}
-                <span className="font-medium">{criterion.label}:</span>
-                <span className="text-muted-foreground">{criterion.explanation}</span>
+                <div className="min-w-0">
+                  <span className="font-medium">{criterion.label}:</span>{' '}
+                  <span className="text-muted-foreground">{criterion.explanation}</span>
+                  <CriterionDetails details={criterion.details} />
+                </div>
               </li>
             ))}
           </ul>
@@ -423,6 +483,7 @@ function ScoreBreakdown({ breakdown }) {
                   />
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">{criterion.explanation}</p>
+                <CriterionDetails details={criterion.details} />
               </div>
             )
           })}
@@ -538,31 +599,79 @@ function describeRule(criterion) {
   return 'Scored on whether it is recorded at all'
 }
 
-function DetailsPanel({ job }) {
+/**
+ * The client's requirements as stated on the request, each marked with whether
+ * the ranking actually uses it.
+ *
+ * Typing "18 to 35" on the request used to change nothing about who was
+ * ranked, because only the configured criteria are scored. Saying so beside
+ * each requirement is what stops a stated requirement from being silently
+ * ignored.
+ */
+function DetailsPanel({ job, canEdit, onEdit }) {
+  const scoredCodes = new Set((job.criteria ?? []).map((c) => c.criteria_code))
+
   const rows = [
-    ['Required education', job.required_education],
-    ['Required experience', job.required_experience_months ? `${job.required_experience_months} months` : null],
-    ['Required certifications', job.required_certifications],
-    ['Gender preference', job.gender_preference ? humanise(job.gender_preference) : null],
-    ['Age range', job.age_min && job.age_max ? `${job.age_min}–${job.age_max} years` : null],
-    ['Minimum height', job.height_min_cm ? `${job.height_min_cm} cm` : null],
-    ['Physical requirement', job.physical_requirement],
-    ['Availability', job.availability_requirement],
-    ['How it was received', job.request_source ? humanise(job.request_source) : null],
-    ['Remarks', job.remarks],
+    ['Required education', job.required_education, 'education'],
+    ['Required experience', job.required_experience_months ? `${job.required_experience_months} months` : null, 'experience'],
+    ['Required certifications', job.required_certifications, 'certifications'],
+    [
+      'Gender preference',
+      job.gender_preference ? humanise(job.gender_preference) : null,
+      job.gender_preference && job.gender_preference !== 'any' ? 'gender' : null,
+    ],
+    [
+      'Age range',
+      job.age_min || job.age_max ? `${job.age_min ?? '—'}–${job.age_max ?? '—'} years` : null,
+      'age',
+    ],
+    ['Minimum height', job.height_min_cm ? `${job.height_min_cm} cm` : null, 'height'],
+    ['Physical requirement', job.physical_requirement, 'free_text'],
+    ['Availability', job.availability_requirement, 'free_text'],
+    ['How it was received', job.request_source ? humanise(job.request_source) : null, null],
+    ['Remarks', job.remarks, null],
   ].filter(([, value]) => value)
+
+  const unscored = rows.filter(([, , code]) => code && code !== 'free_text' && !scoredCodes.has(code))
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Client requirements</CardTitle>
-        <CardDescription>As stated by {job.company_name}.</CardDescription>
+        <CardDescription>As stated by {job.company_name}, and whether the ranking uses each one.</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        {unscored.length > 0 && (
+          <div className="flex flex-wrap items-start gap-3 rounded-md border border-warning/40 bg-warning/5 p-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            <p className="min-w-0 flex-1 text-sm text-muted-foreground">
+              {unscored.map(([label]) => label).join(', ')}{' '}
+              {unscored.length === 1 ? 'is' : 'are'} stated on this request but not used in the ranking.
+              Add {unscored.length === 1 ? 'it' : 'them'} as criteria so applicants are matched against{' '}
+              {unscored.length === 1 ? 'it' : 'them'}.
+            </p>
+            {canEdit && (
+              <Button size="sm" variant="outline" onClick={onEdit}>
+                Adjust criteria
+              </Button>
+            )}
+          </div>
+        )}
+
         <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
-          {rows.map(([label, value]) => (
+          {rows.map(([label, value, code]) => (
             <div key={label}>
-              <dt className="text-xs text-muted-foreground">{label}</dt>
+              <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {label}
+                {code === 'free_text' && <Badge tone="muted">Not scored · free text</Badge>}
+                {code && code !== 'free_text' && (
+                  scoredCodes.has(code) ? (
+                    <Badge tone="success">Used in ranking</Badge>
+                  ) : (
+                    <Badge tone="warning">Not in ranking</Badge>
+                  )
+                )}
+              </dt>
               <dd className="text-sm">{value}</dd>
             </div>
           ))}

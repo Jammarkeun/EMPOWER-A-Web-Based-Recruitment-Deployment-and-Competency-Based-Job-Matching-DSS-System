@@ -16,10 +16,12 @@ class AuditLog extends Model
 {
     protected $fillable = [
         'actor_user_id',
+        'actor_role',
         'action_type',
         'module_key',
         'record_type',
         'record_id',
+        'client_company_id',
         'old_values_json',
         'new_values_json',
         'ip_address',
@@ -33,6 +35,11 @@ class AuditLog extends Model
             'old_values_json' => 'array',
             'new_values_json' => 'array',
         ];
+    }
+
+    public function company(): BelongsTo
+    {
+        return $this->belongsTo(ClientCompany::class, 'client_company_id');
     }
 
     public function actor(): BelongsTo

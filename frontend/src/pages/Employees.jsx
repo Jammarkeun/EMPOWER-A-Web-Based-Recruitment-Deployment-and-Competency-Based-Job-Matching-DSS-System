@@ -1,14 +1,12 @@
 import * as React from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Search, IdCard } from 'lucide-react'
+import { IdCard, AlertTriangle, ChevronRight } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { PageHeader } from '@/components/PageHeader'
-import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
-import { Badge, StatusBadge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
+import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
 import { Pagination } from './Applicants'
 
@@ -35,105 +33,128 @@ export default function Employees() {
     setSearchParams(next)
   }
 
+  function clearFilters() {
+    setSearchParams(new URLSearchParams())
+  }
+
   return (
-    <>
+    <div className="space-y-4">
       <PageHeader
         title="Employees"
-        description="Deployed workers and their current assignments."
+        description="Deployed workforce, active assignments, and records."
       />
 
-      <Card className="mb-4">
-        <CardContent className="flex flex-col gap-3 pt-5 sm:flex-row">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(e) => updateFilter('search', e.target.value)}
-              placeholder="Search by name or employee number"
-              className="pl-9"
-              aria-label="Search employees"
-            />
-          </div>
+      <FilterToolbar
+        search={search}
+        onSearchChange={(val) => updateFilter('search', val)}
+        searchPlaceholder="Search by name or employee number…"
+        filters={[
+          {
+            id: 'status',
+            label: 'All Statuses',
+            value: status,
+            onChange: (val) => updateFilter('employment_status', val),
+            options: [
+              { value: '', label: 'All Statuses' },
+              { value: 'active', label: 'Active' },
+              { value: 'resigned', label: 'Resigned' },
+              { value: 'terminated', label: 'Terminated' },
+              { value: 'archived', label: 'Archived' },
+            ],
+          },
+        ]}
+        resultCount={meta?.total}
+        resultLabel="employees"
+        onClearFilters={clearFilters}
+      />
 
-          <Select
-            value={status}
-            onChange={(e) => updateFilter('employment_status', e.target.value)}
-            placeholder="All statuses"
-            aria-label="Filter by employment status"
-            className="sm:w-52"
-          >
-            <option value="active">Active</option>
-            <option value="resigned">Resigned</option>
-            <option value="terminated">Terminated</option>
-            <option value="archived">Archived</option>
-          </Select>
-        </CardContent>
-      </Card>
-
-      <Card>
-        {loading ? (
-          <SkeletonRows rows={8} columns={6} />
-        ) : error ? (
-          <ErrorState message={error.message} onRetry={refetch} />
-        ) : !data?.length ? (
-          <EmptyState
-            icon={IdCard}
-            title="No employees found"
-            description="Employees appear here once an applicant is deployed to a client company."
-          />
-        ) : (
-          <>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Employee</TableHead>
-                  <TableHead>Number</TableHead>
-                  <TableHead>Assignment</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Hired</TableHead>
-                  <TableHead>Violations</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.map((employee) => (
-                  <TableRow key={employee.id}>
-                    <TableCell>
-                      <Link to={`/employees/${employee.id}`} className="font-medium text-primary hover:underline">
+      {loading ? (
+        <Table>
+          <SkeletonRows rows={8} columns={5} />
+        </Table>
+      ) : error ? (
+        <ErrorState message={error.message} onRetry={refetch} />
+      ) : !data?.length ? (
+        <EmptyState
+          icon={IdCard}
+          title="No employees found"
+          description="Employees will appear here once an applicant is deployed to a client company."
+        />
+      ) : (
+        <div className="space-y-3">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Employee</TableHead>
+                <TableHead>Current Assignment</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Date Hired</TableHead>
+                <TableHead>Violations</TableHead>
+                <TableHead className="w-8"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((employee) => (
+                <TableRow key={employee.id} className="group cursor-pointer">
+                  {/* Identity Block: Name + Employee Number */}
+                  <TableCell>
+                    <Link to={`/employees/${employee.id}`} className="block">
+                      <p className="font-semibold text-foreground group-hover:text-brand transition-colors">
                         {employee.full_name}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {employee.employee_number}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {employee.current_position_title || '—'}
-                      <p className="text-xs text-muted-foreground">
-                        {employee.current_company}
-                        {employee.current_department && ` · ${employee.current_department}`}
                       </p>
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={employee.employment_status} />
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                      {formatDate(employee.hire_date)}
-                    </TableCell>
-                    <TableCell>
-                      {employee.violations_count > 0 ? (
-                        <Badge tone="warning">{employee.violations_count}</Badge>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">None</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                      <p className="font-mono text-xs text-muted-foreground tabular-nums">
+                        {employee.employee_number || `EMP-${employee.id}`}
+                      </p>
+                    </Link>
+                  </TableCell>
 
-            <Pagination meta={meta} onPage={(p) => updateFilter('page', String(p))} />
-          </>
-        )}
-      </Card>
-    </>
+                  {/* Assignment: Position title primary, Client · Department secondary */}
+                  <TableCell>
+                    <p className="text-sm font-medium text-foreground">
+                      {employee.current_position_title || 'Unassigned'}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {employee.current_company || 'No active client'}
+                      {employee.current_department && ` · ${employee.current_department}`}
+                    </p>
+                  </TableCell>
+
+                  {/* Status Badge */}
+                  <TableCell>
+                    <StatusBadge status={employee.employment_status} />
+                  </TableCell>
+
+                  {/* Hired Date */}
+                  <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground tabular-nums">
+                    {formatDate(employee.hire_date)}
+                  </TableCell>
+
+                  {/* Violations Column */}
+                  <TableCell>
+                    {employee.violations_count > 0 ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-medium text-status-warning-text bg-status-warning-bg px-2 py-0.5 rounded-tag">
+                        <AlertTriangle className="h-3 w-3" />
+                        {employee.violations_count} {employee.violations_count === 1 ? 'record' : 'records'}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">None</span>
+                    )}
+                  </TableCell>
+
+                  {/* Action Link */}
+                  <TableCell className="text-right">
+                    <Link to={`/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand">
+                      <ChevronRight className="h-4 w-4" />
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          <Pagination meta={meta} onPage={(p) => updateFilter('page', String(p))} />
+        </div>
+      )}
+    </div>
   )
 }

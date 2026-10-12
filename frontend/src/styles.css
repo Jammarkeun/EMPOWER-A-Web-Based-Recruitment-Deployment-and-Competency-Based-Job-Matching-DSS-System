@@ -17,67 +17,92 @@
  */
 @layer base {
   :root {
-    --background: 210 20% 98%;
-    --foreground: 222 47% 11%;
+    /* Brand & Navy Palette */
+    --color-navy-900: #0B1F5E;   /* Sidebar background */
+    --color-navy-800: #12307A;   /* Sidebar hover */
+    --color-navy-700: #173B8F;   /* Sidebar active background */
+    --color-brand:    #234B9B;   /* Links, primary buttons, focus accents */
+    --color-brand-hover: #1C3F85;
 
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    --color-text:        #10213A;
+    --color-text-muted:  #64748B;
+    --color-text-subtle: #94A3B8;
+    --color-bg:          #F7F9FC;   /* App background */
+    --color-surface:     #FFFFFF;
+    --color-border:      #D9E1EC;
+    --color-border-strong: #C3CEDD;
 
-    --primary: 221 70% 34%;
-    --primary-foreground: 210 40% 98%;
+    /* Base Surfaces (HSL aliases for Tailwind compatibility) */
+    --background: 220 33% 98%;       /* #F7F9FC */
+    --foreground: 216 57% 15%;       /* #10213A */
 
-    --secondary: 210 40% 94%;
-    --secondary-foreground: 222 47% 20%;
+    --card: 0 0% 100%;              /* #FFFFFF */
+    --card-foreground: 216 57% 15%;  /* #10213A */
 
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 45%;
+    --primary: 220 63% 37%;          /* #234B9B */
+    --primary-foreground: 0 0% 100%;
 
-    --accent: 210 40% 94%;
-    --accent-foreground: 222 47% 20%;
+    --secondary: 216 28% 95%;        /* #F0F4F9 */
+    --secondary-foreground: 216 57% 15%;
+
+    --muted: 215 25% 95%;           /* #F1F5F9 */
+    --muted-foreground: 215 16% 45%; /* #64748B */
+
+    --accent: 216 28% 95%;
+    --accent-foreground: 216 57% 15%;
 
     --destructive: 0 72% 45%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 0 0% 100%;
 
-    --success: 152 60% 32%;
-    --success-foreground: 210 40% 98%;
+    --success: 142 71% 26%;
+    --success-foreground: 0 0% 100%;
 
-    --warning: 32 90% 42%;
-    --warning-foreground: 210 40% 98%;
+    --warning: 33 100% 35%;
+    --warning-foreground: 0 0% 100%;
 
-    --border: 214 30% 89%;
-    --input: 214 30% 89%;
-    --ring: 221 70% 34%;
+    --border: 215 25% 89%;          /* #D9E1EC */
+    --input: 215 25% 89%;
+    --ring: 220 63% 37%;
 
-    /*
-     * The sidebar wears the agency's own colour.
-     *
-     * hsl(229 95% 25%) is #03197C sampled from the CDE logo, not an
-     * approximation of it — which is what lets the logo sit on the sidebar with
-     * its baked-in background invisible, exactly as it does on the sign-in
-     * panel. The navy is identical in both themes: a client's identity should
-     * not change because the user prefers dark mode.
-     *
-     * Everything painted on it is defined here rather than as one-off opacity
-     * values in the markup, so the contrast decisions live in one place.
-     */
-    --sidebar: 229 95% 25%;
+    /* Sidebar Tokens */
+    --sidebar: 227 79% 21%;          /* #0B1F5E */
     --sidebar-foreground: 210 40% 98%;
-    --sidebar-muted: 214 45% 78%;
-    --sidebar-hover: 229 60% 34%;
-    --sidebar-active: 213 90% 72%;
-    --sidebar-border: 229 55% 36%;
+    --sidebar-muted: 215 20% 65%;
+    --sidebar-hover: 225 74% 27%;    /* #12307A */
+    --sidebar-active: 223 72% 33%;   /* #173B8F */
+    --sidebar-border: 225 60% 24%;
 
-    --radius: 0.5rem;
+    /* Semantic Status Tokens (Light Mode) */
+    --status-success-bg: #E6F4EA;
+    --status-success-text: #137333;
+    --status-success-border: #CEEAD6;
+
+    --status-warning-bg: #FEF7E0;
+    --status-warning-text: #B06000;
+    --status-warning-border: #FCE8E6;
+
+    --status-info-bg: #E8F0FE;
+    --status-info-text: #1A73E8;
+    --status-info-border: #D2E3FC;
+
+    --status-danger-bg: #FCE8E6;
+    --status-danger-text: #C5221F;
+    --status-danger-border: #FAD2CF;
+
+    --status-neutral-bg: #F1F3F4;
+    --status-neutral-text: #5F6368;
+    --status-neutral-border: #DADCE0;
+
+    /* Strict Radii Token Scale */
+    --radius-control: 6px;   /* Buttons, inputs, custom selects */
+    --radius-panel:   10px;  /* Cards, panels, table containers */
+    --radius-modal:   12px;  /* Dialogs, popovers */
+    --radius-badge:   999px; /* Status badges ONLY */
+    --radius-tag:     4px;   /* Counts & tags */
+    --radius:         6px;
   }
 
-  /*
-   * Dark theme.
-   *
-   * Not a naive inversion. The accent is lifted well above its light-mode value
-   * because a deep blue on a dark ground fails contrast outright, and the
-   * surfaces are given a slight blue bias so the greys read as chosen rather
-   * than as a flat neutral.
-   */
+  /* Dark theme */
   .dark {
     --background: 222 47% 7%;
     --foreground: 210 30% 92%;
@@ -85,7 +110,7 @@
     --card: 222 40% 11%;
     --card-foreground: 210 30% 92%;
 
-    --primary: 213 80% 62%;
+    --primary: 218 65% 58%;
     --primary-foreground: 222 47% 9%;
 
     --secondary: 217 30% 18%;
@@ -100,27 +125,37 @@
     --destructive: 0 68% 58%;
     --destructive-foreground: 222 47% 9%;
 
-    --success: 152 50% 48%;
-    --success-foreground: 222 47% 9%;
-
-    --warning: 35 85% 58%;
-    --warning-foreground: 222 47% 9%;
-
     --border: 217 28% 21%;
     --input: 217 28% 21%;
-    --ring: 213 80% 62%;
+    --ring: 218 65% 58%;
 
-    /*
-     * Deliberately the same navy as light mode - it is the brand, not a theme
-     * surface. Only the lines and hover states are eased back, because the same
-     * separation reads louder against a dark page than a light one.
-     */
-    --sidebar: 229 95% 25%;
+    --sidebar: 227 79% 14%;
     --sidebar-foreground: 210 35% 94%;
     --sidebar-muted: 214 35% 72%;
-    --sidebar-hover: 229 55% 31%;
-    --sidebar-active: 213 85% 70%;
-    --sidebar-border: 229 45% 30%;
+    --sidebar-hover: 225 60% 20%;
+    --sidebar-active: 223 60% 26%;
+    --sidebar-border: 225 50% 18%;
+
+    /* Semantic Status Tokens (Dark Mode) */
+    --status-success-bg: rgba(19, 115, 51, 0.2);
+    --status-success-text: #81C995;
+    --status-success-border: rgba(129, 201, 149, 0.3);
+
+    --status-warning-bg: rgba(176, 96, 0, 0.2);
+    --status-warning-text: #FDE293;
+    --status-warning-border: rgba(253, 226, 147, 0.3);
+
+    --status-info-bg: rgba(26, 115, 232, 0.2);
+    --status-info-text: #8AB4F8;
+    --status-info-border: rgba(138, 180, 248, 0.3);
+
+    --status-danger-bg: rgba(197, 34, 31, 0.2);
+    --status-danger-text: #F28B82;
+    --status-danger-border: rgba(242, 139, 130, 0.3);
+
+    --status-neutral-bg: rgba(255, 255, 255, 0.08);
+    --status-neutral-text: #BDC1C6;
+    --status-neutral-border: rgba(255, 255, 255, 0.15);
   }
 
   * {

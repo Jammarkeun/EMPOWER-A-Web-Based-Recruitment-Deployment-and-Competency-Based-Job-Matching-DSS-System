@@ -1,5 +1,6 @@
 import * as React from 'react'
-import { Check, Circle, Dot, ArrowRight, Loader2, Archive } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Check, Circle, Dot, ArrowRight, Loader2, Archive, IdCard } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn, humanise } from '@/lib/utils'
 
@@ -59,6 +60,16 @@ const STAGES = [
 /** Statuses that sit outside the forward path rather than on it. */
 const TERMINAL = ['resigned', 'terminated', 'archived']
 
+/**
+ * Statuses that belong to employment rather than recruitment.
+ *
+ * Once somebody is deployed, the rest of their lifecycle - schedule, DTR,
+ * discipline, resignation, termination - is run from the employee record, and
+ * none of it is a button here. Offering "Terminated" as a one-click move on
+ * this panel is exactly what used to end employment with no record behind it.
+ */
+const EMPLOYMENT = ['deployed', 'active', 'resigned', 'terminated']
+
 function stageIndexOf(status) {
   return STAGES.findIndex((stage) => stage.statuses.includes(status))
 }
@@ -74,7 +85,7 @@ function describeTransition(status) {
   return stage ? stage.label : humanise(status)
 }
 
-export default function ApplicantProgress({ applicant, transitions = [], onMove, busy, canChange }) {
+export default function ApplicantProgress({ applicant, transitions = [], onMove, busy, canChange, employeeId }) {
   const current = applicant.current_status
   const currentIndex = stageIndexOf(current)
   const isTerminal = TERMINAL.includes(current)
@@ -198,10 +209,26 @@ export default function ApplicantProgress({ applicant, transitions = [], onMove,
         </div>
       )}
 
-      {canChange && transitions.length === 0 && (
-        <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-          There is no available next stage from here.
-        </p>
+      {EMPLOYMENT.includes(current) && employeeId ? (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+          <p className="text-xs text-muted-foreground">
+            {['resigned', 'terminated'].includes(current)
+              ? 'Employment ended through the separation process. The full record is on the employee file.'
+              : 'Employment is managed on the employee record: schedule and DTR, discipline, and resignation or termination.'}
+          </p>
+          <Button variant="outline" size="sm" asChild>
+            <Link to={`/employees/${employeeId}`}>
+              <IdCard className="h-3.5 w-3.5" />
+              Open employee record
+            </Link>
+          </Button>
+        </div>
+      ) : (
+        canChange && transitions.length === 0 && (
+          <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+            There is no available next stage from here.
+          </p>
+        )
       )}
     </div>
   )

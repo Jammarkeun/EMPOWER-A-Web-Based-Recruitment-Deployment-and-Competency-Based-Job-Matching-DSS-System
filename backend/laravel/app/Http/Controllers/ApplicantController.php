@@ -38,6 +38,9 @@ class ApplicantController extends Controller
             'folder_category' => ['nullable', Rule::in(['folder_1', 'folder_2', 'folder_3'])],
             'source_channel' => ['nullable', Rule::in(['walk_in', 'messenger', 'email', 'online'])],
             'awaiting_identity_check' => ['nullable', 'boolean'],
+            // Who applied for one position - the list a client's posting
+            // opens onto from the company workspace.
+            'preferred_position_id' => ['nullable', 'integer', 'exists:job_positions,id'],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
@@ -51,6 +54,7 @@ class ApplicantController extends Controller
             ->when($filters['folder_category'] ?? null, fn ($q, $v) => $q->where('folder_category', $v))
             ->when($filters['source_channel'] ?? null, fn ($q, $v) => $q->where('source_channel', $v))
             ->when($filters['awaiting_identity_check'] ?? false, fn ($q) => $q->awaitingIdentityCheck())
+            ->when($filters['preferred_position_id'] ?? null, fn ($q, $v) => $q->where('preferred_position_id', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '<=', $v))
             ->orderBy($filters['sort_by'] ?? 'application_date', $filters['sort_dir'] ?? 'desc')
@@ -142,9 +146,17 @@ class ApplicantController extends Controller
         return ApiResponse::success([
             'applicant' => new ApplicantResource($applicant),
             'folder' => $this->folders->explain($applicant),
-            'allowed_transitions' => $this->lifecycle->allowedNextStatuses($applicant->current_status),
+            'allowed_transitions' => $this->lifecycle->offeredNextStatuses($applicant->current_status),
         ]);
     }
+
+    /**
+     * The applicant's own details that the matching engine reads.
+     */
+    private const SCORED_FIELDS = [
+        'sex', 'birth_date', 'height_cm', 'distance_km', 'availability_date',
+        'communication_rating', 'reliability_rating',
+    ];
 
     public function update(Request $request, Applicant $applicant): JsonResponse
     {
@@ -177,7 +189,15 @@ class ApplicantController extends Controller
         $data = $this->withPositionTitle($data);
         $before = $applicant->only(array_keys($data));
 
-        $applicant->update(array_merge($data, ['updated_by' => $request->user()->id]));
+        $applicant->fill(array_merge($data, ['updated_by' => $request->user()->id]));
+
+        // A change to anything the matching engine scores makes earlier
+        // rankings that include this applicant out of date.
+        if ($applicant->isDirty(self::SCORED_FIELDS)) {
+            $applicant->forceFill(['profile_updated_at' => now()]);
+        }
+
+        $applicant->save();
 
         $this->audit->recordUpdate('applicants', Applicant::class, $applicant->id, $before, $data);
 
@@ -212,6 +232,11 @@ class ApplicantController extends Controller
             'disposition_note' => ['nullable', 'string', 'max:255'],
         ]);
 
+        // Employment and separation statuses belong to their workflows. Checked
+        // before anything is written, so a refused move leaves no disposition
+        // behind on the record either.
+        $this->lifecycle->assertManualTransitionAllowed($data['to_status']);
+
         // Recorded before the transition, so it is already on the record when
         // the status history row and its notification are written.
         if (! empty($data['disposition_reason'])) {
@@ -231,7 +256,7 @@ class ApplicantController extends Controller
 
         return ApiResponse::success([
             'applicant' => new ApplicantResource($applicant),
-            'allowed_transitions' => $this->lifecycle->allowedNextStatuses($applicant->current_status),
+            'allowed_transitions' => $this->lifecycle->offeredNextStatuses($applicant->current_status),
         ], 'Status updated');
     }
 
@@ -320,8 +345,8 @@ class ApplicantController extends Controller
                 'type' => 'evaluation',
                 'occurred_at' => $m->evaluated_at?->toIso8601String(),
                 'title' => 'Evaluated for '.($m->jobRequest?->position_title ?? 'a request'),
-                'detail' => "Ranked #{$m->rank_order} at {$m->percentage_score}% ("
-                    .str_replace('_', ' ', $m->recommendation_level).')',
+                'detail' => ($m->rank_order !== null ? "Ranked #{$m->rank_order} at " : 'Scored ')
+                    ."{$m->percentage_score}% (".str_replace('_', ' ', $m->recommendation_level).')',
                 'actor' => null,
             ]);
 

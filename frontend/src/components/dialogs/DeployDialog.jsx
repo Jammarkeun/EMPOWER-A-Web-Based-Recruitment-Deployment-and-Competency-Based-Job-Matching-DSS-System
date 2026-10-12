@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FormGrid } from '@/components/ui/form'
+import { todayISO } from '@/lib/utils'
 
 /**
  * Records a deployment, converting the applicant into an employee.
@@ -27,7 +28,7 @@ export default function DeployDialog({ applicant, jobRequest, onOpenChange, onDe
     supervisor_name: '',
     employee_number: '',
     biometric_number: '',
-    deployment_date: new Date().toISOString().slice(0, 10),
+    deployment_date: todayISO(),
     remarks: '',
   })
   const [errors, setErrors] = React.useState({})
@@ -42,7 +43,7 @@ export default function DeployDialog({ applicant, jobRequest, onOpenChange, onDe
         supervisor_name: '',
         employee_number: '',
         biometric_number: '',
-        deployment_date: new Date().toISOString().slice(0, 10),
+        deployment_date: todayISO(),
         remarks: '',
       })
       setErrors({})

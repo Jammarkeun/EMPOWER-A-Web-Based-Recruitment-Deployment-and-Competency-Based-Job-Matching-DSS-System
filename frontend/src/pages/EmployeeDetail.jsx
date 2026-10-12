@@ -1,9 +1,9 @@
 import * as React from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { Loader2, Plus, FileWarning, Truck, Clock, AlertTriangle } from 'lucide-react'
+import { useParams, useSearchParams, Link } from 'react-router-dom'
+import { Loader2, FileWarning, Truck, Clock, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
-import { post } from '@/lib/api'
+import { post, upload } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -23,21 +23,43 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { cn, formatDate, formatDateTime, humanise } from '@/lib/utils'
+import { cn, formatDate, formatDateTime, humanise, todayISO } from '@/lib/utils'
+import SeparationPanel from '@/components/SeparationPanel'
+import AttendancePanel from '@/components/AttendancePanel'
+import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+
+const TABS = ['assignment', 'attendance', 'violations', 'history']
 
 export default function EmployeeDetail() {
   const { id } = useParams()
   const { can } = useAuth()
   const { data, loading, error, refetch } = useApi(`/employees/${id}`)
 
-  const [violationOpen, setViolationOpen] = React.useState(false)
+  const [violationPrefill, setViolationPrefill] = React.useState(null)
   const [separationOpen, setSeparationOpen] = React.useState(false)
+
+  // The open tab lives in the URL, so the attendance summary can link
+  // straight to one employee's DTR and the back button returns to it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requested = searchParams.get('tab')
+  const tab = TABS.includes(requested) && (requested !== 'attendance' || can('attendance.view')) ? requested : 'assignment'
+
+  function selectTab(value) {
+    const next = new URLSearchParams(searchParams)
+    if (value === 'assignment') next.delete('tab')
+    else next.set('tab', value)
+    setSearchParams(next, { replace: true })
+  }
 
   if (loading) return <LoadingState label="Loading employee…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
   if (!data) return null
 
   const { employee, status_history, resignation, termination } = data
+  const openCases = {
+    resignation: Boolean(resignation?.is_open),
+    termination: Boolean(termination?.is_open),
+  }
 
   return (
     <>
@@ -55,12 +77,12 @@ export default function EmployeeDetail() {
           employee.employment_status === 'active' && (
             <>
               {can('violations.create') && (
-                <Button variant="outline" onClick={() => setViolationOpen(true)}>
+                <Button variant="outline" onClick={() => setViolationPrefill({})}>
                   <FileWarning className="h-4 w-4" />
                   Record violation
                 </Button>
               )}
-              {can('separation.create') && (
+              {can('separation.create') && !(openCases.resignation && openCases.termination) && (
                 <Button variant="outline" onClick={() => setSeparationOpen(true)}>
                   File separation
                 </Button>
@@ -79,9 +101,25 @@ export default function EmployeeDetail() {
         )}
       </div>
 
-      <Tabs defaultValue="assignment">
+      {(openCases.resignation || openCases.termination) && (
+        <div className="mb-5 flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-2.5 text-sm">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          <p>
+            {openCases.termination
+              ? 'A termination is awaiting review.'
+              : 'A resignation is being processed.'}{' '}
+            <button type="button" className="font-medium text-primary hover:underline" onClick={() => selectTab('assignment')}>
+              See the separation below
+            </button>
+            .
+          </p>
+        </div>
+      )}
+
+      <Tabs value={tab} onValueChange={selectTab}>
         <TabsList>
           <TabsTrigger value="assignment">Assignment</TabsTrigger>
+          {can('attendance.view') && <TabsTrigger value="attendance">Attendance (DTR)</TabsTrigger>}
           <TabsTrigger value="violations">
             Discipline{employee.violations?.length ? ` (${employee.violations.length})` : ''}
           </TabsTrigger>
@@ -149,29 +187,22 @@ export default function EmployeeDetail() {
             </Card>
           </div>
 
-          {(resignation || termination) && (
-            <Card className="mt-4 border-warning/40 bg-warning/5">
-              <CardHeader>
-                <CardTitle>Separation</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                {resignation && (
-                  <p>
-                    Resignation filed {formatDate(resignation.filing_date)} — {resignation.reason}.
-                    Clearance: {humanise(resignation.clearance_status)}. Status:{' '}
-                    {humanise(resignation.status)}.
-                  </p>
-                )}
-                {termination && (
-                  <p>
-                    Termination dated {formatDate(termination.termination_date)} — {termination.reason}.
-                    Status: {humanise(termination.status)}.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
+          <SeparationPanel
+            employee={employee}
+            resignation={resignation}
+            termination={termination}
+            onChanged={refetch}
+          />
         </TabsContent>
+
+        {can('attendance.view') && (
+          <TabsContent value="attendance">
+            <AttendancePanel
+              employee={employee}
+              onRecordViolation={(prefill) => setViolationPrefill(prefill)}
+            />
+          </TabsContent>
+        )}
 
         <TabsContent value="violations">
           <Card>
@@ -214,6 +245,9 @@ export default function EmployeeDetail() {
                       )}
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {violation.issued_by ? `Issued by ${violation.issued_by}. ` : ''}
+                        {violation.reported_by
+                          ? `Reported by coordinator ${violation.reported_by}${violation.report_code ? ` (${violation.report_code})` : ''}. `
+                          : ''}
                         {violation.is_expired
                           ? `Stopped counting ${formatDate(violation.expires_on)}.`
                           : `Counts until ${formatDate(violation.expires_on)}.`}
@@ -256,22 +290,44 @@ export default function EmployeeDetail() {
         </TabsContent>
       </Tabs>
 
-      <ViolationDialog open={violationOpen} onOpenChange={setViolationOpen} employeeId={id} onSaved={refetch} />
-      <SeparationDialog open={separationOpen} onOpenChange={setSeparationOpen} employeeId={id} onSaved={refetch} />
+      <ViolationDialog
+        open={violationPrefill !== null}
+        onOpenChange={(open) => !open && setViolationPrefill(null)}
+        employeeId={id}
+        initial={violationPrefill}
+        onSaved={refetch}
+      />
+      <SeparationDialog
+        open={separationOpen}
+        onOpenChange={setSeparationOpen}
+        employee={employee}
+        openCases={openCases}
+        onSaved={refetch}
+      />
     </>
   )
 }
 
-function ViolationDialog({ open, onOpenChange, employeeId, onSaved }) {
-  const [form, setForm] = React.useState({
-    violation_date: new Date().toISOString().slice(0, 10),
+function ViolationDialog({ open, onOpenChange, employeeId, initial, onSaved }) {
+  const blank = () => ({
+    violation_date: todayISO(),
     violation_type: 'late',
     description: '',
     penalty: '',
   })
+  const [form, setForm] = React.useState(blank)
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
   const toast = useToast()
+
+  // Opened from a DTR row, the facts arrive already written; opened from the
+  // header, it starts empty. Either way nothing is saved until somebody does.
+  React.useEffect(() => {
+    if (open) {
+      setForm({ ...blank(), ...(initial ?? {}) })
+      setErrors({})
+    }
+  }, [open, initial])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -299,6 +355,7 @@ function ViolationDialog({ open, onOpenChange, employeeId, onSaved }) {
           <DialogDescription>
             This becomes part of the employee's permanent record and may later support a termination,
             so describe what happened factually.
+            {initial?.violation_date && ' Filled in from the DTR — check it before saving.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -309,7 +366,7 @@ function ViolationDialog({ open, onOpenChange, employeeId, onSaved }) {
                 type="date"
                 value={form.violation_date}
                 onChange={(e) => setForm({ ...form, violation_date: e.target.value })}
-                max={new Date().toISOString().slice(0, 10)}
+                max={todayISO()}
               />
             </Field>
 
@@ -359,126 +416,237 @@ function ViolationDialog({ open, onOpenChange, employeeId, onSaved }) {
   )
 }
 
-function SeparationDialog({ open, onOpenChange, employeeId, onSaved }) {
-  const [type, setType] = React.useState('resignation')
-  const [form, setForm] = React.useState({
+function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) {
+  const today = todayISO()
+  const firstAvailable = openCases.resignation ? 'termination' : 'resignation'
+
+  const blank = () => ({
     reason: '',
-    filing_date: new Date().toISOString().slice(0, 10),
+    filing_date: today,
     rendering_days: '30',
     exit_date: '',
-    termination_date: new Date().toISOString().slice(0, 10),
+    termination_date: today,
+    remarks: '',
   })
+
+  const [type, setType] = React.useState(firstAvailable)
+  const [form, setForm] = React.useState(blank)
+  const [file, setFile] = React.useState(null)
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
+  const [reviewing, setReviewing] = React.useState(false)
   const toast = useToast()
 
-  async function handleSubmit(event) {
-    event.preventDefault()
+  React.useEffect(() => {
+    if (open) {
+      setType(firstAvailable)
+      setForm(blank())
+      setFile(null)
+      setErrors({})
+      setReviewing(false)
+    }
+  }, [open])
+
+  function buildBody() {
+    const fields =
+      type === 'resignation'
+        ? {
+            reason: form.reason,
+            filing_date: form.filing_date,
+            rendering_days: form.rendering_days,
+            exit_date: form.exit_date,
+            remarks: form.remarks,
+          }
+        : {
+            reason: form.reason,
+            termination_date: form.termination_date,
+            remarks: form.remarks,
+            status: 'for_review',
+          }
+
+    // Multipart so a letter or supporting document can travel with it.
+    const body = new FormData()
+    Object.entries(fields).forEach(([key, value]) => {
+      if (value !== '' && value !== null && value !== undefined) body.append(key, value)
+    })
+    if (file) body.append(type === 'resignation' ? 'letter' : 'documents', file)
+
+    return body
+  }
+
+  async function submit() {
     setErrors({})
     setSubmitting(true)
 
     try {
+      await upload(`/employees/${employee.id}/${type === 'resignation' ? 'resignations' : 'terminations'}`, buildBody())
+
       if (type === 'resignation') {
-        await post(`/employees/${employeeId}/resignations`, {
-          reason: form.reason,
-          filing_date: form.filing_date,
-          rendering_days: form.rendering_days || undefined,
-          exit_date: form.exit_date || undefined,
-        })
-        toast.success('Resignation filed', 'Grant clearance before completing it.')
+        toast.success('Resignation filed', 'Record clearance and an exit date, then complete it.')
       } else {
-        await post(`/employees/${employeeId}/terminations`, {
-          reason: form.reason,
-          termination_date: form.termination_date,
-          status: 'for_review',
-        })
-        toast.success('Termination filed for review', 'An administrator must finalise it.')
+        toast.success('Termination filed for review', 'An administrator must finalise or withdraw it.')
       }
 
       onOpenChange(false)
       onSaved()
     } catch (error) {
+      setReviewing(false)
       if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not file separation', error.message)
+      else toast.error('Could not file the separation', error.message)
     } finally {
       setSubmitting(false)
     }
   }
 
+  function handleSubmit(event) {
+    event.preventDefault()
+
+    if (!form.reason.trim()) {
+      setErrors({ reason: ['A reason is required.'] })
+      return
+    }
+
+    // A termination is reviewed once more before it is filed: who, why, and
+    // what filing it does and does not do.
+    if (type === 'termination') {
+      setReviewing(true)
+      return
+    }
+
+    submit()
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>File separation</DialogTitle>
-          <DialogDescription>
-            Filing records the intent. Employment does not end until the resignation is cleared or
-            the termination is finalised.
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open && !reviewing} onOpenChange={(next) => !submitting && onOpenChange(next)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>File separation</DialogTitle>
+            <DialogDescription>
+              Filing records the intent. Employment does not end until the resignation is cleared and
+              completed, or the termination is finalised by an administrator.
+            </DialogDescription>
+          </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <Field label="Type" htmlFor="type" required>
-            <Select value={type} onChange={(e) => setType(e.target.value)}>
-              <option value="resignation">Resignation</option>
-              <option value="termination">Termination</option>
-            </Select>
-          </Field>
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            <Field label="Type" htmlFor="type" required>
+              <Select value={type} onChange={(e) => setType(e.target.value)}>
+                <option value="resignation" disabled={openCases.resignation}>
+                  Resignation{openCases.resignation ? ' (one is already in progress)' : ''}
+                </option>
+                <option value="termination" disabled={openCases.termination}>
+                  Termination{openCases.termination ? ' (one is already awaiting review)' : ''}
+                </option>
+              </Select>
+            </Field>
 
-          <Field label="Reason" htmlFor="reason" required error={errors.reason?.[0]}>
-            <Textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
-          </Field>
+            <Field label="Reason" htmlFor="reason" required error={errors.reason?.[0]}>
+              <Textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+            </Field>
 
-          {type === 'resignation' ? (
-            <FormGrid>
-              <Field label="Filing date" htmlFor="filing_date" required error={errors.filing_date?.[0]}>
-                <Input
-                  type="date"
-                  value={form.filing_date}
-                  onChange={(e) => setForm({ ...form, filing_date: e.target.value })}
-                />
-              </Field>
+            {type === 'resignation' ? (
+              <FormGrid>
+                <Field label="Filing date" htmlFor="filing_date" required error={errors.filing_date?.[0]}>
+                  <Input
+                    type="date"
+                    value={form.filing_date}
+                    onChange={(e) => setForm({ ...form, filing_date: e.target.value })}
+                  />
+                </Field>
+                <Field
+                  label="Rendering days"
+                  htmlFor="rendering_days"
+                  error={errors.rendering_days?.[0]}
+                  hint="Standard notice is 30 days"
+                >
+                  <Input
+                    type="number"
+                    min="0"
+                    max="90"
+                    value={form.rendering_days}
+                    onChange={(e) => setForm({ ...form, rendering_days: e.target.value })}
+                  />
+                </Field>
+                <Field label="Exit date" htmlFor="exit_date" error={errors.exit_date?.[0]} hint="Can be set later">
+                  <Input
+                    type="date"
+                    value={form.exit_date}
+                    min={form.filing_date}
+                    onChange={(e) => setForm({ ...form, exit_date: e.target.value })}
+                  />
+                </Field>
+              </FormGrid>
+            ) : (
               <Field
-                label="Rendering days"
-                htmlFor="rendering_days"
-                error={errors.rendering_days?.[0]}
-                hint="Standard notice is 30 days"
+                label="Termination date"
+                htmlFor="termination_date"
+                required
+                error={errors.termination_date?.[0]}
               >
                 <Input
-                  type="number"
-                  value={form.rendering_days}
-                  onChange={(e) => setForm({ ...form, rendering_days: e.target.value })}
-                />
-              </Field>
-              <Field label="Exit date" htmlFor="exit_date" error={errors.exit_date?.[0]}>
-                <Input
                   type="date"
-                  value={form.exit_date}
-                  onChange={(e) => setForm({ ...form, exit_date: e.target.value })}
+                  value={form.termination_date}
+                  onChange={(e) => setForm({ ...form, termination_date: e.target.value })}
                 />
               </Field>
-            </FormGrid>
-          ) : (
-            <Field label="Termination date" htmlFor="termination_date" required error={errors.termination_date?.[0]}>
+            )}
+
+            <Field label="Remarks" htmlFor="separation_remarks" error={errors.remarks?.[0]}>
+              <Input value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} />
+            </Field>
+
+            <Field
+              label={type === 'resignation' ? 'Resignation letter' : 'Supporting documents'}
+              htmlFor="separation_file"
+              error={errors.letter?.[0] ?? errors.documents?.[0]}
+              hint="Optional. PDF or image, up to 10 MB."
+            >
               <Input
-                type="date"
-                value={form.termination_date}
-                onChange={(e) => setForm({ ...form, termination_date: e.target.value })}
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.webp"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />
             </Field>
-          )}
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={submitting}>
-              {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              File {type}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant={type === 'termination' ? 'destructive' : 'default'} disabled={submitting}>
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                {type === 'termination' ? 'Review termination…' : 'File resignation'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmActionDialog
+        open={open && reviewing}
+        onOpenChange={(next) => !next && setReviewing(false)}
+        tone="warning"
+        title="File a termination for review?"
+        description="This does not end the employment yet. An administrator reviews it and either finalises or withdraws it."
+        details={[
+          ['Employee', employee.full_name],
+          ['Employee no.', employee.employee_number],
+          ['Reason', form.reason],
+          ['Termination date', formatDate(form.termination_date)],
+          ['Attachment', file?.name],
+        ]}
+        consequences={[
+          'The termination is recorded as awaiting review, with you as the officer who filed it.',
+          'The employee stays active until it is finalised.',
+        ]}
+        confirmLabel="File for review"
+        onConfirm={submit}
+      >
+        <Button type="button" variant="link" size="sm" className="h-auto justify-start p-0" onClick={() => setReviewing(false)}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to the form
+        </Button>
+      </ConfirmActionDialog>
+    </>
   )
 }
 

@@ -68,6 +68,8 @@ class ArchiveController extends Controller
 
         $filters = $request->validate([
             'actor_user_id' => ['nullable', 'integer', 'exists:users,id'],
+            'actor_role' => ['nullable', 'string', 'max:40'],
+            'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'action_type' => ['nullable', 'string'],
             'module_key' => ['nullable', 'string'],
             'record_type' => ['nullable', 'string'],
@@ -78,8 +80,10 @@ class ArchiveController extends Controller
         ]);
 
         $logs = AuditLog::query()
-            ->with('actor')
+            ->with(['actor', 'company:id,company_name'])
             ->when($filters['actor_user_id'] ?? null, fn ($q, $v) => $q->where('actor_user_id', $v))
+            ->when($filters['actor_role'] ?? null, fn ($q, $v) => $q->where('actor_role', $v))
+            ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('client_company_id', $v))
             ->when($filters['action_type'] ?? null, fn ($q, $v) => $q->where('action_type', $v))
             ->when($filters['module_key'] ?? null, fn ($q, $v) => $q->where('module_key', $v))
             ->when($filters['record_type'] ?? null, fn ($q, $v) => $q->where('record_type', $v))

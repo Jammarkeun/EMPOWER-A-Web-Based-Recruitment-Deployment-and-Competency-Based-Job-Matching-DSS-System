@@ -26,8 +26,8 @@ class Resignation extends Model
     protected function casts(): array
     {
         return [
-            'filing_date' => 'date',
-            'exit_date' => 'date',
+            'filing_date' => 'date:Y-m-d',
+            'exit_date' => 'date:Y-m-d',
             'rendering_days' => 'integer',
         ];
     }
@@ -49,6 +49,21 @@ class Resignation extends Model
      */
     public function canBeCompleted(): bool
     {
-        return $this->clearance_status === 'cleared' && ! is_null($this->exit_date);
+        return $this->isOpen()
+            && $this->clearance_status === 'cleared'
+            && ! is_null($this->exit_date);
+    }
+
+    /**
+     * Statuses in which a resignation is still being processed.
+     *
+     * A completed resignation has ended someone's employment and a withdrawn
+     * one never will, so neither may be edited or completed again.
+     */
+    public const OPEN_STATUSES = ['filed', 'accepted'];
+
+    public function isOpen(): bool
+    {
+        return in_array($this->status, self::OPEN_STATUSES, true);
     }
 }

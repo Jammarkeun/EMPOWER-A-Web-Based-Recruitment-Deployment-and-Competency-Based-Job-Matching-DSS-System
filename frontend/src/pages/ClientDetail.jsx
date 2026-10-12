@@ -8,6 +8,7 @@ import {
   ClipboardList,
   SlidersHorizontal,
   ChevronRight,
+  Pencil,
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
@@ -20,8 +21,14 @@ import { Input } from '@/components/ui/input'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Field, FormGrid } from '@/components/ui/form'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import DocumentFolders from '@/components/DocumentFolders'
+import ApplicantDocuments from '@/components/ApplicantDocuments'
 import CriteriaValueEditor from '@/components/CriteriaValueEditor'
+import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import { Select } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Pagination } from './Applicants'
+import { FillBar } from './JobRequests'
 import { formatDate, cn } from '@/lib/utils'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import {
@@ -47,7 +54,7 @@ import {
  * whole system is built around. What appears here is the people actually placed
  * with this client.
  */
-const TABS = ['activity', 'positions', 'requirements', 'departments', 'documents']
+const TABS = ['activity', 'requests', 'positions', 'requirements', 'departments', 'employees', 'documents']
 
 export default function ClientDetail() {
   const { id } = useParams()
@@ -59,6 +66,8 @@ export default function ClientDetail() {
   // carries the headcounts, and they are the reason to open the tab.
   const departments = useApi(`/clients/${id}/departments`)
   const [dialogOpen, setDialogOpen] = React.useState(false)
+  const [editingDepartment, setEditingDepartment] = React.useState(null)
+  const [editOpen, setEditOpen] = React.useState(false)
 
   /*
    * The open tab lives in the URL.
@@ -96,10 +105,16 @@ export default function ClientDetail() {
         description={`${data.business_type} · ${data.office_address}`}
         actions={
           can('clients.update') && (
-            <Button variant="outline" onClick={() => setDialogOpen(true)}>
-              <Plus className="h-4 w-4" />
-              Add department
-            </Button>
+            <>
+              <Button variant="outline" onClick={() => setEditOpen(true)}>
+                <Pencil className="h-4 w-4" />
+                Edit company
+              </Button>
+              <Button variant="outline" onClick={() => setDialogOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Add department
+              </Button>
+            </>
           )
         }
       />
@@ -107,7 +122,21 @@ export default function ClientDetail() {
       <div className="mb-5 flex flex-wrap items-center gap-2">
         <StatusBadge status={data.status} />
         <span className="font-mono text-xs text-muted-foreground">{data.company_code}</span>
+        {data.contact_person && (
+          <span className="text-xs text-muted-foreground">
+            Contact: {data.contact_person}
+            {data.contact_number && ` · ${data.contact_number}`}
+            {data.email && ` · ${data.email}`}
+          </span>
+        )}
       </div>
+
+      {data.status === 'inactive' && (
+        <div className="mb-5 rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-2.5 text-sm">
+          This client is inactive. Its positions are off the application form, and it cannot raise new
+          requests or receive deployments. Its records and placement history are kept.
+        </div>
+      )}
 
       {/* The client at a glance, so the first question — how much is
           outstanding for them — is answered without opening a tab. */}
@@ -117,9 +146,9 @@ export default function ClientDetail() {
           value={summary?.open_requests}
           hint={summary ? `${summary.positions_to_fill} workers still needed` : null}
           icon={ClipboardList}
-          to="/job-requests"
+          to={`/clients/${id}?tab=requests`}
         />
-        <SummaryTile label="Placed with them" value={summary?.deployed_staff} icon={Users} to="/employees" />
+        <SummaryTile label="Placed with them" value={summary?.deployed_staff} icon={Users} to={`/clients/${id}?tab=employees`} />
         <SummaryTile label="Departments" value={summary?.departments} icon={Building2} />
         <SummaryTile
           label="Requirements set"
@@ -132,14 +161,20 @@ export default function ClientDetail() {
       <Tabs value={tab} onValueChange={selectTab}>
         <TabsList>
           <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="requests">Requests</TabsTrigger>
           <TabsTrigger value="positions">Positions</TabsTrigger>
           <TabsTrigger value="requirements">Requirements</TabsTrigger>
           <TabsTrigger value="departments">Departments</TabsTrigger>
+          {can('employees.view') && <TabsTrigger value="employees">Employees</TabsTrigger>}
           <TabsTrigger value="documents">Documents</TabsTrigger>
         </TabsList>
 
         <TabsContent value="activity">
           <CompanyActivity overview={overview} />
+        </TabsContent>
+
+        <TabsContent value="requests">
+          <CompanyRequests clientId={id} />
         </TabsContent>
 
         <TabsContent value="positions">
@@ -157,22 +192,47 @@ export default function ClientDetail() {
             canEdit={can('clients.update')}
             canViewEmployees={can('employees.view')}
             onAdd={() => setDialogOpen(true)}
+            onEdit={setEditingDepartment}
           />
         </TabsContent>
 
+        {can('employees.view') && (
+          <TabsContent value="employees">
+            <CompanyEmployees clientId={id} />
+          </TabsContent>
+        )}
+
         <TabsContent value="documents">
-          <DocumentFolders clientCompanyId={id} />
+          {/* By person, as everywhere else: the documents of the people
+              placed with this client, each opened by name. */}
+          <ApplicantDocuments clientCompanyId={id} />
         </TabsContent>
       </Tabs>
 
-      <NewDepartmentDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
+      <DepartmentDialog
+        open={dialogOpen || editingDepartment !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialogOpen(false)
+            setEditingDepartment(null)
+          }
+        }}
         clientId={id}
-        onCreated={() => {
-          // Creating a department changes this tab's collection. The company
-          // and activity panels do not need to be refetched for that mutation.
+        department={editingDepartment}
+        onSaved={() => {
+          // A department change only affects this tab's collection. The
+          // company and activity panels do not need to be refetched for it.
           departments.refetch()
+        }}
+      />
+
+      <EditCompanyDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        company={data}
+        onSaved={() => {
+          company.refetch()
+          overview.refetch()
         }}
       />
     </>
@@ -295,7 +355,7 @@ function CompanyActivity({ overview }) {
  * button is kept anyway because a row that happens to be clickable is not
  * discoverable on a desktop where nothing invites the click.
  */
-function CompanyDepartments({ clientId, query, canEdit, canViewEmployees, onAdd }) {
+function CompanyDepartments({ clientId, query, canEdit, canViewEmployees, onAdd, onEdit }) {
   const { data, loading, error, refetch } = query
 
   if (loading) return <LoadingState label="Loading departments…" />
@@ -372,19 +432,33 @@ function CompanyDepartments({ clientId, query, canEdit, canViewEmployees, onAdd 
               )
 
               return (
-                <li key={department.id}>
-                  {canViewEmployees ? (
-                    <Link
-                      to={`/clients/${clientId}/departments/${department.id}`}
-                      // The accessible name says which department, since "View"
-                      // repeated down a list tells a screen reader nothing.
-                      aria-label={`View employees in ${department.department_name}`}
-                      className="-mx-2 block rounded-md px-2 transition-colors hover:bg-accent"
+                <li key={department.id} className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    {canViewEmployees ? (
+                      <Link
+                        to={`/clients/${clientId}/departments/${department.id}`}
+                        // The accessible name says which department, since "View"
+                        // repeated down a list tells a screen reader nothing.
+                        aria-label={`View employees in ${department.department_name}`}
+                        className="-mx-2 block rounded-md px-2 transition-colors hover:bg-accent"
+                      >
+                        {row}
+                      </Link>
+                    ) : (
+                      row
+                    )}
+                  </div>
+                  {/* Outside the link, so editing never opens the department
+                      by accident. */}
+                  {canEdit && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onEdit(department)}
+                      aria-label={`Edit ${department.department_name}`}
                     >
-                      {row}
-                    </Link>
-                  ) : (
-                    row
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
                   )}
                 </li>
               )
@@ -512,9 +586,17 @@ function CompanyPositions({ clientId, canEdit }) {
                       {position.open_request_count > 0
                         ? ` · ${position.open_request_count} open request${position.open_request_count === 1 ? '' : 's'}`
                         : ''}
-                      {position.applicant_count > 0
-                        ? ` · ${position.applicant_count} applicant${position.applicant_count === 1 ? '' : 's'}`
-                        : ''}
+                      {position.applicant_count > 0 && (
+                        <>
+                          {' · '}
+                          <Link
+                            to={`/applicants?preferred_position_id=${position.id}`}
+                            className="text-primary hover:underline"
+                          >
+                            {position.applicant_count} applicant{position.applicant_count === 1 ? '' : 's'}
+                          </Link>
+                        </>
+                      )}
                     </p>
                   </div>
 
@@ -762,6 +844,7 @@ function CompanyRequirements({ clientId, onSaved }) {
                     <CriteriaValueEditor
                       accepts={mayEdit ? row.accepts : 'none'}
                       options={row.options}
+                      listMatch={row.list_match}
                       value={row.expected_value ?? ''}
                       onChange={(next) => update(row.criteria_id, { expected_value: next ?? '' })}
                       label={row.accepts === 'list' ? 'What this client requires' : 'Required level'}
@@ -799,18 +882,30 @@ function CompanyRequirements({ clientId, onSaved }) {
 }
 
 
-function NewDepartmentDialog({ open, onOpenChange, clientId, onCreated }) {
-  const [form, setForm] = React.useState({ department_code: '', department_name: '' })
+/**
+ * Adds a department, or edits one when given it.
+ *
+ * Editing covers the name, the short code, and whether the department is still
+ * in use. A department is switched off rather than deleted: requests and
+ * deployments that name it are history and must keep reading correctly.
+ */
+function DepartmentDialog({ open, onOpenChange, clientId, department, onSaved }) {
+  const editing = Boolean(department)
+  const [form, setForm] = React.useState({ department_code: '', department_name: '', status: 'active' })
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
   const toast = useToast()
 
   React.useEffect(() => {
     if (open) {
-      setForm({ department_code: '', department_name: '' })
+      setForm({
+        department_code: department?.department_code ?? '',
+        department_name: department?.department_name ?? '',
+        status: department?.status ?? 'active',
+      })
       setErrors({})
     }
-  }, [open])
+  }, [open, department])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -818,13 +913,18 @@ function NewDepartmentDialog({ open, onOpenChange, clientId, onCreated }) {
     setSubmitting(true)
 
     try {
-      await post(`/clients/${clientId}/departments`, form)
-      toast.success('Department added')
+      if (editing) {
+        await put(`/clients/${clientId}/departments/${department.id}`, form)
+        toast.success('Department updated')
+      } else {
+        await post(`/clients/${clientId}/departments`, form)
+        toast.success('Department added')
+      }
       onOpenChange(false)
-      onCreated()
+      onSaved()
     } catch (error) {
       if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not add department', error.message)
+      else toast.error(editing ? 'Could not update department' : 'Could not add department', error.message)
     } finally {
       setSubmitting(false)
     }
@@ -834,7 +934,7 @@ function NewDepartmentDialog({ open, onOpenChange, clientId, onCreated }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add department</DialogTitle>
+          <DialogTitle>{editing ? 'Edit department' : 'Add department'}</DialogTitle>
           <DialogDescription>
             Names are unique per client, so several companies can each have a "Packaging" department.
           </DialogDescription>
@@ -866,17 +966,375 @@ function NewDepartmentDialog({ open, onOpenChange, clientId, onCreated }) {
             </Field>
           </FormGrid>
 
+          {editing && (
+            <Field
+              label="Status"
+              htmlFor="department_status"
+              error={errors.status?.[0]}
+              hint="An inactive department stays on past requests and placements."
+            >
+              <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </Select>
+            </Field>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Add department
+              {editing ? 'Save department' : 'Add department'}
             </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/**
+ * The client's details and whether it is still active.
+ *
+ * Deactivating is confirmed first, because of what follows from it: the
+ * client's positions leave the application form and it can no longer raise
+ * requests or receive deployments. Nothing is deleted - its employees, requests,
+ * and history all stay - so a client that returns is reactivated, not
+ * re-entered.
+ */
+function EditCompanyDialog({ open, onOpenChange, company, onSaved }) {
+  const toast = useToast()
+  const fields = ['company_name', 'business_type', 'contact_person', 'contact_number', 'email', 'office_address', 'status', 'notes']
+  const fromCompany = () => Object.fromEntries(fields.map((f) => [f, company?.[f] ?? '']))
+
+  const [form, setForm] = React.useState(fromCompany)
+  const [errors, setErrors] = React.useState({})
+  const [saving, setSaving] = React.useState(false)
+  const [confirming, setConfirming] = React.useState(false)
+
+  React.useEffect(() => {
+    if (open) {
+      setForm(fromCompany())
+      setErrors({})
+      setConfirming(false)
+    }
+  }, [open, company])
+
+  const deactivating = company?.status === 'active' && form.status === 'inactive'
+
+  async function save() {
+    setSaving(true)
+    setErrors({})
+    try {
+      await put(`/clients/${company.id}`, {
+        ...form,
+        contact_person: form.contact_person || null,
+        contact_number: form.contact_number || null,
+        email: form.email || null,
+        notes: form.notes || null,
+      })
+      toast.success('Client company updated')
+      setConfirming(false)
+      onOpenChange(false)
+      onSaved()
+    } catch (error) {
+      setConfirming(false)
+      if (error.isValidation) setErrors(error.errors)
+      else toast.error('Could not update the client company', error.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function handleSubmit(event) {
+    event.preventDefault()
+    if (deactivating) setConfirming(true)
+    else save()
+  }
+
+  const set = (key) => (e) => setForm({ ...form, [key]: e.target.value })
+
+  return (
+    <>
+      <Dialog open={open && !confirming} onOpenChange={(next) => !saving && onOpenChange(next)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit client company</DialogTitle>
+            <DialogDescription>Changes are recorded in the audit trail.</DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            <FormGrid>
+              <Field label="Company name" htmlFor="company_name" required error={errors.company_name?.[0]}>
+                <Input value={form.company_name} onChange={set('company_name')} />
+              </Field>
+              <Field label="Business type" htmlFor="business_type" required error={errors.business_type?.[0]}>
+                <Input value={form.business_type} onChange={set('business_type')} />
+              </Field>
+              <Field label="Contact person" htmlFor="contact_person" error={errors.contact_person?.[0]}>
+                <Input value={form.contact_person} onChange={set('contact_person')} />
+              </Field>
+              <Field label="Contact number" htmlFor="contact_number" error={errors.contact_number?.[0]}>
+                <Input value={form.contact_number} onChange={set('contact_number')} />
+              </Field>
+              <Field label="Email" htmlFor="company_email" error={errors.email?.[0]}>
+                <Input type="email" value={form.email} onChange={set('email')} />
+              </Field>
+              <Field label="Status" htmlFor="company_status" error={errors.status?.[0]}>
+                <Select value={form.status} onChange={set('status')}>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </Select>
+              </Field>
+            </FormGrid>
+            <Field label="Office address" htmlFor="office_address" required error={errors.office_address?.[0]}>
+              <Input value={form.office_address} onChange={set('office_address')} />
+            </Field>
+            <Field label="Notes" htmlFor="company_notes" error={errors.notes?.[0]}>
+              <Textarea value={form.notes} onChange={set('notes')} />
+            </Field>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving}>
+                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                Save changes
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmActionDialog
+        open={open && confirming}
+        onOpenChange={(next) => !next && setConfirming(false)}
+        tone="warning"
+        title={`Deactivate ${company?.company_name}?`}
+        description="It can be reactivated later. Nothing is deleted."
+        consequences={[
+          "Its positions are taken off the applicants' application form.",
+          'It cannot raise new manpower requests or receive deployments.',
+          'Its employees, requests, documents, and history are all kept.',
+        ]}
+        confirmLabel="Deactivate client"
+        onConfirm={save}
+      />
+    </>
+  )
+}
+
+/**
+ * Every manpower request this client has raised, not only the latest ten.
+ */
+function CompanyRequests({ clientId }) {
+  const [openOnly, setOpenOnly] = React.useState(false)
+  const [page, setPage] = React.useState(1)
+
+  React.useEffect(() => setPage(1), [openOnly])
+
+  const { data, meta, loading, error, refetch } = useApi('/job-requests', {
+    client_company_id: clientId,
+    only_open: openOnly ? 1 : undefined,
+    page,
+    per_page: 20,
+  })
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center rounded-control border border-border bg-muted/30 p-0.5 text-xs font-medium">
+          {[
+            [false, 'All requests'],
+            [true, 'Open only'],
+          ].map(([value, label]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => setOpenOnly(value)}
+              className={cn(
+                'rounded-[4px] px-2.5 py-1 transition-colors',
+                openOnly === value ? 'bg-card font-semibold text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {meta?.total !== undefined && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">{meta.total}</span> requests
+          </p>
+        )}
+      </div>
+
+      {loading ? (
+        <LoadingState label="Loading requests…" />
+      ) : error ? (
+        <ErrorState message={error.message} onRetry={refetch} />
+      ) : !data?.length ? (
+        <EmptyState
+          icon={ClipboardList}
+          title={openOnly ? 'No open requests' : 'No requests yet'}
+          description="Manpower requests raised for this client appear here."
+        />
+      ) : (
+        <>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Position</TableHead>
+                <TableHead>Department</TableHead>
+                <TableHead>Filled</TableHead>
+                <TableHead>Criteria</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-8" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((request) => (
+                <TableRow key={request.id} className="group">
+                  <TableCell>
+                    <Link to={`/job-requests/${request.id}`} className="block">
+                      <p className="font-medium text-foreground group-hover:text-brand">{request.position_title}</p>
+                      <p className="font-mono text-xs text-muted-foreground">
+                        {request.request_code} · {formatDate(request.date_requested)}
+                      </p>
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-sm">{request.department_name ?? '—'}</TableCell>
+                  <TableCell className="min-w-[8rem]">
+                    <FillBar filled={request.workers_fulfilled} needed={request.workers_needed} />
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {request.criteria_count > 0 ? (
+                      `${request.criteria_count} set`
+                    ) : (
+                      <Badge tone="warning">None set</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={request.request_status} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Link to={`/job-requests/${request.id}`} className="text-muted-foreground group-hover:text-brand">
+                      <ChevronRight className="h-4 w-4" />
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <Pagination meta={meta} onPage={setPage} />
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Everyone placed with this client, current and former.
+ *
+ * Former employees stay listed under the client they last worked for, so the
+ * company's history of who worked there is never lost when somebody leaves.
+ */
+function CompanyEmployees({ clientId }) {
+  const [status, setStatus] = React.useState('active')
+  const [page, setPage] = React.useState(1)
+
+  React.useEffect(() => setPage(1), [status])
+
+  const { data, meta, loading, error, refetch } = useApi('/employees', {
+    client_company_id: clientId,
+    employment_status: status || undefined,
+    page,
+    per_page: 20,
+  })
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center rounded-control border border-border bg-muted/30 p-0.5 text-xs font-medium">
+          {[
+            ['active', 'Active'],
+            ['resigned', 'Resigned'],
+            ['terminated', 'Terminated'],
+            ['', 'Everyone'],
+          ].map(([value, label]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => setStatus(value)}
+              className={cn(
+                'rounded-[4px] px-2.5 py-1 transition-colors',
+                status === value ? 'bg-card font-semibold text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {meta?.total !== undefined && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">{meta.total}</span> employees
+          </p>
+        )}
+      </div>
+
+      {loading ? (
+        <LoadingState label="Loading employees…" />
+      ) : error ? (
+        <ErrorState message={error.message} onRetry={refetch} />
+      ) : !data?.length ? (
+        <EmptyState icon={Users} title="Nobody here" description="Employees placed with this client appear here." />
+      ) : (
+        <>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Employee</TableHead>
+                <TableHead>Department · position</TableHead>
+                <TableHead>Hired</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-8" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((employee) => (
+                <TableRow key={employee.id} className="group">
+                  <TableCell>
+                    <Link to={`/employees/${employee.id}`} className="block">
+                      <p className="font-medium text-foreground group-hover:text-brand">{employee.full_name}</p>
+                      <p className="font-mono text-xs text-muted-foreground">{employee.employee_number}</p>
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {employee.current_department ?? '—'}
+                    {employee.current_position_title && (
+                      <span className="text-muted-foreground"> · {employee.current_position_title}</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    {formatDate(employee.hire_date)}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={employee.employment_status} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Link to={`/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand">
+                      <ChevronRight className="h-4 w-4" />
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <Pagination meta={meta} onPage={setPage} />
+        </>
+      )}
+    </div>
   )
 }

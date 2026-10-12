@@ -22,6 +22,28 @@ class EmployeePolicy
         return $user->can('employees.update');
     }
 
+    /**
+     * Schedules and daily time records.
+     *
+     * Staff only for now. The employee's own view of their attendance would be
+     * read through the portal, which resolves them from their login; the staff
+     * routes take an employee id and so are never opened to the owner.
+     */
+    public function viewAnyAttendance(User $user): bool
+    {
+        return $user->can('attendance.view');
+    }
+
+    public function viewAttendance(User $user, Employee $employee): bool
+    {
+        return $user->can('attendance.view');
+    }
+
+    public function manageAttendance(User $user, Employee $employee): bool
+    {
+        return $user->can('attendance.manage');
+    }
+
     public function recordViolation(User $user, Employee $employee): bool
     {
         // Never available to the employee themselves: a disciplinary record is
@@ -29,11 +51,29 @@ class EmployeePolicy
         return $user->can('violations.create');
     }
 
+    /**
+     * Filing or updating a separation from the staff screens.
+     *
+     * Staff only. An employee files their own resignation through the portal,
+     * which resolves them from their own login and accepts nothing else. The
+     * owner fallback this used to carry let an employee reach the staff routes
+     * too — filing a termination against themselves, or marking their own
+     * clearance "cleared" and their resignation "accepted".
+     */
     public function separate(User $user, Employee $employee): bool
     {
-        // An employee may file their own resignation through the portal, which
-        // is the one separation action they are entitled to start.
-        return $user->can('separation.create') || $user->employee_id === $employee->id;
+        return $user->can('separation.create');
+    }
+
+    /**
+     * Withdrawing a termination that should not go ahead.
+     *
+     * Open to whoever filed it and to whoever reviews it. A review that can
+     * only ever end in a dismissal is not a review.
+     */
+    public function withdrawTermination(User $user, Employee $employee): bool
+    {
+        return $user->can('separation.create') || $user->can('separation.finalize_termination');
     }
 
     public function approveSeparation(User $user, Employee $employee): bool

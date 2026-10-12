@@ -3,21 +3,21 @@ import { Link } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export function PageHeader({ title, description, breadcrumbs, actions, className }) {
+export function PageHeader({ title, description, breadcrumbs, actions, summary, className }) {
   return (
-    <div className={cn('mb-6 space-y-3', className)}>
+    <div className={cn('mb-6 space-y-2.5', className)}>
       {breadcrumbs?.length > 0 && (
         <nav aria-label="Breadcrumb">
-          <ol className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+          <ol className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground font-medium">
             {breadcrumbs.map((crumb, index) => (
-              <li key={crumb.label} className="flex items-center gap-1">
-                {index > 0 && <ChevronRight className="h-3 w-3" aria-hidden="true" />}
+              <li key={crumb.label} className="flex items-center gap-1.5">
+                {index > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground/50" aria-hidden="true" />}
                 {crumb.to ? (
-                  <Link to={crumb.to} className="hover:text-foreground hover:underline">
+                  <Link to={crumb.to} className="hover:text-foreground transition-colors">
                     {crumb.label}
                   </Link>
                 ) : (
-                  <span aria-current="page" className="text-foreground">
+                  <span aria-current="page" className="text-foreground font-semibold">
                     {crumb.label}
                   </span>
                 )}
@@ -29,10 +29,11 @@ export function PageHeader({ title, description, breadcrumbs, actions, className
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-1">
-          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-          {description && <p className="text-sm text-muted-foreground">{description}</p>}
+          <h1 className="font-heading text-2xl font-bold tracking-tight text-foreground">{title}</h1>
+          {description && <p className="text-sm text-muted-foreground leading-relaxed">{description}</p>}
+          {summary && <p className="text-xs text-muted-foreground/80 font-mono font-medium pt-0.5">{summary}</p>}
         </div>
-        {actions && <div className="flex shrink-0 flex-wrap items-center gap-2 no-print">{actions}</div>}
+        {actions && <div className="flex shrink-0 flex-wrap items-center gap-2 pt-0.5 no-print">{actions}</div>}
       </div>
     </div>
   )

@@ -19,6 +19,9 @@ import {
   UserCog,
   SlidersHorizontal,
   ChevronDown,
+  CalendarClock,
+  Flag,
+  Handshake,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
@@ -39,6 +42,22 @@ import { useNotifications } from '@/contexts/NotificationsContext'
  * hidden rather than shown-and-refused, which keeps the HR view uncluttered.
  */
 const NAVIGATION = [
+  /*
+   * The coordinator's workspace: one client company. Only a coordinator holds
+   * `coordination.access`, and a coordinator holds nothing else, so for them
+   * this is the whole sidebar and for staff it does not appear at all.
+   */
+  {
+    section: 'My Client',
+    items: [
+      { to: '/coordinator', label: 'Dashboard', icon: LayoutDashboard, permission: 'coordination.access', end: true },
+      { to: '/coordinator/company', label: 'My Client Company', icon: Handshake, permission: 'coordination.access' },
+      { to: '/coordinator/employees', label: 'Employees', icon: IdCard, permission: 'coordination.access' },
+      { to: '/coordinator/deployments', label: 'Deployments', icon: Truck, permission: 'coordination.access' },
+      { to: '/coordinator/reports', label: 'Violation Reports', icon: Flag, permission: 'coordination.access', categories: ['coordination'] },
+      { to: '/coordinator/requests', label: 'Manpower Requests', icon: ClipboardList, permission: 'coordination.access' },
+    ],
+  },
   {
     section: 'Overview',
     items: [{ to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, permission: 'dashboard.view' }],
@@ -61,6 +80,8 @@ const NAVIGATION = [
     items: [
       { to: '/deployments', label: 'Deployments', icon: Truck, permission: 'deployment.view', categories: ['deployment'] },
       { to: '/employees', label: 'Employees', icon: IdCard, permission: 'employees.view' },
+      { to: '/attendance', label: 'Attendance (DTR)', icon: CalendarClock, permission: 'attendance.view' },
+      { to: '/violation-reports', label: 'Violation Reports', icon: Flag, permission: 'violation_reports.view', categories: ['coordination'] },
       { to: '/separations', label: 'Separations', icon: FileWarning, permission: 'separation.view' },
     ],
   },
@@ -128,9 +149,36 @@ function useSidebarCollapsed() {
   return [collapsed, toggle]
 }
 
+function getBreadcrumbContext(pathname) {
+  if (pathname.startsWith('/coordinator/company')) return { section: 'My Client', page: 'My Client Company' }
+  if (pathname.startsWith('/coordinator/employees')) return { section: 'My Client', page: 'Employees' }
+  if (pathname.startsWith('/coordinator/deployments')) return { section: 'My Client', page: 'Deployments' }
+  if (pathname.startsWith('/coordinator/reports')) return { section: 'My Client', page: 'Violation Reports' }
+  if (pathname.startsWith('/coordinator/requests')) return { section: 'My Client', page: 'Manpower Requests' }
+  if (pathname.startsWith('/coordinator')) return { section: 'My Client', page: 'Dashboard' }
+  if (pathname.startsWith('/dashboard')) return { section: 'Overview', page: 'Dashboard' }
+  if (pathname.startsWith('/attendance')) return { section: 'Deployment', page: 'Attendance (DTR)' }
+  if (pathname.startsWith('/violation-reports')) return { section: 'Deployment', page: 'Violation Reports' }
+  if (pathname.startsWith('/job-requests')) return { section: 'Recruitment', page: 'Manpower Requests' }
+  if (pathname.startsWith('/applicants')) return { section: 'Recruitment', page: 'Applicants' }
+  if (pathname.startsWith('/documents')) return { section: 'Recruitment', page: 'Documents' }
+  if (pathname.startsWith('/trainings')) return { section: 'Recruitment', page: 'Training' }
+  if (pathname.startsWith('/deployments')) return { section: 'Deployment', page: 'Deployments' }
+  if (pathname.startsWith('/employees')) return { section: 'Deployment', page: 'Employees' }
+  if (pathname.startsWith('/separations')) return { section: 'Deployment', page: 'Separations' }
+  if (pathname.startsWith('/clients')) return { section: 'Administration', page: 'Client Companies' }
+  if (pathname.startsWith('/reports')) return { section: 'Administration', page: 'Reports' }
+  if (pathname.startsWith('/archives')) return { section: 'Administration', page: 'Archives' }
+  if (pathname.startsWith('/users')) return { section: 'Administration', page: 'Users & Access' }
+  if (pathname.startsWith('/audit-logs')) return { section: 'Administration', page: 'Audit Trail' }
+  if (pathname.startsWith('/settings')) return { section: 'Administration', page: 'Settings' }
+  return { section: 'EMPOWER', page: 'Overview' }
+}
+
 export default function AppLayout() {
   const { user, logout, can } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const toast = useToast()
   const [mobileOpen, setMobileOpen] = React.useState(false)
   const [collapsed, toggleCollapsed] = useSidebarCollapsed()
@@ -147,8 +195,6 @@ export default function AppLayout() {
   async function handleLogout() {
     await logout()
     navigate('/login', { replace: true })
-    // Confirmed on the way out. Signing out on a shared counter machine is
-    // exactly the action a user needs to know actually completed.
     toast.success('Signed out', 'Your session on this computer has ended.')
   }
 
@@ -157,13 +203,15 @@ export default function AppLayout() {
     items: section.items.filter((item) => can(item.permission)),
   })).filter((section) => section.items.length > 0)
 
+  const crumbContext = getBreadcrumbContext(location.pathname)
+
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background text-foreground font-sans">
       {/* Mobile header */}
-      <header className="sticky top-0 z-40 flex items-center justify-between border-b bg-card px-4 py-3 lg:hidden no-print">
+      <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border bg-card px-4 py-3 lg:hidden no-print">
         <div className="flex items-center gap-2">
           <LogoMark size="xs" />
-          <span className="font-semibold">EMPOWER</span>
+          <span className="font-heading font-bold text-sm tracking-tight">EMPOWER</span>
         </div>
         <div className="flex items-center gap-1">
           <CommandPalette />
@@ -201,22 +249,29 @@ export default function AppLayout() {
         />
 
         <main className="min-w-0 flex-1">
-          {/* Sits above the page content rather than in the sidebar, so search
-              and the unread badge stay reachable while scrolling a long list. */}
+          {/* Top Bar */}
           <div
             className={cn(
-              'sticky top-0 z-30 hidden shrink-0 items-center gap-2 border-b bg-card/80 px-8 backdrop-blur lg:flex no-print',
+              'sticky top-0 z-30 hidden shrink-0 items-center justify-between border-b border-border bg-card/95 px-6 backdrop-blur lg:flex no-print',
               HEADER_HEIGHT
             )}
           >
-            <CommandPalette />
-            <div className="ml-auto flex items-center gap-1">
+            <div className="flex items-center gap-4">
+              <nav aria-label="Page Context" className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
+                <span>{crumbContext.section}</span>
+                <span className="text-muted-foreground/50">/</span>
+                <span className="font-semibold text-foreground">{crumbContext.page}</span>
+              </nav>
+              <div className="h-4 w-px bg-border" />
+              <CommandPalette />
+            </div>
+            <div className="flex items-center gap-1.5">
               <ThemeToggle />
               <NotificationBell />
             </div>
           </div>
 
-          <div className="mx-auto max-w-7xl px-4 py-6 lg:px-8">
+          <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
             <Outlet />
           </div>
         </main>
@@ -225,72 +280,22 @@ export default function AppLayout() {
   )
 }
 
-/**
- * The main navigation.
- *
- * Collapsing narrows it to an icon rail rather than hiding it outright. On a
- * system where people move between applicants, requests and deployments all day,
- * hiding navigation entirely trades one click for two; a rail keeps every
- * destination one click away while giving most of the width back to the content.
- *
- * `collapsed` applies only from `lg` up. On a phone the sidebar is a drawer that
- * is either open or shut, and a permanent 64px rail down the side of a small
- * screen would be worse than either state.
- *
- * That constraint is enforced entirely through `lg:` classes rather than by
- * branching in JavaScript, and the difference matters. An earlier version hid
- * the labels with `{!collapsed && ...}`, which has no idea what size the screen
- * is - so a user who collapsed the sidebar on their laptop then opened the menu
- * on their phone got a full-width drawer containing nothing but unlabelled
- * icons. Everything is always rendered here; only CSS decides what is seen.
- */
 function Sidebar({ sections, user, onLogout, mobileOpen, collapsed, onToggleCollapsed, onNavigate }) {
   const { countFor } = useNotifications()
   const location = useLocation()
-  const [openSections, setOpenSections] = React.useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(SIDEBAR_SECTIONS_KEY) ?? '{}')
-      return Object.fromEntries(sections.map((section) => [section.section, saved[section.section] ?? false]))
-    } catch {
-      return Object.fromEntries(sections.map((section) => [section.section, false]))
-    }
-  })
 
-  React.useEffect(() => {
-    try {
-      localStorage.setItem(SIDEBAR_SECTIONS_KEY, JSON.stringify(openSections))
-    } catch {
-      // The menu remains usable when browser storage is unavailable.
-    }
-  }, [openSections])
-
-  function toggleSection(sectionName) {
-    setOpenSections((current) => ({ ...current, [sectionName]: !current[sectionName] }))
+  function userInitials(name) {
+    if (!name) return 'HR'
+    const parts = name.trim().split(/\s+/)
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
   }
-
-  function sectionIsActive(section) {
-    return section.items.some(
-      (item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)
-    )
-  }
-
-  React.useEffect(() => {
-    const activeSections = sections
-      .filter(sectionIsActive)
-      .map((section) => section.section)
-
-    if (activeSections.length === 0) return
-    setOpenSections((current) => ({
-      ...current,
-      ...Object.fromEntries(activeSections.map((section) => [section, true])),
-    }))
-  }, [location.pathname])
 
   return (
     <aside
       id="main-sidebar"
       className={cn(
-        'no-print scrollbar-none w-64 shrink-0 bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out',
+        'no-print scrollbar-none w-64 shrink-0 bg-navy-900 text-sidebar-foreground transition-[width] duration-200 ease-out',
         'border-r border-sidebar-border',
         'lg:sticky lg:top-0 lg:block lg:h-screen',
         collapsed && 'lg:w-16',
@@ -298,88 +303,52 @@ function Sidebar({ sections, user, onLogout, mobileOpen, collapsed, onToggleColl
       )}
     >
       <div className="flex h-full flex-col">
+        {/* Logo block */}
         <div
           className={cn(
-            'hidden shrink-0 items-center gap-2.5 border-b border-sidebar-border px-5 lg:flex',
+            'hidden shrink-0 items-center justify-between border-b border-sidebar-border/60 px-4 lg:flex',
             HEADER_HEIGHT,
             collapsed && 'lg:justify-center lg:px-0'
           )}
         >
-          {/* plain: the sidebar is painted the artwork's own navy, so the
-              logo's baked-in background disappears and only the white monogram
-              shows. A badge ring here would draw the square edge back in. */}
-          <LogoMark size="sm" plain className={cn(collapsed && 'lg:hidden')} />
-          {/* Hidden rather than truncated: "EMPO..." in a 64px rail reads as a
-              rendering fault rather than as a shortened name. */}
-          <div className={cn('min-w-0', collapsed && 'lg:hidden')}>
-            <p className="truncate text-sm font-semibold leading-tight">EMPOWER</p>
-            <p className="truncate text-xs text-sidebar-muted">CDE Manpower Services</p>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <LogoMark size="sm" plain className="shrink-0" />
+            <div className={cn('min-w-0 leading-tight', collapsed && 'lg:hidden')}>
+              <p className="font-heading text-sm font-bold tracking-tight text-white">EMPOWER</p>
+              <p className="text-[11px] text-sidebar-muted/90 whitespace-normal">CDE Manpower Services</p>
+            </div>
           </div>
           <Button
             variant="ghost"
             size="icon"
-            className="ml-auto shrink-0 text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-foreground"
+            className="h-8 w-8 text-sidebar-muted hover:bg-navy-800 hover:text-white shrink-0"
             onClick={onToggleCollapsed}
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            aria-expanded={!collapsed}
-            aria-controls="main-sidebar"
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            <Menu className="h-5 w-5" />
+            <Menu className="h-4 w-4" />
           </Button>
         </div>
 
+        {/* Navigation Groups */}
         <nav
           className={cn(
-            'scrollbar-none flex-1 space-y-5 overflow-y-auto px-3 py-4',
-            collapsed && 'lg:space-y-2 lg:px-2'
+            'scrollbar-none flex-1 space-y-4 overflow-y-auto px-3 py-4',
+            collapsed && 'lg:space-y-3 lg:px-2'
           )}
           aria-label="Main"
         >
           {sections.map((section) => (
-            <div key={section.section}>
-              {/* On the rail the heading becomes a rule: the groups still need
-                  separating, and dropping the distinction entirely runs all
-                  fifteen links together into one undifferentiated column. */}
-              {collapsed && (
-                <div className="mx-2 mb-2 hidden border-t border-sidebar-border first:border-t-0 lg:block" aria-hidden="true" />
+            <div key={section.section} className="space-y-1">
+              {!collapsed ? (
+                <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-sidebar-muted/80">
+                  {section.section}
+                </div>
+              ) : (
+                <div className="mx-2 my-2 hidden border-t border-sidebar-border/50 lg:block" />
               )}
-              <button
-                type="button"
-                onClick={() => toggleSection(section.section)}
-                aria-expanded={collapsed || openSections[section.section]}
-                className={cn(
-                  'flex w-full items-center justify-between px-2.5 py-2 text-left text-xs transition-colors',
-                  sectionIsActive(section)
-                    ? 'font-bold text-sidebar-active'
-                    : 'font-medium text-sidebar-muted hover:text-sidebar-foreground',
-                  collapsed && 'lg:hidden'
-                )}
-              >
-                <span>{section.section}</span>
-                {section.items.reduce((total, item) => total + countFor(item.categories), 0) > 0 && (
-                  <span className="ml-auto mr-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">
-                    {Math.min(
-                      99,
-                      section.items.reduce((total, item) => total + countFor(item.categories), 0)
-                    )}
-                  </span>
-                )}
-                <ChevronDown
-                  className={cn(
-                    'h-3.5 w-3.5 transition-transform',
-                    !openSections[section.section] && '-rotate-90'
-                  )}
-                  aria-hidden="true"
-                />
-              </button>
-              <ul
-                className={cn(
-                  'ml-2 space-y-0.5 border-l border-sidebar-border pl-2',
-                  collapsed && 'lg:ml-0 lg:border-0 lg:pl-0',
-                  !(collapsed || openSections[section.section]) && 'hidden'
-                )}
-              >
+
+              <ul className="space-y-1">
                 {section.items.map((item) => {
                   const unread = countFor(item.categories)
 
@@ -389,29 +358,21 @@ function Sidebar({ sections, user, onLogout, mobileOpen, collapsed, onToggleColl
                         to={item.to}
                         end={item.end}
                         onClick={onNavigate}
-                        // Only a tooltip; the label itself is still in the DOM, so
-                        // a screen reader announces "Applicants" either way.
                         title={collapsed ? item.label : undefined}
                         className={({ isActive }) =>
                           cn(
-                            'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors',
-                            collapsed && 'lg:justify-center lg:gap-0 lg:px-0 lg:py-2.5',
-                            // On navy, a pale wash plus a light accent reads
-                            // as selected; the light-mode treatment of a tinted
-                            // background with dark text would vanish here.
+                            'relative flex items-center gap-3 rounded-control px-2.5 h-9 text-xs font-medium transition-colors',
+                            collapsed && 'lg:justify-center lg:gap-0 lg:px-0',
                             isActive
-                              ? 'bg-white/15 font-medium text-sidebar-active'
-                              : 'text-sidebar-foreground/80 hover:bg-sidebar-hover hover:text-sidebar-foreground'
+                              ? 'bg-navy-700 text-white font-semibold before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4.5 before:w-[3px] before:bg-brand before:rounded-r'
+                              : 'text-sidebar-foreground/80 hover:bg-navy-800 hover:text-white'
                           )
                         }
                       >
                         <span className="relative shrink-0">
-                          <item.icon className="h-4 w-4" />
-                          {/* A dot on the rail, where there is no room for a
-                              number but "something here needs you" still
-                              needs saying. */}
+                          <item.icon className="h-4 w-4 stroke-[1.75]" />
                           {unread > 0 && collapsed && (
-                            <span className="absolute -right-1 -top-1 hidden h-2 w-2 rounded-full bg-destructive lg:block" />
+                            <span className="absolute -right-1 -top-1 hidden h-2 w-2 rounded-full bg-brand lg:block" />
                           )}
                         </span>
 
@@ -420,7 +381,7 @@ function Sidebar({ sections, user, onLogout, mobileOpen, collapsed, onToggleColl
                         {unread > 0 && (
                           <span
                             className={cn(
-                              'ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 text-[11px] font-semibold tabular-nums text-destructive-foreground',
+                              'ml-auto flex h-4.5 min-w-4.5 items-center justify-center rounded-tag bg-brand/30 px-1 text-[10px] font-mono font-semibold tabular-nums text-blue-200',
                               collapsed && 'lg:hidden'
                             )}
                             aria-label={`${unread} unread`}
@@ -437,24 +398,37 @@ function Sidebar({ sections, user, onLogout, mobileOpen, collapsed, onToggleColl
           ))}
         </nav>
 
-        <div className={cn('border-t border-sidebar-border p-3', collapsed && 'lg:p-2')}>
-          <div className={cn('mb-2 px-2', collapsed && 'lg:hidden')}>
-            <p className="truncate text-sm font-medium">{user?.full_name}</p>
-            <p className="truncate text-xs capitalize text-sidebar-muted">
-              {user?.roles?.join(', ') || user?.user_type}
-            </p>
+        {/* Footer User Block */}
+        <div className={cn('border-t border-sidebar-border/60 p-3 space-y-2', collapsed && 'lg:p-2')}>
+          <div className={cn('flex items-center gap-2.5 px-1', collapsed && 'lg:justify-center lg:px-0')}>
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-control bg-navy-700 text-xs font-bold text-white font-mono">
+              {userInitials(user?.full_name)}
+            </span>
+            <div className={cn('min-w-0 flex-1', collapsed && 'lg:hidden')}>
+              <p className="truncate text-xs font-semibold text-white leading-tight">{user?.full_name}</p>
+              <p className="truncate text-[11px] capitalize text-sidebar-muted">
+                {user?.roles?.join(', ') || user?.user_type}
+              </p>
+              {/* A coordinator always sees which client they are acting for. */}
+              {user?.coordinator?.company_name && (
+                <p className="truncate text-[11px] text-sidebar-muted" title={user.coordinator.company_name}>
+                  {user.coordinator.company_name}
+                </p>
+              )}
+            </div>
           </div>
+
           <Button
             variant="ghost"
             size="sm"
             className={cn(
-              'w-full justify-start text-sidebar-foreground/90 hover:bg-sidebar-hover hover:text-sidebar-foreground',
+              'w-full justify-start h-8 text-xs text-sidebar-muted hover:bg-navy-800 hover:text-white font-normal',
               collapsed && 'lg:justify-center lg:px-0'
             )}
             onClick={onLogout}
             title={collapsed ? 'Sign out' : undefined}
           >
-            <LogOut className="h-4 w-4" />
+            <LogOut className="h-3.5 w-3.5" />
             <span className={cn(collapsed && 'lg:hidden')}>Sign out</span>
           </Button>
         </div>

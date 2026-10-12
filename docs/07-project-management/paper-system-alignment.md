@@ -168,8 +168,11 @@ Checked and correct, with the file that proves each:
 - **Audit trail is administrator-only** — `audit.view` is not in the HR set.
 - **Thirty-day expiry warning** — `empower.expiry_warning_days`.
 - **Private bucket, links expiring in minutes** — `DocumentStorageService`.
-- **No payroll, no timekeeping, no leave tracking, no client login, no
-  retirement** — all confirmed absent.
+- **No payroll, no leave tracking, no client login, no retirement** — all
+  confirmed absent. *Timekeeping changed after the July 2026 panel:* HR now
+  encodes each employee's schedule and DTR and the system compares them (late,
+  left early, absent, missing punches). It still computes no pay and does not
+  connect to biometric hardware. See `panel-recommendations-audit.md`.
 
 ---
 

@@ -120,6 +120,14 @@ class SettingsService
             'rules' => ['integer', 'between:1,20'],
             'unit' => 'offences',
         ],
+        'empower.attendance.late_grace_minutes' => [
+            'group' => 'policy',
+            'label' => 'Minutes allowed before a time-in counts as late',
+            'help' => 'CDE has not stated a grace period, so this starts at 0: any time-in after the scheduled start is reported as late. Change it only to match the client company\'s own policy.',
+            'type' => 'integer',
+            'rules' => ['integer', 'between:0,60'],
+            'unit' => 'minutes',
+        ],
         'empower.require_training_before_deployment' => [
             'group' => 'policy',
             'label' => 'Require training before deployment',

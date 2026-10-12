@@ -373,6 +373,7 @@ class ClientCompanyController extends Controller
                         default => 'none',
                     },
                     'options' => CompetencyScoringService::acceptedValues($criterion->criteria_code),
+                    'list_match' => CompetencyScoringService::listMode($criterion->criteria_type),
 
                     // Null-safe throughout: most criteria in the catalogue are
                     // not configured for a given company, so $set is usually

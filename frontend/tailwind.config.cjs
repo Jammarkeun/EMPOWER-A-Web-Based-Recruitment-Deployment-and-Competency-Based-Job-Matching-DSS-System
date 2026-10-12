@@ -15,7 +15,24 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        border: 'hsl(var(--border))',
+        navy: {
+          900: 'var(--color-navy-900)',
+          800: 'var(--color-navy-800)',
+          700: 'var(--color-navy-700)',
+        },
+        brand: {
+          DEFAULT: 'var(--color-brand)',
+          hover: 'var(--color-brand-hover)',
+        },
+        text: {
+          DEFAULT: 'var(--color-text)',
+          muted: 'var(--color-text-muted)',
+          subtle: 'var(--color-text-subtle)',
+        },
+        border: {
+          DEFAULT: 'hsl(var(--border))',
+          strong: 'var(--color-border-strong)',
+        },
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
         background: 'hsl(var(--background))',
@@ -52,7 +69,6 @@ module.exports = {
           DEFAULT: 'hsl(var(--warning))',
           foreground: 'hsl(var(--warning-foreground))',
         },
-        // The agency's navy, worn by the sidebar in both themes.
         sidebar: {
           DEFAULT: 'hsl(var(--sidebar))',
           foreground: 'hsl(var(--sidebar-foreground))',
@@ -63,12 +79,19 @@ module.exports = {
         },
       },
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+        control: 'var(--radius-control)',
+        panel: 'var(--radius-panel)',
+        modal: 'var(--radius-modal)',
+        badge: 'var(--radius-badge)',
+        tag: 'var(--radius-tag)',
+        lg: 'var(--radius-panel)',
+        md: 'var(--radius-control)',
+        sm: 'var(--radius-tag)',
       },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
+        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        heading: ['"Plus Jakarta Sans"', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       keyframes: {
         'accordion-down': {

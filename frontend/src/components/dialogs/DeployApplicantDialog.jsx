@@ -14,7 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatDate } from '@/lib/utils'
+import { formatDate, todayISO } from '@/lib/utils'
 
 /**
  * Deploying an applicant from their own record.
@@ -39,7 +39,7 @@ export default function DeployApplicantDialog({ applicant, open, onOpenChange, o
     position_title: '',
     supervisor_name: '',
     employee_number: '',
-    deployment_date: new Date().toISOString().slice(0, 10),
+    deployment_date: todayISO(),
     remarks: '',
   })
   const [errors, setErrors] = React.useState({})

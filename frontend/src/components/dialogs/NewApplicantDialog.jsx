@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field, FormGrid } from '@/components/ui/form'
+import { todayISO } from '@/lib/utils'
 
 const EMPTY = {
   source_channel: 'walk_in',
@@ -28,7 +29,7 @@ const EMPTY = {
   email: '',
   present_address: '',
   preferred_position_id: '',
-  application_date: new Date().toISOString().slice(0, 10),
+  application_date: todayISO(),
 }
 
 /**
@@ -310,7 +311,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
                 type="date"
                 value={form.application_date}
                 onChange={(e) => set('application_date', e.target.value)}
-                max={new Date().toISOString().slice(0, 10)}
+                max={todayISO()}
               />
             </Field>
           </FormGrid>

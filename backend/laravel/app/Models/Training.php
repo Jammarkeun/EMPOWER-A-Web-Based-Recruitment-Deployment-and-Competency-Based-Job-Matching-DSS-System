@@ -25,7 +25,7 @@ class Training extends Model
     protected function casts(): array
     {
         return [
-            'training_date' => 'date',
+            'training_date' => 'date:Y-m-d',
         ];
     }
 

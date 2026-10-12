@@ -4,19 +4,18 @@ import { cn } from '@/lib/utils'
 import { humanise, statusTone } from '@/lib/utils'
 
 const badgeVariants = cva(
-  'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
+  'inline-flex items-center rounded-badge border px-2.5 py-0.5 text-xs font-semibold transition-colors',
   {
     variants: {
       tone: {
-        muted: 'border-transparent bg-secondary text-secondary-foreground',
-        info: 'border-transparent bg-primary/10 text-primary',
-        // Opacity modifiers must land on Tailwind's scale, which moves in
-        // steps of five. A value like /12 silently compiles to nothing at all,
-        // leaving the badge with no tint and no error to notice.
-        success: 'border-transparent bg-success/15 text-success',
-        warning: 'border-transparent bg-warning/15 text-warning',
-        destructive: 'border-transparent bg-destructive/10 text-destructive',
-        outline: 'text-foreground',
+        muted: 'bg-status-neutral-bg text-status-neutral-text border-status-neutral-border',
+        neutral: 'bg-status-neutral-bg text-status-neutral-text border-status-neutral-border',
+        info: 'bg-status-info-bg text-status-info-text border-status-info-border',
+        success: 'bg-status-success-bg text-status-success-text border-status-success-border',
+        warning: 'bg-status-warning-bg text-status-warning-text border-status-warning-border',
+        destructive: 'bg-status-danger-bg text-status-danger-text border-status-danger-border',
+        danger: 'bg-status-danger-bg text-status-danger-text border-status-danger-border',
+        outline: 'border-border text-foreground bg-transparent',
       },
     },
     defaultVariants: { tone: 'muted' },
@@ -28,11 +27,10 @@ function Badge({ className, tone, ...props }) {
 }
 
 /**
- * A status badge that derives its colour from the workflow value.
+ * A status badge that derives its tone from the workflow status string.
  *
- * The label is always rendered as text as well as colour, so the meaning
- * survives for colour-blind users and in black-and-white printouts, which HR
- * produces for client meetings.
+ * Status badges are always pill-shaped (999px / rounded-badge) and use
+ * high-contrast accessible background and text pairs.
  */
 function StatusBadge({ status, label, className }) {
   if (!status) return <span className="text-muted-foreground">—</span>

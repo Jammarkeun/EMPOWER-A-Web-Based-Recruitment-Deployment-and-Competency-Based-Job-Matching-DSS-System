@@ -87,6 +87,10 @@ class AuthController extends Controller
             recordType: User::class,
             recordId: $user->id,
             newValues: ['result' => 'success'],
+            // Nobody is signed in yet at this point, so the actor is named
+            // explicitly - which also records their role and, for a
+            // coordinator, the client they cover.
+            actor: $user,
         );
 
         return ApiResponse::success([
@@ -249,6 +253,21 @@ class AuthController extends Controller
             'last_login_at' => $user->last_login_at?->toIso8601String(),
             'roles' => $user->getRoleNames(),
             'permissions' => $user->getAllPermissions()->pluck('name'),
+            // The client a coordinator covers, so the screen can name it. The
+            // server never takes this back from the browser: every coordinator
+            // request is scoped from the assignment again.
+            'coordinator' => $user->isCoordinator() ? $this->coordinatorProfile($user) : null,
+        ];
+    }
+
+    private function coordinatorProfile(User $user): array
+    {
+        $assignment = $user->activeCoordinatorAssignment()->with('company')->first();
+
+        return [
+            'client_company_id' => $assignment?->client_company_id,
+            'company_name' => $assignment?->company?->company_name,
+            'assigned_at' => $assignment?->assigned_at?->toIso8601String(),
         ];
     }
 }

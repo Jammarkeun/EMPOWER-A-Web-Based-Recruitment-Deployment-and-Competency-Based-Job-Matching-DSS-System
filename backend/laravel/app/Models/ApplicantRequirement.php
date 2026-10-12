@@ -38,7 +38,7 @@ class ApplicantRequirement extends Model
             'submitted_at' => 'datetime',
             'first_viewed_at' => 'datetime',
             'verified_at' => 'datetime',
-            'expiry_date' => 'date',
+            'expiry_date' => 'date:Y-m-d',
             'file_size_bytes' => 'integer',
         ];
     }

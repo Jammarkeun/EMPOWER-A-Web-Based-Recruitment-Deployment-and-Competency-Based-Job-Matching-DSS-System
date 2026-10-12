@@ -56,12 +56,13 @@ class Applicant extends Model
     protected function casts(): array
     {
         return [
-            'birth_date' => 'date',
-            'availability_date' => 'date',
-            'application_date' => 'date',
+            'birth_date' => 'date:Y-m-d',
+            'availability_date' => 'date:Y-m-d',
+            'application_date' => 'date:Y-m-d',
             'placement_responded_at' => 'datetime',
             'self_registered_at' => 'datetime',
             'identity_verified_at' => 'datetime',
+            'profile_updated_at' => 'datetime',
             'height_cm' => 'decimal:2',
             'weight_kg' => 'decimal:2',
             'distance_km' => 'decimal:2',

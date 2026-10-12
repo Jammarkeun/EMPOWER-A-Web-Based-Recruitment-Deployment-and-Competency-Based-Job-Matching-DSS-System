@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Services\SettingsService;
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Schema;
@@ -56,6 +58,16 @@ class AppServiceProvider extends ServiceProvider
         // Guards against a mass-assignment mistake silently doing nothing, which
         // is precisely how the request_status bug hid during development.
         Model::preventSilentlyDiscardingAttributes($this->app->environment('local', 'testing'));
+
+        /*
+         * A date that reaches JSON on its own - an audit entry's before and
+         * after values, an archive snapshot - is written with the local offset
+         * rather than converted to UTC. Converted, a calendar date such as a
+         * hire date of 23 September became "22 September, 16:00 UTC", and
+         * anything reading the first ten characters got the day before. Model
+         * attributes keep their own serialisation; resources format explicitly.
+         */
+        Carbon::serializeUsing(fn (CarbonInterface $date) => $date->toIso8601String());
 
         $this->registerAbilities();
     }

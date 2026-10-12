@@ -138,6 +138,7 @@ class DemoDataSeeder extends Seeder
         $this->attachCriteria($request, $hr);
         $this->seedApplicants($hr, $codes, $folders);
         $this->seedDisciplinaryExamples($hr);
+        $this->call(CoordinatorDemoSeeder::class);
     }
 
     /**

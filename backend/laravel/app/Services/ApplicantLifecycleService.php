@@ -184,6 +184,54 @@ class ApplicantLifecycleService
         return config("empower.applicant_transitions.{$from}", []);
     }
 
+    /**
+     * The workflow that owns a status, or null when staff may set it directly.
+     */
+    public function owningWorkflow(string $status): ?string
+    {
+        return config("empower.workflow_owned_statuses.{$status}");
+    }
+
+    /**
+     * The moves to offer on the applicant record.
+     *
+     * Deployment stays on the list because the screen answers it with the
+     * deployment form rather than a status change. Employment and separation
+     * statuses do not: those are reached by recording a deployment or
+     * completing a separation on the employee record, never by a button that
+     * changes a word.
+     */
+    public function offeredNextStatuses(string $from): array
+    {
+        return array_values(array_filter(
+            $this->allowedNextStatuses($from),
+            fn (string $to) => $to === 'deployed' || $this->owningWorkflow($to) === null
+        ));
+    }
+
+    /**
+     * Refuses a hand-made move into a status a workflow owns.
+     *
+     * Without this the status endpoint could mark someone "terminated" with no
+     * termination record, no administrator's review, and no confirmation — or
+     * "deployed" with no employee record and no deployment behind it.
+     */
+    public function assertManualTransitionAllowed(string $to): void
+    {
+        $message = match ($this->owningWorkflow($to)) {
+            'deployment' => 'Deployment is recorded with the deployment form, which creates the employee record. '
+                .'It cannot be set as a status on its own.',
+            'separation' => 'Employment ends through the separation process on the employee record: a resignation '
+                .'is completed after clearance, and a termination is finalised by an administrator. '
+                .'It cannot be set as a status on its own.',
+            default => null,
+        };
+
+        if ($message !== null) {
+            throw new RuntimeException($message, 409);
+        }
+    }
+
     private function assertTransitionAllowed(string $from, string $to): void
     {
         if ($from === $to) {

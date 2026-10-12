@@ -22,6 +22,7 @@
 7. Project Management (client-facing):
 - docs/07-project-management/implementation-timeline.md
 - docs/07-project-management/client-responsibilities.md
+- docs/07-project-management/panel-recommendations-audit.md
 
 8. Backend Executable Assets:
 - backend/database/migrations/2026_08_04_000000_create_empower_schema.php

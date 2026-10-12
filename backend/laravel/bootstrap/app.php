@@ -39,6 +39,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,
             'active' => \App\Http\Middleware\EnsureUserIsActive::class,
             'portal' => \App\Http\Middleware\EnsurePortalUser::class,
+            'coordinator' => \App\Http\Middleware\EnsureCoordinator::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

@@ -189,8 +189,10 @@ function FolderContents({ folder, clientCompanyId, onBack }) {
                   <p className="truncate text-sm font-medium">{row.file_name}</p>
                   <p className="truncate text-xs text-muted-foreground">
                     {/* Whose document it is, so a file is never an orphan. */}
+                    {/* Opens the person's own folder, where every document
+                        they have is listed together. */}
                     <Link
-                      to={`/applicants/${row.applicant.id}`}
+                      to={`/documents?applicant=${row.applicant.id}`}
                       className="text-primary hover:underline"
                     >
                       {row.applicant.name}

@@ -2,8 +2,6 @@ import * as React from 'react'
 import { useNavigate, Navigate, Link } from 'react-router-dom'
 import {
   Loader2,
-  Eye,
-  EyeOff,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
@@ -16,7 +14,7 @@ import { useToast } from '@/components/ui/toast'
 import { getCached } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import AuthLayout from '@/components/AuthLayout'
-import { Input } from '@/components/ui/input'
+import { Input, PasswordInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field } from '@/components/ui/form'
 import { Card, CardContent } from '@/components/ui/card'
@@ -333,26 +331,14 @@ export default function Register() {
                         error={errors.password?.[0]}
                         hint="At least 8 characters."
                       >
-                        <div className="relative">
-                          <Input
-                            type={showPassword ? 'text' : 'password'}
-                            value={form.password}
-                            onChange={(e) => set('password', e.target.value)}
-                            autoComplete="new-password"
-                            className="pr-10"
-                            required
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowPassword((visible) => !visible)}
-                            className="absolute right-0 top-0 flex h-9 w-10 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground"
-                            aria-label={showPassword ? 'Hide password' : 'Show password'}
-                            aria-pressed={showPassword}
-                            tabIndex={-1}
-                          >
-                            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                          </button>
-                        </div>
+                        <PasswordInput
+                          value={form.password}
+                          onChange={(e) => set('password', e.target.value)}
+                          autoComplete="new-password"
+                          required
+                          visible={showPassword}
+                          onVisibleChange={setShowPassword}
+                        />
                       </Field>
 
                       <Field

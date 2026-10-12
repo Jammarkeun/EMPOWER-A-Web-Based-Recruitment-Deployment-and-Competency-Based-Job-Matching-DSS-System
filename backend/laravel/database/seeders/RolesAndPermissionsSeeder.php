@@ -69,6 +69,18 @@ class RolesAndPermissionsSeeder extends Seeder
             'view' => 'View employee records',
             'update' => 'Edit employee details',
         ],
+        'attendance' => [
+            'view' => 'View schedules, daily time records, and the comparison between them',
+            'manage' => 'Set work schedules and encode daily time records',
+        ],
+        'violation_reports' => [
+            'view' => "View coordinators' violation reports",
+            'review' => 'Review, return, validate, or dismiss violation reports',
+        ],
+        // The coordinator workspace. Held by the coordinator role only.
+        'coordination' => [
+            'access' => 'Use the coordinator workspace for the assigned client company',
+        ],
         'violations' => [
             'view' => 'View disciplinary records',
             'create' => 'Record a violation',
@@ -120,7 +132,9 @@ class RolesAndPermissionsSeeder extends Seeder
         'training.view', 'training.create', 'training.update',
         'deployment.view', 'deployment.create', 'deployment.reassign',
         'employees.view', 'employees.update',
+        'attendance.view', 'attendance.manage',
         'violations.view', 'violations.create', 'violations.update',
+        'violation_reports.view', 'violation_reports.review',
         'separation.view', 'separation.create', 'separation.approve',
         'archives.view', 'archives.create',
         'reports.view', 'reports.export',
@@ -160,8 +174,27 @@ class RolesAndPermissionsSeeder extends Seeder
             ]
         );
 
-        $admin->syncPermissions(Permission::all());
+        // Everything except the coordinator workspace, which is scoped to one
+        // client through an assignment an administrator does not have.
+        $admin->syncPermissions(Permission::where('name', '!=', 'coordination.access')->get());
         $hr->syncPermissions(Permission::whereIn('name', self::HR_PERMISSIONS)->get());
+
+        /*
+         * A CDE employee assigned to one client company.
+         *
+         * One permission and no other. Every HR and administration screen is
+         * gated by a permission this role does not hold, so it is refused
+         * everywhere except the coordinator routes, and those scope every query
+         * to the client in the coordinator's active assignment.
+         */
+        $coordinator = Role::updateOrCreate(
+            ['name' => 'coordinator', 'guard_name' => 'web'],
+            [
+                'description' => 'CDE coordinator assigned to one client company: monitors deployed workers there and reports incidents to HR.',
+                'is_system_role' => true,
+            ]
+        );
+        $coordinator->syncPermissions(['coordination.access']);
 
         // Portal accounts hold no staff permissions at all. Applicants and
         // employees reach only their own record, enforced by policy rather than
