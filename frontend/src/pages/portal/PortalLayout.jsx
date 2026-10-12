@@ -240,7 +240,7 @@ function PortalSidebar({ links, user, collapsed, onToggleCollapsed, mobileOpen, 
     <aside
       id="portal-sidebar"
       className={cn(
-        'scrollbar-none w-64 shrink-0 bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out',
+        'scrollbar-none w-64 shrink-0 bg-navy-900 text-sidebar-foreground transition-[width] duration-200 ease-out',
         'border-r border-sidebar-border',
         'lg:sticky lg:top-0 lg:block lg:h-screen',
         collapsed && 'lg:w-16',
@@ -250,59 +250,56 @@ function PortalSidebar({ links, user, collapsed, onToggleCollapsed, mobileOpen, 
       <div className="flex h-full flex-col">
         <div
           className={cn(
-            'hidden shrink-0 items-center gap-2.5 border-b border-sidebar-border px-5 lg:flex',
+            'hidden shrink-0 items-center justify-between border-b border-sidebar-border/60 px-4 lg:flex',
             HEADER_HEIGHT,
             collapsed && 'lg:justify-center lg:px-0'
           )}
         >
-          {/* plain: the sidebar is painted the artwork's own navy, so the logo's
-              baked-in background disappears and only the monogram shows. */}
-          <LogoMark size="sm" plain className={cn(collapsed && 'lg:hidden')} />
-          <div className={cn('min-w-0', collapsed && 'lg:hidden')}>
-            <p className="truncate text-sm font-semibold leading-tight">EMPOWER</p>
-            <p className="truncate text-xs text-sidebar-muted">CDE Manpower Services</p>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <LogoMark size="sm" plain className="shrink-0" />
+            <div className={cn('min-w-0 leading-tight', collapsed && 'lg:hidden')}>
+              <p className="font-heading text-sm font-bold tracking-tight text-white">EMPOWER</p>
+              <p className="text-[11px] text-sidebar-muted/90">Applicant Portal</p>
+            </div>
           </div>
           <Button
             variant="ghost"
             size="icon"
-            className="ml-auto shrink-0 text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-foreground"
+            className="h-8 w-8 text-sidebar-muted hover:bg-navy-800 hover:text-white shrink-0"
             onClick={onToggleCollapsed}
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            aria-expanded={!collapsed}
-            aria-controls="portal-sidebar"
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            <Menu className="h-5 w-5" />
+            <Menu className="h-4 w-4" />
           </Button>
         </div>
 
-        {/* The applicant, named, at the top of their own navigation. On the rail
-            only the avatar survives, which is still enough to say whose it is. */}
+        {/* User identification */}
         <div
           className={cn(
-            'flex items-center gap-2.5 border-b border-sidebar-border px-4 py-3',
+            'flex items-center gap-2.5 border-b border-sidebar-border/60 px-4 py-3',
             collapsed && 'lg:justify-center lg:px-0'
           )}
         >
           <span
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-semibold text-sidebar-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-control bg-navy-700 text-xs font-bold font-mono text-white"
             aria-hidden="true"
           >
             {initialsOf(user?.full_name)}
           </span>
           <div className={cn('min-w-0', collapsed && 'lg:hidden')}>
-            <p className="truncate text-sm font-medium leading-tight">{user?.full_name}</p>
-            <p className="truncate text-xs text-sidebar-muted">
+            <p className="truncate text-xs font-semibold text-white leading-tight">{user?.full_name}</p>
+            <p className="truncate text-[11px] text-sidebar-muted">
               {user?.user_type === 'employee' ? 'Employee' : 'Applicant'}
             </p>
           </div>
         </div>
 
         <nav
-          className={cn('scrollbar-none flex-1 overflow-y-auto px-3 py-4', collapsed && 'lg:px-2')}
+          className={cn('scrollbar-none flex-1 overflow-y-auto px-3 py-4 space-y-1', collapsed && 'lg:px-2')}
           aria-label="Portal"
         >
-          <ul className="space-y-0.5">
+          <ul className="space-y-1">
             {links.map((link) => {
               const unread = countFor(link.categories)
 
@@ -315,25 +312,18 @@ function PortalSidebar({ links, user, collapsed, onToggleCollapsed, mobileOpen, 
                     title={collapsed ? link.label : undefined}
                     className={({ isActive }) =>
                       cn(
-                        'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors',
-                        collapsed && 'lg:justify-center lg:gap-0 lg:px-0 lg:py-2.5',
-                        // On navy, a pale wash plus a light accent reads as
-                        // selected. The light-mode treatment of a tinted
-                        // background with dark text would vanish here.
+                        'relative flex items-center gap-3 rounded-control px-2.5 h-9 text-xs font-medium transition-colors',
+                        collapsed && 'lg:justify-center lg:gap-0 lg:px-0',
                         isActive
-                          ? 'bg-white/15 font-medium text-sidebar-active'
-                          : 'text-sidebar-foreground/80 hover:bg-sidebar-hover hover:text-sidebar-foreground'
+                          ? 'bg-navy-700 text-white font-semibold before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4.5 before:w-[3px] before:bg-brand before:rounded-r'
+                          : 'text-sidebar-foreground/80 hover:bg-navy-800 hover:text-white'
                       )
                     }
                   >
                     <span className="relative shrink-0">
-                      <link.icon className="h-4 w-4" />
-                      {/* On the rail there is no room for a number, so the
-                          count becomes a dot - still saying "something here
-                          needs you", which is the part that matters at a
-                          glance. */}
+                      <link.icon className="h-4 w-4 stroke-[1.75]" />
                       {unread > 0 && collapsed && (
-                        <span className="absolute -right-1 -top-1 hidden h-2 w-2 rounded-full bg-destructive lg:block" />
+                        <span className="absolute -right-1 -top-1 hidden h-2 w-2 rounded-full bg-brand lg:block" />
                       )}
                     </span>
 
@@ -342,11 +332,9 @@ function PortalSidebar({ links, user, collapsed, onToggleCollapsed, mobileOpen, 
                     {unread > 0 && (
                       <span
                         className={cn(
-                          'ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 text-[11px] font-semibold tabular-nums text-destructive-foreground',
+                          'ml-auto flex h-4.5 min-w-4.5 items-center justify-center rounded-tag bg-brand/30 px-1 text-[10px] font-mono font-semibold tabular-nums text-blue-200',
                           collapsed && 'lg:hidden'
                         )}
-                        // Read out as words, since a bare number beside a link
-                        // announces nothing on its own.
                         aria-label={`${unread} unread`}
                       >
                         {unread > 9 ? '9+' : unread}
@@ -359,18 +347,18 @@ function PortalSidebar({ links, user, collapsed, onToggleCollapsed, mobileOpen, 
           </ul>
         </nav>
 
-        <div className={cn('border-t border-sidebar-border p-3', collapsed && 'lg:p-2')}>
+        <div className={cn('border-t border-sidebar-border/60 p-3', collapsed && 'lg:p-2')}>
           <Button
             variant="ghost"
             size="sm"
             className={cn(
-              'w-full justify-start text-sidebar-foreground/90 hover:bg-sidebar-hover hover:text-sidebar-foreground',
+              'w-full justify-start h-8 text-xs text-sidebar-muted hover:bg-navy-800 hover:text-white font-normal',
               collapsed && 'lg:justify-center lg:px-0'
             )}
             onClick={onLogout}
             title={collapsed ? 'Sign out' : undefined}
           >
-            <LogOut className="h-4 w-4" />
+            <LogOut className="h-3.5 w-3.5" />
             <span className={cn(collapsed && 'lg:hidden')}>Sign out</span>
           </Button>
         </div>

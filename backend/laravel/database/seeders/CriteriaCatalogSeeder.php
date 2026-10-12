@@ -43,10 +43,13 @@ class CriteriaCatalogSeeder extends Seeder
         [
             'code' => 'skills',
             'name' => 'Skills Match',
-            'type' => 'weighted_binary',
+            // Graded: every skill named is required, and the applicant earns
+            // the share they hold. Certifications above stay all-or-nothing
+            // because those are accepted alternatives.
+            'type' => 'weighted_scale',
             'value' => 'text',
             'direction' => 'higher_better',
-            'description' => 'Whether the applicant lists any of the skills named on the request.',
+            'description' => 'The share of the skills named on the request that the applicant holds. Holding three of four earns three quarters of the points.',
         ],
         [
             'code' => 'availability',

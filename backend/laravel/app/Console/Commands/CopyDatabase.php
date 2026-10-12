@@ -175,22 +175,36 @@ class CopyDatabase extends Command
     }
 
     /**
-     * Foreign keys are switched off for the duration of the copy.
+     * Foreign keys are switched off for the duration of the copy, and the copy
+     * is one transaction.
      *
      * The tables reference each other, so no single insert order satisfies all
      * of them, and building a dependency graph for a one-off copy is more
-     * machinery than the job deserves.
+     * machinery than the job deserves. PostgreSQL enforces foreign keys with
+     * triggers, which session_replication_role = replica skips; SET LOCAL keeps
+     * that to this transaction, and Supabase allows it for its postgres role.
+     * Without it the first table copied into PostgreSQL that pointed at another
+     * - applicants at users - stopped the copy.
+     *
+     * As one transaction, a copy that fails part-way leaves the target exactly
+     * as it was, rather than with its first tables already emptied.
      */
     private function withoutForeignKeyChecks($connection, callable $work): void
     {
-        $isMysql = $connection->getDriverName() === 'mysql';
+        $isMysql = in_array($connection->getDriverName(), ['mysql', 'mariadb'], true);
 
         if ($isMysql) {
             $connection->statement('SET FOREIGN_KEY_CHECKS=0');
         }
 
         try {
-            $work();
+            $connection->transaction(function () use ($connection, $work) {
+                if ($connection->getDriverName() === 'pgsql') {
+                    $connection->statement('SET LOCAL session_replication_role = replica');
+                }
+
+                $work();
+            });
         } finally {
             if ($isMysql) {
                 $connection->statement('SET FOREIGN_KEY_CHECKS=1');
@@ -220,9 +234,16 @@ class CopyDatabase extends Command
                 continue;
             }
 
+            // A UUID key, as on notifications, has no sequence to move.
+            $sequence = DB::connection($connection)->scalar("SELECT pg_get_serial_sequence('{$table}', 'id')");
+
+            if ($sequence === null) {
+                continue;
+            }
+
             DB::connection($connection)->statement(
                 'SELECT setval('
-                ."    pg_get_serial_sequence('{$table}', 'id'),"
+                ."    '{$sequence}',"
                 ."    COALESCE((SELECT MAX(id) FROM {$table}), 1),"
                 ."    (SELECT MAX(id) IS NOT NULL FROM {$table})"
                 .')'

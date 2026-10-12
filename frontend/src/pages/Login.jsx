@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { useNavigate, useLocation, Navigate, Link } from 'react-router-dom'
-import { Loader2, Eye, EyeOff, FolderCheck, Scale, ScrollText } from 'lucide-react'
+import { Loader2, FolderCheck, Scale, ScrollText } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, PasswordInput } from '@/components/ui/input'
 import { Field } from '@/components/ui/form'
 import AuthLayout, { AuthCard } from '@/components/AuthLayout'
+import { homePathFor } from '@/lib/utils'
 
 /**
  * Where a user belongs after signing in.
@@ -15,7 +16,7 @@ import AuthLayout, { AuthCard } from '@/components/AuthLayout'
  * permissions, so it would render as a wall of refusals.
  */
 function destinationFor(user) {
-  return ['applicant', 'employee'].includes(user?.user_type) ? '/portal' : '/dashboard'
+  return homePathFor(user)
 }
 
 /*
@@ -50,7 +51,6 @@ export default function Login() {
 
   const [email, setEmail] = React.useState('')
   const [password, setPassword] = React.useState('')
-  const [showPassword, setShowPassword] = React.useState(false)
   const [errors, setErrors] = React.useState({})
   const [formError, setFormError] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
@@ -125,31 +125,12 @@ export default function Login() {
           </Field>
 
           <Field label="Password" htmlFor="password" required error={errors.password?.[0]}>
-            <div className="relative">
-              <Input
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                className="pr-10"
-                required
-              />
-              {/*
-                Lets the user check a mistyped password rather than clearing the
-                field and starting again. Kept out of the tab order so it never
-                sits between the password field and the sign-in button.
-              */}
-              <button
-                type="button"
-                onClick={() => setShowPassword((visible) => !visible)}
-                className="absolute right-0 top-0 flex h-9 w-10 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground"
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-                aria-pressed={showPassword}
-                tabIndex={-1}
-              >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
+            <PasswordInput
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
           </Field>
 
           {formError && (

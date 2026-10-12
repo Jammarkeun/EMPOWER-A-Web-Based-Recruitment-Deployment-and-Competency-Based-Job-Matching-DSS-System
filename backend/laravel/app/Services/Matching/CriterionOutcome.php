@@ -20,6 +20,12 @@ final class CriterionOutcome
         public readonly float $awarded,
         public readonly mixed $applicantValue,
         public readonly string $explanation,
+        /**
+         * Item-by-item comparison for list criteria: what was required, what
+         * the applicant holds of it, and what is missing. Null for criteria
+         * measured as a single value.
+         */
+        public readonly ?array $details = null,
     ) {
     }
 
@@ -34,6 +40,7 @@ final class CriterionOutcome
             'score' => round($this->awarded, 2),
             'applicant_value' => $this->normaliseValue($this->applicantValue),
             'explanation' => $this->explanation,
+            'details' => $this->details,
         ];
     }
 

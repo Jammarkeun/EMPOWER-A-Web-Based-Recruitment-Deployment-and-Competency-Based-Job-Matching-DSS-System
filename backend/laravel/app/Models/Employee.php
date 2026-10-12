@@ -38,7 +38,7 @@ class Employee extends Model
     protected function casts(): array
     {
         return [
-            'hire_date' => 'date',
+            'hire_date' => 'date:Y-m-d',
         ];
     }
 
@@ -98,7 +98,9 @@ class Employee extends Model
             return false;
         }
 
-        return $this->activeViolations()->count() >= $threshold;
+        // reorder(): violations() sorts by date, and PostgreSQL refuses a
+        // COUNT alongside an ORDER BY on an ungrouped column.
+        return $this->activeViolations()->reorder()->count() >= $threshold;
     }
 
     public function resignation(): HasOne
@@ -109,6 +111,53 @@ class Employee extends Model
     public function termination(): HasOne
     {
         return $this->hasOne(Termination::class)->latestOfMany();
+    }
+
+    /**
+     * Every resignation ever filed, withdrawn ones included. The singular
+     * relation above is the latest, which is what the screens show.
+     */
+    public function resignations(): HasMany
+    {
+        return $this->hasMany(Resignation::class);
+    }
+
+    public function terminations(): HasMany
+    {
+        return $this->hasMany(Termination::class);
+    }
+
+    /**
+     * Every schedule this employee has worked to, newest first.
+     */
+    public function schedules(): HasMany
+    {
+        return $this->hasMany(EmployeeSchedule::class)->orderByDesc('effective_from');
+    }
+
+    public function attendanceRecords(): HasMany
+    {
+        return $this->hasMany(AttendanceRecord::class);
+    }
+
+    /**
+     * The last day this person was employed, or null while they still are.
+     *
+     * Read from the placement that ended when they separated, which the
+     * separation dates by the exit or termination date rather than by the day
+     * it was processed.
+     */
+    public function employmentEndDate(): ?\Carbon\CarbonInterface
+    {
+        if ($this->isActive()) {
+            return null;
+        }
+
+        // reorder(): the relation sorts by deployment date, and PostgreSQL
+        // refuses an aggregate alongside an ORDER BY on an ungrouped column.
+        $ended = $this->deployments()->reorder()->max('end_date');
+
+        return $ended ? \Illuminate\Support\Carbon::parse($ended) : null;
     }
 
     public function statusHistory(): HasMany

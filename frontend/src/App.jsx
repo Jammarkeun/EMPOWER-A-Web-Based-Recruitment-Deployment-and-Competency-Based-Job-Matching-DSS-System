@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
 import { Loader2, ShieldAlert } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { homePathFor } from '@/lib/utils'
 import { NotificationsProvider } from '@/contexts/NotificationsContext'
 import AppLayout from '@/components/AppLayout'
 import { Button } from '@/components/ui/button'
@@ -26,6 +27,17 @@ import Archives from '@/pages/Archives'
 import AuditLogs from '@/pages/AuditLogs'
 import Reports from '@/pages/Reports'
 import Documents from '@/pages/Documents'
+import Attendance from '@/pages/Attendance'
+import ViolationReports from '@/pages/ViolationReports'
+import ViolationReportReview from '@/pages/ViolationReportReview'
+import CoordinatorDashboard from '@/pages/coordinator/CoordinatorDashboard'
+import CoordinatorCompany from '@/pages/coordinator/CoordinatorCompany'
+import CoordinatorEmployees from '@/pages/coordinator/CoordinatorEmployees'
+import CoordinatorEmployeeDetail from '@/pages/coordinator/CoordinatorEmployeeDetail'
+import CoordinatorDeployments from '@/pages/coordinator/CoordinatorDeployments'
+import CoordinatorReports from '@/pages/coordinator/CoordinatorReports'
+import CoordinatorReport from '@/pages/coordinator/CoordinatorReport'
+import CoordinatorRequests from '@/pages/coordinator/CoordinatorRequests'
 import Users from '@/pages/Users'
 import Settings from '@/pages/Settings'
 
@@ -94,6 +106,20 @@ export default function App() {
       >
         <Route path="/dashboard" element={<Guard permission="dashboard.view"><Dashboard /></Guard>} />
 
+        {/* The coordinator's workspace. Every screen reads from the
+            coordinator API, which scopes to the assigned client on the
+            server; the guard only spares staff a screen that would refuse
+            them. */}
+        <Route path="/coordinator" element={<Guard permission="coordination.access"><CoordinatorDashboard /></Guard>} />
+        <Route path="/coordinator/company" element={<Guard permission="coordination.access"><CoordinatorCompany /></Guard>} />
+        <Route path="/coordinator/employees" element={<Guard permission="coordination.access"><CoordinatorEmployees /></Guard>} />
+        <Route path="/coordinator/employees/:id" element={<Guard permission="coordination.access"><CoordinatorEmployeeDetail /></Guard>} />
+        <Route path="/coordinator/deployments" element={<Guard permission="coordination.access"><CoordinatorDeployments /></Guard>} />
+        <Route path="/coordinator/reports" element={<Guard permission="coordination.access"><CoordinatorReports /></Guard>} />
+        <Route path="/coordinator/reports/new" element={<Guard permission="coordination.access"><CoordinatorReport /></Guard>} />
+        <Route path="/coordinator/reports/:id" element={<Guard permission="coordination.access"><CoordinatorReport /></Guard>} />
+        <Route path="/coordinator/requests" element={<Guard permission="coordination.access"><CoordinatorRequests /></Guard>} />
+
         <Route path="/job-requests" element={<Guard permission="job_requests.view"><JobRequests /></Guard>} />
         <Route path="/job-requests/:id" element={<Guard permission="job_requests.view"><JobRequestDetail /></Guard>} />
 
@@ -105,6 +131,9 @@ export default function App() {
         <Route path="/deployments" element={<Guard permission="deployment.view"><Deployments /></Guard>} />
         <Route path="/employees" element={<Guard permission="employees.view"><Employees /></Guard>} />
         <Route path="/employees/:id" element={<Guard permission="employees.view"><EmployeeDetail /></Guard>} />
+        <Route path="/attendance" element={<Guard permission="attendance.view"><Attendance /></Guard>} />
+        <Route path="/violation-reports" element={<Guard permission="violation_reports.view"><ViolationReports /></Guard>} />
+        <Route path="/violation-reports/:id" element={<Guard permission="violation_reports.view"><ViolationReportReview /></Guard>} />
         <Route path="/separations" element={<Guard permission="separation.view"><Separations /></Guard>} />
 
         <Route path="/clients" element={<Guard permission="clients.view"><Clients /></Guard>} />
@@ -181,7 +210,7 @@ function RequirePortal({ children }) {
   const { user } = useAuth()
 
   if (user && !['applicant', 'employee'].includes(user.user_type)) {
-    return <Navigate to="/dashboard" replace />
+    return <Navigate to={homePathFor(user)} replace />
   }
 
   return children
@@ -195,7 +224,7 @@ function RequirePortal({ children }) {
  * avoids showing a screen that would fail to load.
  */
 function Guard({ permission, children }) {
-  const { can } = useAuth()
+  const { can, user } = useAuth()
 
   if (!can(permission)) {
     return (
@@ -211,7 +240,7 @@ function Guard({ permission, children }) {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <Link to="/dashboard">Return to dashboard</Link>
+          <Link to={homePathFor(user)}>Return to dashboard</Link>
         </Button>
       </div>
     )
@@ -221,12 +250,14 @@ function Guard({ permission, children }) {
 }
 
 function NotFound() {
+  const { user } = useAuth()
+
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
       <p className="text-3xl font-semibold text-muted-foreground">404</p>
       <p className="text-sm text-muted-foreground">This page does not exist.</p>
       <Button variant="outline" size="sm" asChild>
-        <Link to="/dashboard">Return to dashboard</Link>
+        <Link to={homePathFor(user)}>Return to dashboard</Link>
       </Button>
     </div>
   )

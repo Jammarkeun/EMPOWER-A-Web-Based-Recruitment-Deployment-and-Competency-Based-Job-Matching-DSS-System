@@ -1,9 +1,13 @@
 <?php
 
 use App\Http\Controllers\ApplicantController;
+use App\Http\Controllers\ApplicantQualificationController;
 use App\Http\Controllers\ArchiveController;
+use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ClientCompanyController;
+use App\Http\Controllers\CoordinatorController;
+use App\Http\Controllers\CoordinatorReportController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeploymentController;
 use App\Http\Controllers\DocumentLibraryController;
@@ -21,6 +25,7 @@ use App\Http\Controllers\SeparationController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\TrainingController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\ViolationReportController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -157,9 +162,13 @@ Route::prefix('v1')->group(function () {
         Route::get('document-scan/status/{scan}', [DocumentScanController::class, 'result']);
 
         // ---------------------------------------------------- document library
-        // Uploaded documents grouped by kind - "show me the medical
-        // certificates" - as opposed to the Folder 1/2/3 filing, which describes
-        // how complete one applicant's paperwork is. Two different questions.
+        // By applicant first: a name opens every document that person has on
+        // file (read through applicants/{applicant}/requirements). By kind of
+        // document second - "show me the medical certificates" - as opposed to
+        // the Folder 1/2/3 filing, which describes how complete one applicant's
+        // paperwork is. Registered before documents/{requirementType} so the
+        // literal segment is not read as a requirement type id.
+        Route::get('documents/applicants', [DocumentLibraryController::class, 'applicants']);
         Route::get('documents', [DocumentLibraryController::class, 'index']);
         Route::get('documents/{requirementType}', [DocumentLibraryController::class, 'show']);
         Route::get('documents/file/{requirement}', [DocumentLibraryController::class, 'download']);
@@ -172,6 +181,10 @@ Route::prefix('v1')->group(function () {
         // checked them against their documents at the counter.
         Route::post('applicants/{applicant}/verify-identity', [ApplicantController::class, 'verifyIdentity']);
         Route::get('applicants/{applicant}/timeline', [ApplicantController::class, 'timeline']);
+        // Education, work history, skills, and certificates - what the
+        // matching engine compares with a request's criteria. Staff only.
+        Route::put('applicants/{applicant}/qualifications', [ApplicantQualificationController::class, 'update']);
+        Route::get('qualification-vocabulary', [ApplicantQualificationController::class, 'vocabulary']);
 
         // -------------------------------------------------------- requirements
         Route::get('requirement-types', [RequirementController::class, 'types']);
@@ -216,19 +229,41 @@ Route::prefix('v1')->group(function () {
         Route::get('employees/{employee}', [EmployeeController::class, 'show']);
         Route::patch('employees/{employee}', [EmployeeController::class, 'update']);
 
+        // ---------------------------------------------------------- attendance
+        // The DTR compared with the schedule. Encoded by HR from the client's
+        // timekeeping; nothing here computes pay.
+        Route::get('attendance', [AttendanceController::class, 'summary']);
+        Route::get('employees/{employee}/attendance', [AttendanceController::class, 'show']);
+        Route::post('employees/{employee}/attendance', [AttendanceController::class, 'storeRecords']);
+        Route::post('employees/{employee}/schedules', [AttendanceController::class, 'storeSchedule']);
+
         // ---------------------------------------------------------- violations
         Route::get('employees/{employee}/violations', [EmployeeController::class, 'violations']);
         Route::post('employees/{employee}/violations', [EmployeeController::class, 'storeViolation']);
         Route::put('employees/{employee}/violations/{violation}', [EmployeeController::class, 'updateViolation']);
         Route::get('employees/{employee}/violations/{violation}/evidence', [EmployeeController::class, 'violationEvidence']);
 
+        // --------------------------------------------- coordinator reports (HR)
+        // Reports coordinators have sent in. Validating one records the
+        // official violation; nothing here terminates anybody.
+        Route::get('violation-reports', [ViolationReportController::class, 'index']);
+        Route::get('violation-reports/{report}', [ViolationReportController::class, 'show']);
+        Route::post('violation-reports/{report}/review', [ViolationReportController::class, 'review']);
+        Route::get('violation-reports/{report}/evidence', [ViolationReportController::class, 'evidence']);
+
         // ---------------------------------------------------------- separation
         Route::get('separations', [SeparationController::class, 'index']);
         Route::post('employees/{employee}/resignations', [SeparationController::class, 'storeResignation']);
         Route::put('employees/{employee}/resignations/{resignation}', [SeparationController::class, 'updateResignation']);
         Route::post('employees/{employee}/resignations/{resignation}/complete', [SeparationController::class, 'completeResignation']);
+        Route::get('employees/{employee}/resignations/{resignation}/letter', [SeparationController::class, 'resignationLetter']);
         Route::post('employees/{employee}/terminations', [SeparationController::class, 'storeTermination']);
+        // Both outcomes of a termination's review. Finalising requires an
+        // explicit confirmation in the request body; withdrawing requires a
+        // reason. Neither deletes the termination.
         Route::post('employees/{employee}/terminations/{termination}/finalise', [SeparationController::class, 'finaliseTermination']);
+        Route::post('employees/{employee}/terminations/{termination}/withdraw', [SeparationController::class, 'withdrawTermination']);
+        Route::get('employees/{employee}/terminations/{termination}/document', [SeparationController::class, 'terminationDocument']);
 
         // ----------------------------------------------------- archive + audit
         Route::get('archives', [ArchiveController::class, 'index']);
@@ -260,6 +295,40 @@ Route::prefix('v1')->group(function () {
         Route::patch('users/{user}', [UserController::class, 'update']);
         Route::patch('users/{user}/status', [UserController::class, 'setStatus']);
         Route::post('users/{user}/reset-password', [UserController::class, 'resetPassword']);
+        // Which client a coordinator covers. Reassigning ends the current
+        // assignment and starts a new one; the history is kept.
+        Route::get('users/{user}/coordinator-assignments', [UserController::class, 'coordinatorAssignments']);
+        Route::post('users/{user}/coordinator-assignment', [UserController::class, 'assignCoordinator']);
+    });
+
+    /*
+    |------------------------------------------------------------------
+    | Coordinator workspace
+    |------------------------------------------------------------------
+    |
+    | A CDE coordinator assigned to one client company. The `coordinator`
+    | middleware resolves that company from the active assignment on the
+    | server, and every endpoint here scopes to it. No route accepts a client
+    | company id, so there is nothing in the request for a coordinator to
+    | change to reach another client.
+    */
+    Route::middleware(['auth:sanctum', 'active', 'coordinator'])->prefix('coordinator')->group(function () {
+        Route::get('dashboard', [CoordinatorController::class, 'dashboard']);
+        Route::get('company', [CoordinatorController::class, 'company']);
+        Route::get('employees', [CoordinatorController::class, 'employees']);
+        Route::get('employees/{employee}', [CoordinatorController::class, 'employee']);
+        Route::get('deployments', [CoordinatorController::class, 'deployments']);
+        Route::get('manpower-requests', [CoordinatorController::class, 'manpowerRequests']);
+
+        Route::get('violation-reports/options', [CoordinatorReportController::class, 'options']);
+        Route::get('violation-reports', [CoordinatorReportController::class, 'index']);
+        Route::post('violation-reports', [CoordinatorReportController::class, 'store'])->middleware('throttle:30,1');
+        Route::get('violation-reports/{report}', [CoordinatorReportController::class, 'show']);
+        // POST rather than PUT so an evidence file can travel with the edit.
+        Route::post('violation-reports/{report}', [CoordinatorReportController::class, 'update']);
+        Route::post('violation-reports/{report}/submit', [CoordinatorReportController::class, 'submit']);
+        Route::delete('violation-reports/{report}', [CoordinatorReportController::class, 'destroy']);
+        Route::get('violation-reports/{report}/evidence', [CoordinatorReportController::class, 'evidence']);
     });
 
     /*

@@ -17,11 +17,12 @@ import { cn, humanise } from '@/lib/utils'
  *
  * Three shapes, decided by the API rather than here:
  *
- * - `list`   — free text, as many as the client requires. Holding any one of
- *              them satisfies the criterion, which is why they are entered as
- *              separate items rather than as one sentence: the engine matches
- *              each in turn, and a comma typed inside an item would silently
- *              split it.
+ * - `list`   — free text, as many as the client requires, entered as separate
+ *              items because the engine compares each in turn and a comma typed
+ *              inside an item would silently split it. How the list is read
+ *              comes from the catalogue (`listMatch`): `graded` means every
+ *              item is required and the applicant earns the share they hold;
+ *              `any` means the items are alternatives and one is enough.
  * - `choice` — a fixed vocabulary the scoring engine recognises. Offered as a
  *              menu because an unrecognised value is not a validation error; it
  *              simply never matches, and nothing on screen would say why.
@@ -54,7 +55,7 @@ function isDuplicate(values, candidate, exceptIndex = -1) {
   )
 }
 
-export default function CriteriaValueEditor({ accepts, options, value, onChange, label, hint }) {
+export default function CriteriaValueEditor({ accepts, options, value, onChange, label, hint, listMatch = 'any' }) {
   if (accepts === 'choice') {
     return (
       <div className="space-y-1">
@@ -78,7 +79,12 @@ export default function CriteriaValueEditor({ accepts, options, value, onChange,
 
   if (accepts !== 'list') return null
 
-  return <ValueList value={value} onChange={onChange} label={label} hint={hint} />
+  const listHint =
+    listMatch === 'graded'
+      ? 'Every item is required. An applicant earns the share they hold — 3 of 4 earns three quarters of the points.'
+      : 'Accepted alternatives. Holding any one of them satisfies this.'
+
+  return <ValueList value={value} onChange={onChange} label={label} hint={hint ?? listHint} />
 }
 
 function ValueList({ value, onChange, label, hint }) {

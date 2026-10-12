@@ -7,10 +7,11 @@ use App\Http\Resources\ViolationResource;
 use App\Http\Responses\ApiResponse;
 use App\Models\Employee;
 use App\Models\EmployeeViolation;
-use App\Models\User;
-use App\Notifications\ViolationThresholdReached;
+use App\Models\Resignation;
+use App\Models\Termination;
 use App\Services\AuditService;
 use App\Services\DocumentStorageService;
+use App\Services\ViolationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -20,6 +21,7 @@ class EmployeeController extends Controller
     public function __construct(
         private readonly AuditService $audit,
         private readonly DocumentStorageService $storage,
+        private readonly ViolationService $violations,
     ) {
     }
 
@@ -72,17 +74,73 @@ class EmployeeController extends Controller
             'deployments.department',
             'deployments.history',
             'violations.issuer',
+            'violations.reporter',
+            'violations.report',
             'statusHistory.changedBy',
-            'resignation',
-            'termination',
+            'resignation.processor',
+            'termination.creator',
+            'termination.approver',
+            'termination.withdrawer',
         ]);
 
         return ApiResponse::success([
             'employee' => new EmployeeResource($employee),
             'status_history' => $employee->statusHistory,
-            'resignation' => $employee->resignation,
-            'termination' => $employee->termination,
+            'resignation' => $this->presentResignation($employee->resignation),
+            'termination' => $this->presentTermination($employee->termination),
         ]);
+    }
+
+    /**
+     * The latest resignation, as the screen needs it.
+     *
+     * Storage paths stay on the server; the screen is told only whether a
+     * letter exists, and fetches a short-lived link when someone opens it.
+     */
+    private function presentResignation(?Resignation $resignation): ?array
+    {
+        if (! $resignation) {
+            return null;
+        }
+
+        return [
+            'id' => $resignation->id,
+            'reason' => $resignation->reason,
+            'filing_date' => $resignation->filing_date?->toDateString(),
+            'rendering_days' => $resignation->rendering_days,
+            'exit_date' => $resignation->exit_date?->toDateString(),
+            'clearance_status' => $resignation->clearance_status,
+            'status' => $resignation->status,
+            'remarks' => $resignation->remarks,
+            'processed_by' => $resignation->processor?->full_name,
+            'has_letter' => filled($resignation->resignation_letter_path),
+            'is_open' => $resignation->isOpen(),
+            'can_be_completed' => $resignation->canBeCompleted(),
+        ];
+    }
+
+    private function presentTermination(?Termination $termination): ?array
+    {
+        if (! $termination) {
+            return null;
+        }
+
+        return [
+            'id' => $termination->id,
+            'reason' => $termination->reason,
+            'termination_date' => $termination->termination_date?->toDateString(),
+            'remarks' => $termination->remarks,
+            'status' => $termination->status,
+            'filed_by' => $termination->creator?->full_name,
+            'filed_at' => $termination->created_at?->toIso8601String(),
+            'finalized_by' => $termination->approver?->full_name,
+            'finalized_at' => $termination->finalized_at?->toIso8601String(),
+            'withdrawn_by' => $termination->withdrawer?->full_name,
+            'withdrawn_at' => $termination->withdrawn_at?->toIso8601String(),
+            'withdrawal_reason' => $termination->withdrawal_reason,
+            'has_documents' => filled($termination->documents_path),
+            'is_open' => $termination->isOpen(),
+        ];
     }
 
     public function update(Request $request, Employee $employee): JsonResponse
@@ -118,7 +176,7 @@ class EmployeeController extends Controller
     {
         $this->authorize('view', $employee);
 
-        $violations = $employee->violations()->with('issuer')->get();
+        $violations = $employee->violations()->with(['issuer', 'reporter', 'report'])->get();
         $active = $violations->filter->isActive();
         $threshold = (int) config('empower.violations.termination_threshold', 4);
 
@@ -151,7 +209,7 @@ class EmployeeController extends Controller
 
         $data = $request->validate([
             'violation_date' => ['required', 'date', 'before_or_equal:today'],
-            'violation_type' => ['required', Rule::in(['awol', 'absences', 'suspension', 'late', 'misconduct', 'policy_violation'])],
+            'violation_type' => ['required', Rule::in(EmployeeViolation::TYPES)],
             'description' => ['required', 'string', 'max:2000'],
             'penalty' => ['nullable', 'string', 'max:190'],
             'status' => ['nullable', Rule::in(['open', 'under_review', 'resolved', 'escalated'])],
@@ -178,48 +236,21 @@ class EmployeeController extends Controller
             $evidencePath = $this->storage->store($request->file('evidence'), 'violations', $employee->id)['file_path'];
         }
 
-        $violation = EmployeeViolation::create([
-            'employee_id' => $employee->id,
-            'violation_date' => $data['violation_date'],
-            'violation_type' => $data['violation_type'],
-            'description' => $data['description'],
-            'evidence_path' => $evidencePath,
-            'penalty' => $data['penalty'] ?? null,
-            'status' => $data['status'] ?? 'open',
-            'remarks' => $data['remarks'] ?? null,
-            'issued_by' => $request->user()->id,
-        ]);
-
-        $this->audit->record('violation', 'violations', EmployeeViolation::class, $violation->id, null, [
-            'employee_number' => $employee->employee_number,
-            'type' => $data['violation_type'],
-        ]);
-
         /*
-         * Raise the question when the client's threshold is reached.
-         *
-         * This notifies and flags; it does not act. CDE's policy is that the
-         * fourth offence puts an employee up for review, and an administrator
-         * decides what follows — the system's job is to make sure nobody has to
-         * notice by counting rows themselves, not to reach the conclusion for
-         * them.
+         * Recorded through the same service that validates coordinators'
+         * reports, so the audit entry and the threshold check are identical
+         * however a violation reaches the file. Reaching the threshold
+         * notifies and flags; it never acts. An administrator decides.
          */
-        $reached = $employee->reachedViolationThreshold();
-
-        if ($reached) {
-            User::query()
-                ->whereIn('user_type', ['admin', 'hr'])
-                ->where('is_active', true)
-                ->get()
-                ->each->notify(new ViolationThresholdReached(
-                    $employee->loadMissing('applicant'),
-                    $employee->activeViolations()->count()
-                ));
-        }
+        [$violation, $reached] = $this->violations->record(
+            $employee,
+            array_merge($data, ['evidence_path' => $evidencePath]),
+            $request->user()
+        );
 
         return ApiResponse::created([
             'violation' => new ViolationResource($violation->load('issuer')),
-            'active_count' => $employee->activeViolations()->count(),
+            'active_count' => $employee->activeViolations()->reorder()->count(),
             'threshold' => (int) config('empower.violations.termination_threshold', 4),
             'threshold_reached' => $reached,
         ], $reached

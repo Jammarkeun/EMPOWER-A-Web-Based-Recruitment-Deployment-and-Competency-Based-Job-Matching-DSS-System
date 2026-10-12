@@ -34,18 +34,19 @@ class ApplicantPolicy
         return $user->can('applicants.create');
     }
 
+    /**
+     * Editing the full applicant record is staff work.
+     *
+     * An applicant corrects their own contact details through the portal's
+     * profile endpoint, which accepts only those fields. Letting the owner
+     * through here as well opened every field on the staff form to them — the
+     * interview ratings and the height, sex, birth date, and distance the
+     * matching engine scores against included — so an applicant could rate
+     * their own interview "5 of 5" before being ranked.
+     */
     public function update(User $user, Applicant $applicant): bool
     {
-        if ($user->can('applicants.update')) {
-            return true;
-        }
-
-        // A portal user may correct their own contact details, but only while
-        // their application is still being screened. Once they are deployment
-        // ready the record has been verified against documents and must not
-        // change underneath HR.
-        return $this->owns($user, $applicant)
-            && in_array($applicant->current_status, ['applied', 'initial_screening', 'incomplete_requirements'], true);
+        return $user->can('applicants.update');
     }
 
     public function changeStatus(User $user, Applicant $applicant): bool

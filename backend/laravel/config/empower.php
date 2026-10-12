@@ -41,6 +41,25 @@ return [
     ],
 
     /*
+    | Statuses that only a workflow may set, never the generic status endpoint.
+    |
+    | Each of these stands for something that has to exist alongside it: an
+    | employee record and a deployment for "deployed" and "active", a completed
+    | resignation or a finalised termination for "resigned" and "terminated".
+    | They stay in the transition map above, because that map is also the order
+    | the workflow walks — but moving an applicant into one of them by hand would
+    | record an employment that was never created, or end one with no
+    | separation record, no review, and no confirmation. The value names the
+    | workflow that owns the status so the refusal can say where to go instead.
+    */
+    'workflow_owned_statuses' => [
+        'deployed' => 'deployment',
+        'active' => 'deployment',
+        'resigned' => 'separation',
+        'terminated' => 'separation',
+    ],
+
+    /*
     | Employee status transitions, applied after an applicant becomes an employee.
     */
     'employee_transitions' => [
@@ -160,6 +179,20 @@ return [
     ],
 
     /*
+    | Attendance: the daily time record compared with the schedule.
+    |
+    | CDE has not stated a grace period, so the default is none - a time-in
+    | after the scheduled start is reported as late, to the minute. It is a
+    | setting because a client's handbook commonly allows a few minutes, and
+    | when this one says so the agency should be able to match it without a
+    | developer. This only changes what is *reported* as late; it computes no
+    | pay and records no violation on its own.
+    */
+    'attendance' => [
+        'late_grace_minutes' => 0,
+    ],
+
+    /*
     | Training before deployment.
     |
     | The agency is explicit that training always happens before a worker is
@@ -215,5 +248,6 @@ return [
         'training' => 'TRN',
         'client' => 'CLI',
         'position' => 'POS',
+        'violation_report' => 'VR',
     ],
 ];

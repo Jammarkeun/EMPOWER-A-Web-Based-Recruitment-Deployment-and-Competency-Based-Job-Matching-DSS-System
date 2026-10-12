@@ -19,6 +19,30 @@ export function humanise(value) {
     .join(' ')
 }
 
+/**
+ * Where an account belongs after signing in.
+ *
+ * Portal accounts go to the portal, coordinators to their client workspace, and
+ * staff to the dashboard. None of them should land on a screen built for
+ * another kind of account; the API refuses those screens' data anyway.
+ */
+export function homePathFor(user) {
+  if (['applicant', 'employee'].includes(user?.user_type)) return '/portal'
+  if (user?.user_type === 'coordinator') return '/coordinator'
+  return '/dashboard'
+}
+
+/**
+ * Today as YYYY-MM-DD on this computer's calendar, for date inputs and their
+ * limits. toISOString() gives the UTC date, which in Manila is still
+ * yesterday until 8 AM.
+ */
+export function todayISO() {
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
 export function formatDate(value, fallback = '—') {
   if (!value) return fallback
   const date = new Date(value)
@@ -85,6 +109,16 @@ export function statusTone(status) {
     verified: 'success',
     rejected: 'destructive',
     expired: 'destructive',
+
+    // Separations. A termination awaiting review is the one that needs
+    // somebody's attention; a withdrawn one is history that ended quietly.
+    filed: 'info',
+    accepted: 'info',
+    completed: 'muted',
+    withdrawn: 'muted',
+    draft: 'muted',
+    for_review: 'warning',
+    finalized: 'destructive',
 
     // Recommendation bands
     highly_recommended: 'success',

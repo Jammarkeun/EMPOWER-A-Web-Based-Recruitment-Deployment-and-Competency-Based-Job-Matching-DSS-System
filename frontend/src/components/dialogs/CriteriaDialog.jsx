@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Loader2, AlertTriangle } from 'lucide-react'
+import { Loader2, AlertTriangle, Info } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import {
@@ -27,6 +27,7 @@ import CriteriaValueEditor from '@/components/CriteriaValueEditor'
 export default function CriteriaDialog({ open, onOpenChange, jobRequestId, onSaved }) {
   const [catalog, setCatalog] = React.useState([])
   const [rows, setRows] = React.useState({})
+  const [prefill, setPrefill] = React.useState(null)
   const [loading, setLoading] = React.useState(true)
   const [saving, setSaving] = React.useState(false)
   const toast = useToast()
@@ -39,18 +40,35 @@ export default function CriteriaDialog({ open, onOpenChange, jobRequestId, onSav
       .then((response) => {
         setCatalog(response.data.catalog)
 
-        const configured = {}
-        for (const criterion of response.data.configured) {
-          configured[criterion.criteria_code] = {
-            enabled: true,
-            mandatory: criterion.mandatory_flag,
-            weight: String(criterion.weight_score ?? 0),
-            min: criterion.min_value ?? '',
-            max: criterion.max_value ?? '',
-            expected: criterion.expected_value ?? '',
-          }
-        }
-        setRows(configured)
+        const toRow = (criterion) => ({
+          enabled: true,
+          mandatory: Boolean(criterion.mandatory_flag),
+          weight: String(criterion.weight_score ?? 0),
+          min: criterion.min_value ?? '',
+          max: criterion.max_value ?? '',
+          expected: criterion.expected_value ?? '',
+        })
+
+        /*
+         * A request with nothing set yet starts from what is already known:
+         * the requirements typed on the request itself (its age bracket,
+         * minimum height, education, and so on) and the client's standing
+         * criteria. Those used to sit unused while the ranking ignored them.
+         * They are only proposed - nothing is saved until somebody saves.
+         */
+        const source = response.data.configured.length ? response.data.configured : response.data.suggested ?? []
+
+        setRows(Object.fromEntries(source.map((c) => [c.criteria_code, toRow(c)])))
+        setPrefill(
+          response.data.configured.length
+            ? null
+            : {
+                fromRequest: (response.data.suggested_from_request ?? []).map((c) => c.criteria_name),
+                fromCompany: (response.data.suggested_from_company ?? []).map((c) => c.criteria_name),
+                company: response.data.company_name,
+                unmapped: response.data.unmapped_requirements ?? [],
+              }
+        )
       })
       .catch((error) => toast.error('Could not load criteria', error.message))
       .finally(() => setLoading(false))
@@ -107,6 +125,34 @@ export default function CriteriaDialog({ open, onOpenChange, jobRequestId, onSav
           <LoadingState />
         ) : (
           <>
+            {prefill && (prefill.fromRequest.length > 0 || prefill.fromCompany.length > 0 || prefill.unmapped.length > 0) && (
+              <div className="flex gap-2.5 rounded-md border border-primary/30 bg-primary/5 p-3 text-xs">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                <div className="space-y-1 text-muted-foreground">
+                  {prefill.fromRequest.length > 0 && (
+                    <p>
+                      <span className="font-medium text-foreground">From this request:</span>{' '}
+                      {prefill.fromRequest.join(', ')}.
+                    </p>
+                  )}
+                  {prefill.fromCompany.length > 0 && (
+                    <p>
+                      <span className="font-medium text-foreground">
+                        From {prefill.company ?? 'the client'}'s standing criteria:
+                      </span>{' '}
+                      {prefill.fromCompany.join(', ')}.
+                    </p>
+                  )}
+                  {prefill.unmapped.map((note) => (
+                    <p key={note} className="text-warning">
+                      {note}
+                    </p>
+                  ))}
+                  <p>Check the values, give each scored criterion a weight, then save.</p>
+                </div>
+              </div>
+            )}
+
             <div className="max-h-[45vh] space-y-2 overflow-y-auto pr-1">
               {catalog.map((criterion) => {
                 const row = rows[criterion.criteria_code] ?? {}
@@ -198,6 +244,7 @@ export default function CriteriaDialog({ open, onOpenChange, jobRequestId, onSav
                                 <CriteriaValueEditor
                                   accepts={criterion.accepts}
                                   options={criterion.options}
+                                  listMatch={criterion.list_match}
                                   value={row.expected ?? ''}
                                   onChange={(next) =>
                                     update(criterion.criteria_code, { expected: next ?? '' })

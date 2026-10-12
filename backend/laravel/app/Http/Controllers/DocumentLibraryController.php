@@ -13,22 +13,104 @@ use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
 /**
- * Every uploaded document, grouped by what kind of document it is.
+ * The document library: by applicant first, and by kind of document second.
  *
- * This is a different idea from the Folder 1/2/3 filing, and the two are
- * deliberately kept apart. Folders describe how complete one applicant's paperwork
- * is; this describes where a particular kind of paper lives across everybody. HR
- * reach for this when the question is "show me the medical certificates", which
- * previously meant opening applicants one at a time until you found them.
+ * The main view starts from the person. HR open an applicant's name and see
+ * every document that belongs to them in one place - which is how the agency
+ * already thinks about paperwork, one applicant's folder at a time, and what
+ * the review panel asked for. Listing files by document type first left the
+ * officer reading names off a list of medical certificates and guessing whose
+ * was whose.
  *
- * Only documents that were actually uploaded appear here. A requirement verified
- * at the counter with no file has nothing to show, and saying so plainly is
- * better than an empty row that looks like a fault.
+ * The by-type view is kept as a secondary one for the other question HR ask -
+ * "show me every medical certificate that expires this month" - which is
+ * genuinely about the document rather than the person.
+ *
+ * Both are built from the applicant relationship on the server; nothing here
+ * relies on the screen filtering a larger list.
  */
 class DocumentLibraryController extends Controller
 {
     public function __construct(private readonly DocumentStorageService $storage)
     {
+    }
+
+    /**
+     * Applicants, each with a summary of their documents.
+     *
+     * One row per person, so the list reads as a set of named folders. The
+     * counts say what needs doing without opening anyone: how much they have
+     * sent, how much is accepted, and how much is waiting for somebody to look
+     * at it. Those waiting come first, because that is the work.
+     *
+     * The documents themselves are read through the applicant's own
+     * requirements endpoint, which authorises against the applicant record.
+     */
+    public function applicants(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', Applicant::class);
+
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:120'],
+            'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
+            'needs_review' => ['nullable', 'boolean'],
+            // By default only people with something on file: a registration
+            // with nothing submitted yet is an empty folder.
+            'include_empty' => ['nullable', 'boolean'],
+            'per_page' => ['nullable', 'integer', 'between:1,100'],
+        ]);
+
+        $uploaded = fn ($q) => $q->whereNotNull('file_path');
+        $awaiting = fn ($q) => $q->whereNotNull('file_path')->whereIn('status', ['submitted', 'pending']);
+        $onFile = fn ($q) => $q->where(fn ($inner) => $inner->whereNotNull('file_path')->orWhere('status', 'verified'));
+
+        $applicants = Applicant::query()
+            ->with(['employee:id,applicant_id,employee_number,employment_status'])
+            ->search($filters['search'] ?? null)
+            ->withCount([
+                'requirements as checklist_count',
+                'requirements as uploaded_count' => $uploaded,
+                'requirements as verified_count' => fn ($q) => $q->where('status', 'verified'),
+                'requirements as awaiting_review_count' => $awaiting,
+                'requirements as needs_attention_count' => fn ($q) => $q->whereIn('status', ['rejected', 'needs_correction', 'expired']),
+            ])
+            ->withMax('requirements as last_submitted_at', 'submitted_at')
+            ->unless($filters['include_empty'] ?? false, fn ($q) => $q->whereHas('requirements', $onFile))
+            ->when($filters['needs_review'] ?? false, fn ($q) => $q->whereHas('requirements', $awaiting))
+            ->when(
+                $filters['client_company_id'] ?? null,
+                fn ($q, $companyId) => $q->whereHas(
+                    'employee.deployments',
+                    fn ($d) => $d->where('client_company_id', $companyId)
+                )
+            )
+            ->orderByDesc('awaiting_review_count')
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->paginate($filters['per_page'] ?? 25);
+
+        return ApiResponse::paginated(
+            $applicants->through(fn (Applicant $a) => [
+                'id' => $a->id,
+                'full_name' => $a->full_name,
+                'applicant_code' => $a->applicant_code,
+                'current_status' => $a->current_status,
+                'folder_category' => $a->folder_category,
+                'preferred_position' => $a->preferred_position,
+                'employee_number' => $a->employee?->employee_number,
+                'documents' => [
+                    'checklist' => (int) $a->checklist_count,
+                    'uploaded' => (int) $a->uploaded_count,
+                    'verified' => (int) $a->verified_count,
+                    'awaiting_review' => (int) $a->awaiting_review_count,
+                    'needs_attention' => (int) $a->needs_attention_count,
+                    'last_submitted_at' => $a->last_submitted_at
+                        ? \Illuminate\Support\Carbon::parse($a->last_submitted_at)->toIso8601String()
+                        : null,
+                ],
+            ]),
+            'Applicants retrieved'
+        );
     }
 
     /**

@@ -243,7 +243,7 @@ class ClientPolicyTest extends TestCase
         $this->app['auth']->forgetGuards();
         Sanctum::actingAs($this->adminUser());
 
-        $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/finalise")
+        $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/finalise", ['confirm' => true])
             ->assertOk();
     }
 

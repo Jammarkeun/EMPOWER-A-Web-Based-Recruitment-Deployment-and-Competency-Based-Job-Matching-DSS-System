@@ -48,6 +48,11 @@ class ReferenceCodeService
         return $this->next('job_positions', 'position_code', config('empower.code_prefixes.position'));
     }
 
+    public function violationReport(): string
+    {
+        return $this->next('violation_reports', 'report_code', config('empower.code_prefixes.violation_report'));
+    }
+
     private function next(string $table, string $column, string $prefix): string
     {
         $year = now()->year;

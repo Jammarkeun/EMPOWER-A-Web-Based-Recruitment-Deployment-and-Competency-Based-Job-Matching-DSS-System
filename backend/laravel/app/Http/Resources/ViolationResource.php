@@ -22,6 +22,11 @@ class ViolationResource extends JsonResource
             'description' => $this->description,
             'has_evidence' => ! is_null($this->evidence_path),
             'issued_by' => $this->whenLoaded('issuer', fn () => $this->issuer?->full_name),
+            // Where it came from, when a coordinator reported it.
+            'reported_by' => $this->whenLoaded('reporter', fn () => $this->reporter?->full_name),
+            'report_code' => $this->whenLoaded('report', fn () => $this->report?->report_code),
+            'violation_report_id' => $this->violation_report_id,
+            'client_company_id' => $this->client_company_id,
             'penalty' => $this->penalty,
             'status' => $this->status,
             'resolution_date' => $this->resolution_date?->toDateString(),

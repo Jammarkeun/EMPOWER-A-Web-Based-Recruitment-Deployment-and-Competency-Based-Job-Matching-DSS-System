@@ -30,7 +30,7 @@ const ACTION_TONES = {
  * recorded should not also control the record.
  */
 export default function AuditLogs() {
-  const [filters, setFilters] = React.useState({ action_type: '', module_key: '', date_from: '' })
+  const [filters, setFilters] = React.useState({ action_type: '', module_key: '', actor_role: '', date_from: '' })
   const [page, setPage] = React.useState(1)
 
   const { data, meta, loading, error, refetch } = useApi('/audit-logs', {
@@ -74,9 +74,23 @@ export default function AuditLogs() {
             aria-label="Filter by module"
             className="sm:w-48"
           >
-            {['auth', 'applicants', 'requirements', 'clients', 'job_requests', 'matching', 'training', 'deployment', 'employees', 'violations', 'separation', 'archives'].map((module) => (
+            {['auth', 'applicants', 'requirements', 'clients', 'job_requests', 'matching', 'training', 'deployment', 'employees', 'attendance', 'violations', 'violation_reports', 'coordination', 'separation', 'archives', 'users'].map((module) => (
               <option key={module} value={module}>
                 {humanise(module)}
+              </option>
+            ))}
+          </Select>
+
+          <Select
+            value={filters.actor_role}
+            onChange={(e) => update('actor_role', e.target.value)}
+            placeholder="All roles"
+            aria-label="Filter by role"
+            className="sm:w-40"
+          >
+            {['admin', 'hr', 'coordinator', 'applicant', 'employee'].map((role) => (
+              <option key={role} value={role}>
+                {humanise(role)}
               </option>
             ))}
           </Select>
@@ -119,6 +133,14 @@ export default function AuditLogs() {
                     </TableCell>
                     <TableCell className="text-sm">
                       {log.actor?.first_name ? `${log.actor.first_name} ${log.actor.last_name}` : 'System'}
+                      {/* The capacity they acted in, and the client, as recorded at the time. */}
+                      {(log.actor_role || log.company?.company_name) && (
+                        <p className="text-xs text-muted-foreground">
+                          {log.actor_role && humanise(log.actor_role)}
+                          {log.actor_role && log.company?.company_name && ' · '}
+                          {log.company?.company_name}
+                        </p>
+                      )}
                       {log.ip_address && <p className="text-xs text-muted-foreground">{log.ip_address}</p>}
                     </TableCell>
                     <TableCell>

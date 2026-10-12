@@ -114,8 +114,9 @@ precisely the failure the paper folders allowed.
 | *placement response* | **The applicant, and only them** | Applicant answers on their own portal | `placement_response`, `placement_responded_at`, `placement_response_note`; audit entry; HR notified | Their own answer, shown back | "Accepted" or "Declined" on the applicant record |
 | `approved` | HR / admin | Client company confirms acceptance | History row | "The client company has approved your application" | Cleared to deploy |
 | `deployed` → `active` | HR / admin (`deployment.create`) | Deployment recorded from the client's completed deployment details | Employee record, employee number, biometric number, department, supervisor, date; request headcount incremented | Their employment details | The deployment register |
-| `resigned` | HR / admin (`separation.create`), filed by the employee | Resignation filed, 30 days rendered, clearance completed | Resignation, rendering days, exit date, clearance status | Their own filing and its clearance state | The separations list |
-| `terminated` | HR / admin (`separation.finalize_termination`) | Violations reach the company threshold | Termination record, violations, evidence | The closure of their record | The disciplinary history |
+| `resigned` | Filed by the employee (portal) or HR (`separation.create`); completed by HR (`separation.approve`) after an explicit confirmation | Resignation filed, notice rendered, clearance marked "cleared", exit date set, then completed | Resignation, rendering days, exit date, clearance status; placement ended **on the exit date**; employee **and applicant** record moved to `resigned`; archive snapshot | Their own filing and its clearance state; "Your employment record is closed" | The separations list ("Needs action" until completed or withdrawn) |
+| `terminated` | Filed by HR (`separation.create`) for review; finalised **only** by an administrator (`separation.finalize_termination`) after a confirmation that requires typing the employee number | Violations reach the company threshold and the agency decides to dismiss | Termination record (filed by, finalised by and when), optional supporting document; placement ended **on the termination date**; employee **and applicant** record moved to `terminated`; archive snapshot | The closure of their record | The disciplinary history; the separations list |
+| *termination withdrawn* | HR or administrator | The review concludes the grounds do not hold | Termination kept on file as `withdrawn`, with who withdrew it, when, and the required reason | Nothing changes | The separations history |
 | `archived` | HR / admin (`archives.create`) | Record closed off | Archive entry with reason and actor | "This record has been archived" | The archive |
 
 **Every one of these writes a row to `application_status_history`** (from, to,
@@ -137,6 +138,17 @@ Two rules are enforced by the system rather than by memory:
    request can still take a worker, the client company is active, the applicant
    is in Folder 1, they are not already actively deployed, **and they have not
    declined the placement**.
+3. **Employment and separation statuses belong to their workflows.**
+   `deployed` and `active` are reached only by recording a deployment, and
+   `resigned` and `terminated` only by completing a resignation or finalising a
+   termination (`config/empower.php → workflow_owned_statuses`). The generic
+   status endpoint refuses them with HTTP 409, and the applicant screen does not
+   offer them, so nobody can be "terminated" by a button that changes a word
+   with no termination record, review, or confirmation behind it.
+4. **Ending employment is confirmed twice.** The screen asks for a confirmation
+   that names the person and what will happen (for a termination, by typing the
+   employee number), and the API separately refuses to complete a resignation or
+   finalise a termination unless the request carries `confirm: true`.
 
 ---
 
@@ -159,6 +171,7 @@ Two rules are enforced by the system rather than by memory:
 | Recording the deployment | — | ✔ | — |
 | Resignation | ✔ files | processes and clears | — |
 | Termination | — | ✔ | reports the violations |
+| Reporting an incident at the client site | — | the CDE **coordinator** assigned to that client writes it up and submits it; **HR** validates or dismisses it | reports it to the coordinator |
 
 The pattern worth stating: **the applicant's only decisions are what to apply
 for, what to submit, and whether to accept the job.** Every review status and
@@ -180,6 +193,9 @@ any of them.
 | Request already filled | `canAcceptDeployment()` refuses another deployment against it |
 | Client company deactivated | Its positions leave the application form and it can raise no new requests |
 | Applicant already deployed | A second active deployment is refused |
+| Termination filed in error, or the grounds do not hold | Withdrawn with a required reason; the employee stays active and the termination stays on file |
+| A second resignation or termination filed while one is open | Refused until the open one is completed, finalised, or withdrawn |
+| An employee tries a staff separation route on themselves | Refused (403). Their only separation action is filing a resignation through the portal |
 
 ---
 
@@ -221,6 +237,53 @@ confirmed policy, and each is a question for the next client meeting:
    capacity, hours standing — map onto the criteria catalogue, but "kayang
    bumuhat ng 25 kilos to 50 kilos" is currently free-text under physical
    requirements rather than a scored criterion.
+
+8. **The DTR source and format.** Added after the July 2026 panel
+   recommendation ("DTR to compare with schedule"). Workers clock in on the
+   client's own biometric system, which is not connected to EMPOWER, so HR
+   encodes the schedule and the DTR by hand and the system compares them. Whether
+   the client can export its DTR, and in what format, has not been asked; an
+   import should wait for that answer rather than guess a column layout.
+9. **Attendance rules.** CDE has not stated a grace period, so lateness is
+   counted to the minute (a configurable allowance, default 0). Time recorded
+   after the scheduled end is shown as "past scheduled end" — not approved
+   overtime — because whether and how overtime is approved is the client's
+   policy, and pay is outside this system. Nothing in the comparison records a
+   violation on its own; HR can start one from a late or absent day.
+
+---
+
+## 6. Employment after deployment: schedule and DTR
+
+| What | Who | What is recorded | Where it shows |
+| --- | --- | --- | --- |
+| Work schedule | HR / admin (`attendance.manage`) | Work days, shift start and end (a shift ending at or before it starts runs past midnight), effective date. A change closes the previous schedule the day before, so earlier days keep the schedule that applied to them | Employee record → Attendance (DTR) |
+| Daily time record | HR / admin (`attendance.manage`), copied from the client's DTR | Time-in, time-out, remarks per day; only days within the employment period and not in the future | Same |
+| Comparison | Computed on demand, never stored | Per day: on schedule, late (minutes), left early (minutes), past scheduled end (minutes), absent, missing time-in/out, worked on a rest day, no schedule in force | Employee record; Attendance (DTR) page for the whole workforce, filterable to those needing attention |
+
+The comparison computes no pay and applies no deduction: payroll remains out of
+scope.
+
+---
+
+## 7. The CDE coordinator
+
+A coordinator is a **CDE employee assigned to one client company**: the
+agency's person at that client, who receives the client's reports about
+deployed workers and passes them to HR. It is an internal account, not a client
+login, and the client still has no access to the system.
+
+| What | How it works |
+| --- | --- |
+| Account | Created by an administrator (Users & Access) with a required client company. The role is fixed to `coordinator`, which holds a single permission, `coordination.access`. |
+| Scope | Every coordinator screen reads from `/api/v1/coordinator/*`. The client is resolved on the server from the coordinator's **active assignment**; no endpoint accepts a client id, so editing a URL or query string cannot reach another client. Every HR and administration endpoint is gated by a permission the role does not hold, so those are refused too. |
+| What they see | Their client's details, departments, and positions; its employees (position, department, supervisor, employee and biometrics numbers, status, disciplinary record, this month's attendance summary); its deployments; its manpower requests and how far each is filled. Not birth dates, addresses, government numbers, documents, the applicant pool, other clients, or anything to do with pay. |
+| Violation reports | Draft → submitted → under HR review → validated (an official violation is recorded, linked to the report, the coordinator, the client, and the department) or dismissed; HR can also return a report for correction. The client and department are stamped from the assignment and the employee's placement. |
+| What they cannot do | Record or change an official violation, file or finalise a termination, encode the DTR, change client records, or reach any administration screen. Termination stays with HR and, for finalising, the administrator. |
+| Reassignment | An administrator moves a coordinator to another client; the current assignment ends and a new one begins, so the history is kept. Access to the old client ends on the next request; reports made there stay with that client. |
+| Deactivation | Blocks sign-in and revokes access at once; their reports remain on file. |
+| Notifications | HR hears when a report is submitted; the coordinator hears what HR decided, and when a worker at their client reaches the review threshold. Coordinators receive no agency-wide notices. |
+| Audit | Every entry records the actor's role and, for a coordinator, the client they acted for - including sign-in and viewing an employee record. |
 
 ---
 

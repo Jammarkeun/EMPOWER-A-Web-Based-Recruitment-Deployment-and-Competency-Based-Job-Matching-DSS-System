@@ -22,8 +22,10 @@ use RuntimeException;
  */
 class SeparationService
 {
-    public function __construct(private readonly AuditService $audit)
-    {
+    public function __construct(
+        private readonly AuditService $audit,
+        private readonly ApplicantLifecycleService $lifecycle,
+    ) {
     }
 
     public function fileResignation(Employee $employee, array $data, User $actor): Resignation
@@ -33,6 +35,14 @@ class SeparationService
                 'Only an active employee can file a resignation. This employee is %s.',
                 $employee->employment_status
             ));
+        }
+
+        // One case at a time. Two open resignations for the same person would
+        // leave HR clearing one while the other sat waiting to be completed.
+        if ($employee->resignations()->whereIn('status', Resignation::OPEN_STATUSES)->exists()) {
+            throw new RuntimeException(
+                'This employee already has a resignation in progress. Update that one instead of filing another.'
+            );
         }
 
         $resignation = Resignation::create(array_merge($data, [
@@ -72,10 +82,20 @@ class SeparationService
                 $resignation->employee,
                 'resigned',
                 $actor,
-                'Resignation completed on '.$resignation->exit_date->toDateString().'.'
+                'Resignation completed on '.$resignation->exit_date->toDateString().'.',
+                $resignation->exit_date->toDateString(),
             );
 
             $this->archive($resignation->employee, 'Resigned', $actor);
+
+            // Last, because it notifies the applicant: nothing after it can
+            // roll back a separation they have already been told about.
+            $this->closeApplicantRecord(
+                $resignation->employee,
+                'resigned',
+                $actor,
+                'Resignation completed on '.$resignation->exit_date->toDateString().'.'
+            );
 
             return $resignation->fresh();
         });
@@ -88,6 +108,14 @@ class SeparationService
                 'Only an active employee can be terminated. This employee is %s.',
                 $employee->employment_status
             ));
+        }
+
+        // One case at a time, for the same reason as resignations: a second
+        // open termination would be reviewed while the first still waited.
+        if ($employee->terminations()->whereIn('status', Termination::OPEN_STATUSES)->exists()) {
+            throw new RuntimeException(
+                'A termination for this employee is already awaiting review. Finalise or withdraw it first.'
+            );
         }
 
         $termination = Termination::create(array_merge($data, [
@@ -122,23 +150,73 @@ class SeparationService
             throw new RuntimeException('This termination has already been finalised.');
         }
 
+        if (! $termination->isOpen()) {
+            throw new RuntimeException('This termination was withdrawn and can no longer be finalised.');
+        }
+
         return DB::transaction(function () use ($termination, $actor) {
             $termination->update([
                 'status' => 'finalized',
                 'approved_by' => $actor->id,
+                'finalized_at' => now(),
             ]);
 
             $this->changeEmploymentStatus(
                 $termination->employee,
                 'terminated',
                 $actor,
-                'Terminated: '.$termination->reason
+                'Terminated: '.$termination->reason,
+                $termination->termination_date->toDateString(),
             );
 
             $this->archive($termination->employee, 'Terminated: '.$termination->reason, $actor);
 
+            $this->closeApplicantRecord(
+                $termination->employee,
+                'terminated',
+                $actor,
+                'Terminated: '.$termination->reason
+            );
+
             return $termination->fresh();
         });
+    }
+
+    /**
+     * Closes a termination without dismissing anybody.
+     *
+     * The other way a review can end. Nothing about the employee changes; the
+     * termination stays on file, marked withdrawn, with who withdrew it and
+     * why, so a case that was opened and dropped is still visible later.
+     */
+    public function withdrawTermination(Termination $termination, string $reason, User $actor): Termination
+    {
+        if (! $termination->isOpen()) {
+            throw new RuntimeException(sprintf(
+                'Only a termination awaiting review can be withdrawn. This one is %s.',
+                $termination->status
+            ));
+        }
+
+        $before = $termination->status;
+
+        $termination->update([
+            'status' => 'withdrawn',
+            'withdrawn_by' => $actor->id,
+            'withdrawn_at' => now(),
+            'withdrawal_reason' => $reason,
+        ]);
+
+        $this->audit->record(
+            'update',
+            'separation',
+            Termination::class,
+            $termination->id,
+            ['status' => $before],
+            ['status' => 'withdrawn', 'reason' => $reason]
+        );
+
+        return $termination->fresh();
     }
 
     /**
@@ -207,8 +285,13 @@ class SeparationService
         return $archive;
     }
 
-    private function changeEmploymentStatus(Employee $employee, string $to, User $actor, string $reason): void
-    {
+    private function changeEmploymentStatus(
+        Employee $employee,
+        string $to,
+        User $actor,
+        string $reason,
+        string $effectiveDate,
+    ): void {
         $from = $employee->employment_status;
         $allowed = config("empower.employee_transitions.{$from}", []);
 
@@ -232,10 +315,38 @@ class SeparationService
         ]);
 
         // Close the active placement so the client company's headcount stops
-        // counting someone who has left.
+        // counting someone who has left. Dated by the separation itself - the
+        // exit date, or the termination date - rather than by the day somebody
+        // happened to process it, so the placement history says when the person
+        // actually stopped working there.
         $employee->deployments()->where('deployment_status', 'active')->update([
             'deployment_status' => 'ended',
-            'end_date' => now()->toDateString(),
+            'end_date' => $effectiveDate,
         ]);
+    }
+
+    /**
+     * Moves the applicant record out of employment alongside the employee.
+     *
+     * The applicant and the employee are the same person, and the lifecycle
+     * runs from application to resignation or termination on one record. This
+     * used to stop at the employee, so the applicant stayed "active" forever:
+     * the applicant list showed former workers as employed, and the portal told
+     * a dismissed employee they were still deployed.
+     *
+     * Routed through the lifecycle service so the change is validated,
+     * historised, audited, and notified like every other status move. Skipped
+     * rather than refused if the applicant is somehow not in employment, since
+     * the separation itself has already been decided and recorded.
+     */
+    private function closeApplicantRecord(Employee $employee, string $to, User $actor, string $reason): void
+    {
+        $applicant = $employee->applicant;
+
+        if (! $applicant || ! $this->lifecycle->canTransition($applicant->current_status, $to)) {
+            return;
+        }
+
+        $this->lifecycle->transition($applicant, $to, $actor, $reason);
     }
 }

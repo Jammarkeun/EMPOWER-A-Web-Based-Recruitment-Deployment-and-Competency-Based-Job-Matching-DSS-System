@@ -170,7 +170,7 @@ class ApiWorkflowTest extends TestCase
 
         Sanctum::actingAs($this->adminUser());
 
-        $this->postJson("/api/v1/employees/{$employeeId}/terminations/{$termination}/finalise")
+        $this->postJson("/api/v1/employees/{$employeeId}/terminations/{$termination}/finalise", ['confirm' => true])
             ->assertOk();
 
         $this->assertDatabaseHas('employees', ['id' => $employeeId, 'employment_status' => 'terminated']);
@@ -315,14 +315,14 @@ class ApiWorkflowTest extends TestCase
         ])->assertCreated()->json('data.id');
 
         // Clearance must be granted before the resignation can complete.
-        $this->postJson("/api/v1/employees/{$employeeId}/resignations/{$resignation}/complete")
+        $this->postJson("/api/v1/employees/{$employeeId}/resignations/{$resignation}/complete", ['confirm' => true])
             ->assertStatus(400);
 
         $this->putJson("/api/v1/employees/{$employeeId}/resignations/{$resignation}", [
             'clearance_status' => 'cleared',
         ])->assertOk();
 
-        $this->postJson("/api/v1/employees/{$employeeId}/resignations/{$resignation}/complete")
+        $this->postJson("/api/v1/employees/{$employeeId}/resignations/{$resignation}/complete", ['confirm' => true])
             ->assertOk();
 
         $this->assertDatabaseHas('employees', [

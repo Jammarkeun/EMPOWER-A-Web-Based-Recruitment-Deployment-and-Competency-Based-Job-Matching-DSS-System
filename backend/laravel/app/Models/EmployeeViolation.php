@@ -11,8 +11,15 @@ class EmployeeViolation extends Model
 {
     use HasFactory;
 
+    /** The kinds of offence the agency records. */
+    public const TYPES = ['awol', 'absences', 'suspension', 'late', 'misconduct', 'policy_violation'];
+
     protected $fillable = [
         'employee_id',
+        'violation_report_id',
+        'client_company_id',
+        'client_department_id',
+        'reported_by',
         'violation_date',
         'violation_type',
         'description',
@@ -27,8 +34,8 @@ class EmployeeViolation extends Model
     protected function casts(): array
     {
         return [
-            'violation_date' => 'date',
-            'resolution_date' => 'date',
+            'violation_date' => 'date:Y-m-d',
+            'resolution_date' => 'date:Y-m-d',
         ];
     }
 
@@ -40,6 +47,27 @@ class EmployeeViolation extends Model
     public function issuer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'issued_by');
+    }
+
+    /** The coordinator who reported it, when it came in through a report. */
+    public function reporter(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reported_by');
+    }
+
+    public function report(): BelongsTo
+    {
+        return $this->belongsTo(ViolationReport::class, 'violation_report_id');
+    }
+
+    public function company(): BelongsTo
+    {
+        return $this->belongsTo(ClientCompany::class, 'client_company_id');
+    }
+
+    public function department(): BelongsTo
+    {
+        return $this->belongsTo(ClientDepartment::class, 'client_department_id');
     }
 
     public function scopeOpen(Builder $query): Builder

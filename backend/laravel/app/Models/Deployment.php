@@ -30,8 +30,8 @@ class Deployment extends Model
     protected function casts(): array
     {
         return [
-            'deployment_date' => 'date',
-            'end_date' => 'date',
+            'deployment_date' => 'date:Y-m-d',
+            'end_date' => 'date:Y-m-d',
         ];
     }
 

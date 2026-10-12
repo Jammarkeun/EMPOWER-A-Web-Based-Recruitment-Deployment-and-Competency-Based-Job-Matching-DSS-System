@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatDate } from '@/lib/utils'
+import { formatDate, todayISO } from '@/lib/utils'
 
 export default function PortalEmployment() {
   const { data, loading, error, refetch } = useApi('/portal/employment')
@@ -183,7 +183,7 @@ export default function PortalEmployment() {
 function ResignationDialog({ open, onOpenChange, onFiled }) {
   const [form, setForm] = React.useState({
     reason: '',
-    filing_date: new Date().toISOString().slice(0, 10),
+    filing_date: todayISO(),
     rendering_days: '30',
     exit_date: '',
   })

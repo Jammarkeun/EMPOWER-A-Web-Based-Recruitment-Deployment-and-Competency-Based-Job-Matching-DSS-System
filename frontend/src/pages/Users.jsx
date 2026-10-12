@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Plus, Search, UserCog, Loader2, KeyRound, Power, Copy, Check } from 'lucide-react'
+import { Plus, Search, UserCog, Loader2, KeyRound, Power, Copy, Check, ArrowLeftRight, History } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { get, post, patch } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
@@ -21,7 +21,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatDateTime, humanise } from '@/lib/utils'
+import { formatDate, formatDateTime, humanise } from '@/lib/utils'
+import ConfirmActionDialog from '@/components/ConfirmActionDialog'
 
 export default function Users() {
   const [search, setSearch] = React.useState('')
@@ -39,11 +40,11 @@ export default function Users() {
     <>
       <PageHeader
         title="Users and access"
-        description="System accounts, roles, and portal access for applicants and employees."
+        description="System accounts, roles, coordinator assignments, and portal access for applicants and employees."
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" />
-            Add staff user
+            Add user
           </Button>
         }
       />
@@ -76,6 +77,7 @@ export default function Users() {
               >
                 <option value="admin">Administrator</option>
                 <option value="hr">HR staff</option>
+                <option value="coordinator">Coordinator</option>
                 <option value="applicant">Applicant portal</option>
                 <option value="employee">Employee portal</option>
               </Select>
@@ -125,7 +127,10 @@ export default function Users() {
 function UserRow({ user, onChanged }) {
   const [busy, setBusy] = React.useState(false)
   const [resetOpen, setResetOpen] = React.useState(false)
+  const [assignOpen, setAssignOpen] = React.useState(false)
+  const [historyOpen, setHistoryOpen] = React.useState(false)
   const toast = useToast()
+  const isCoordinator = user.user_type === 'coordinator'
 
   async function toggleActive() {
     setBusy(true)
@@ -147,6 +152,13 @@ function UserRow({ user, onChanged }) {
         <TableCell className="text-sm text-muted-foreground">{user.email}</TableCell>
         <TableCell>
           <Badge tone={user.user_type === 'admin' ? 'info' : 'muted'}>{humanise(user.user_type)}</Badge>
+          {/* A coordinator's client is their whole scope, so it is shown
+              wherever the account is. */}
+          {isCoordinator && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {user.coordinator_assignment?.company_name ?? 'No client assigned'}
+            </p>
+          )}
         </TableCell>
         <TableCell className="text-sm">{user.roles?.join(', ') || '—'}</TableCell>
         <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
@@ -157,6 +169,17 @@ function UserRow({ user, onChanged }) {
         </TableCell>
         <TableCell className="text-right">
           <div className="flex justify-end gap-1">
+            {isCoordinator && (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setAssignOpen(true)}>
+                  <ArrowLeftRight className="h-3.5 w-3.5" />
+                  {user.coordinator_assignment ? 'Reassign' : 'Assign'}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)} aria-label="Assignment history">
+                  <History className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setResetOpen(true)}>
               <KeyRound className="h-3.5 w-3.5" />
               Reset
@@ -170,7 +193,158 @@ function UserRow({ user, onChanged }) {
       </TableRow>
 
       <ResetPasswordDialog open={resetOpen} onOpenChange={setResetOpen} user={user} />
+      {isCoordinator && (
+        <>
+          <AssignCoordinatorDialog open={assignOpen} onOpenChange={setAssignOpen} user={user} onDone={onChanged} />
+          <AssignmentHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} user={user} />
+        </>
+      )}
     </>
+  )
+}
+
+/**
+ * Moves a coordinator to another client.
+ *
+ * Confirmed first, because the effect is immediate: from their next request
+ * the coordinator sees the new client only, and the old one is out of reach.
+ * Their reports for the old client stay where they are.
+ */
+function AssignCoordinatorDialog({ open, onOpenChange, user, onDone }) {
+  const toast = useToast()
+  const companies = useApi('/clients', { status: 'active', per_page: 100 }, { enabled: open })
+  const [companyId, setCompanyId] = React.useState('')
+  const [remarks, setRemarks] = React.useState('')
+  const [confirming, setConfirming] = React.useState(false)
+  const [error, setError] = React.useState('')
+
+  React.useEffect(() => {
+    if (open) {
+      setCompanyId('')
+      setRemarks('')
+      setError('')
+      setConfirming(false)
+    }
+  }, [open])
+
+  const target = (companies.data ?? []).find((c) => String(c.id) === companyId)
+
+  async function assign() {
+    try {
+      const response = await post(`/users/${user.id}/coordinator-assignment`, {
+        client_company_id: companyId,
+        remarks: remarks || null,
+      })
+      toast.success(response.message, `${user.full_name} now covers ${target?.company_name}.`)
+      setConfirming(false)
+      onOpenChange(false)
+      onDone()
+    } catch (err) {
+      setConfirming(false)
+      setError(err.errors?.client_company_id?.[0] ?? err.message)
+    }
+  }
+
+  return (
+    <>
+      <Dialog open={open && !confirming} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{user.coordinator_assignment ? 'Reassign coordinator' : 'Assign coordinator'}</DialogTitle>
+            <DialogDescription>
+              {user.coordinator_assignment
+                ? `${user.full_name} currently covers ${user.coordinator_assignment.company_name}.`
+                : `${user.full_name} has no client yet.`}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (companyId) setConfirming(true)
+            }}
+            noValidate
+          >
+            <Field label="Client company" htmlFor="assign_company" required error={error}>
+              <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)} placeholder="Choose a client">
+                {(companies.data ?? [])
+                  .filter((c) => c.id !== user.coordinator_assignment?.client_company_id)
+                  .map((c) => (
+                    <option key={c.id} value={String(c.id)}>
+                      {c.company_name}
+                    </option>
+                  ))}
+              </Select>
+            </Field>
+            <Field label="Remarks" htmlFor="assign_remarks">
+              <Input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional" />
+            </Field>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!companyId}>
+                Continue
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmActionDialog
+        open={open && confirming}
+        onOpenChange={(next) => !next && setConfirming(false)}
+        tone="warning"
+        title={`Assign ${user.full_name} to ${target?.company_name ?? 'this client'}?`}
+        description="Takes effect on their next request."
+        consequences={[
+          user.coordinator_assignment
+            ? `Their access to ${user.coordinator_assignment.company_name} ends now.`
+            : 'They gain access to this client now.',
+          `They will see ${target?.company_name ?? 'the new client'}'s employees, deployments, and requests only.`,
+          'Reports they made for a previous client stay with that client and are not changed.',
+          'The change is kept in their assignment history and the audit trail.',
+        ]}
+        confirmLabel="Confirm assignment"
+        onConfirm={assign}
+      />
+    </>
+  )
+}
+
+function AssignmentHistoryDialog({ open, onOpenChange, user }) {
+  const { data, loading, error } = useApi(`/users/${user.id}/coordinator-assignments`, undefined, { enabled: open })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Assignment history</DialogTitle>
+          <DialogDescription>Every client {user.full_name} has covered, newest first.</DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <LoadingState />
+        ) : error ? (
+          <p className="text-sm text-destructive">{error.message}</p>
+        ) : (
+          <ul className="divide-y">
+            {(data ?? []).map((a) => (
+              <li key={a.id} className="py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium">{a.company_name}</p>
+                  <StatusBadge status={a.status === 'active' ? 'active' : 'closed'} label={a.status === 'active' ? 'Current' : 'Ended'} />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {formatDate(a.assigned_at)} – {a.unassigned_at ? formatDate(a.unassigned_at) : 'present'}
+                  {a.assigned_by && ` · assigned by ${a.assigned_by}`}
+                </p>
+                {a.remarks && <p className="text-xs text-muted-foreground">{a.remarks}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -179,6 +353,8 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
   const toast = useToast()
+  const isCoordinator = form.user_type === 'coordinator'
+  const companies = useApi('/clients', { status: 'active', per_page: 100 }, { enabled: open && isCoordinator })
 
   React.useEffect(() => {
     if (open) {
@@ -193,7 +369,11 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
     setSubmitting(true)
 
     try {
-      await post('/users', form)
+      await post('/users', {
+        ...form,
+        role: isCoordinator ? null : form.role,
+        client_company_id: isCoordinator ? form.client_company_id : null,
+      })
       toast.success('User created', `${form.first_name} ${form.last_name} can now sign in.`)
       onOpenChange(false)
       onCreated()
@@ -209,10 +389,10 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add staff user</DialogTitle>
+          <DialogTitle>Add user</DialogTitle>
           <DialogDescription>
-            For administrator and HR accounts. Portal logins for applicants and employees are created
-            from their own record, so the account is always linked to the right person.
+            For administrator, HR, and coordinator accounts. Portal logins for applicants and employees
+            are created from their own record, so the account is always linked to the right person.
           </DialogDescription>
         </DialogHeader>
 
@@ -238,14 +418,38 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
               >
                 <option value="hr">HR staff</option>
                 <option value="admin">Administrator</option>
+                <option value="coordinator">Coordinator</option>
               </Select>
             </Field>
-            <Field label="Role" htmlFor="role" required error={errors.role?.[0]}>
-              <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-                <option value="hr">HR</option>
-                <option value="admin">Administrator</option>
-              </Select>
-            </Field>
+            {isCoordinator ? (
+              // A coordinator's role is fixed; what varies is their client.
+              <Field
+                label="Assigned client company"
+                htmlFor="client_company_id"
+                required
+                error={errors.client_company_id?.[0]}
+                hint="They will see this client's records only."
+              >
+                <Select
+                  value={form.client_company_id}
+                  onChange={(e) => setForm({ ...form, client_company_id: e.target.value })}
+                  placeholder="Choose a client"
+                >
+                  {(companies.data ?? []).map((c) => (
+                    <option key={c.id} value={String(c.id)}>
+                      {c.company_name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : (
+              <Field label="Role" htmlFor="role" required error={errors.role?.[0]}>
+                <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                  <option value="hr">HR</option>
+                  <option value="admin">Administrator</option>
+                </Select>
+              </Field>
+            )}
           </FormGrid>
 
           <Field
@@ -563,6 +767,7 @@ function empty() {
     last_name: '',
     email: '',
     user_type: 'hr',
+    client_company_id: '',
     role: 'hr',
     password: '',
     password_confirmation: '',

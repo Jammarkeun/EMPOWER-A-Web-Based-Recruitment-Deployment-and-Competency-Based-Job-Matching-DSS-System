@@ -290,12 +290,154 @@ class JobRequestController extends Controller
                 ->all();
         }
 
+        [$fromRequest, $unmapped] = $configured->isEmpty()
+            ? $this->criteriaFromStatedRequirements($jobRequest)
+            : [[], []];
+
         return ApiResponse::success([
             'catalog' => $this->catalogue(),
             'configured' => RequestCriterionResource::collection($configured),
             'suggested_from_company' => $suggested,
+            'suggested_from_request' => $fromRequest,
+            'suggested' => $this->mergeSuggestions($suggested, $fromRequest),
+            'unmapped_requirements' => $unmapped,
             'company_name' => $jobRequest->company?->company_name,
         ]);
+    }
+
+    /**
+     * The requirements typed on the request itself, as criteria the engine can
+     * score.
+     *
+     * The request form asks for the client's age bracket, minimum height,
+     * required education and experience, gender preference, and certificates.
+     * None of that used to reach the ranking: the engine scores only the
+     * criteria configured on the request, so a client's "18 to 35, at least
+     * 160 cm" sat in the details tab while applicants outside it were ranked
+     * as though it had never been said. These are proposed, not applied —
+     * saving the criteria is still a deliberate act by a person.
+     *
+     * @return array{0: array, 1: array} the suggestions, and the stated
+     *                                   requirements that could not be read
+     */
+    private function criteriaFromStatedRequirements(JobRequest $jobRequest): array
+    {
+        $rows = [];
+        $unmapped = [];
+
+        if ($jobRequest->age_min !== null || $jobRequest->age_max !== null) {
+            $rows[] = $this->suggestion('age', [
+                'mandatory_flag' => true,
+                'min_value' => $jobRequest->age_min,
+                'max_value' => $jobRequest->age_max,
+            ]);
+        }
+
+        if ($jobRequest->height_min_cm !== null) {
+            $rows[] = $this->suggestion('height', [
+                'mandatory_flag' => true,
+                'min_value' => (float) $jobRequest->height_min_cm,
+            ]);
+        }
+
+        if (filled($jobRequest->gender_preference) && $jobRequest->gender_preference !== 'any') {
+            $rows[] = $this->suggestion('gender', [
+                'mandatory_flag' => true,
+                'expected_value' => $jobRequest->gender_preference,
+            ]);
+        }
+
+        if (filled($jobRequest->required_education)) {
+            $level = CompetencyScoringService::normaliseEducation($jobRequest->required_education);
+
+            if ($level) {
+                $rows[] = $this->suggestion('education', ['expected_value' => $level]);
+            } else {
+                $unmapped[] = sprintf(
+                    'Required education "%s" does not match a level the engine recognises. Choose the level by hand.',
+                    $jobRequest->required_education
+                );
+            }
+        }
+
+        if ($jobRequest->required_experience_months) {
+            $rows[] = $this->suggestion('experience', [
+                'min_value' => (float) $jobRequest->required_experience_months,
+            ]);
+        }
+
+        if (filled($jobRequest->required_certifications)) {
+            $rows[] = $this->suggestion('certifications', [
+                'expected_value' => $jobRequest->required_certifications,
+            ]);
+        }
+
+        if (filled($jobRequest->physical_requirement)) {
+            $unmapped[] = sprintf(
+                'Physical requirement "%s" is free text and is not scored. Check it at the interview.',
+                $jobRequest->physical_requirement
+            );
+        }
+
+        return [array_values(array_filter($rows)), $unmapped];
+    }
+
+    private function suggestion(string $code, array $values): ?array
+    {
+        $criterion = CriteriaCatalog::active()->where('criteria_code', $code)->first();
+
+        if (! $criterion) {
+            return null;
+        }
+
+        return array_merge([
+            'criteria_code' => $code,
+            'criteria_name' => $criterion->criteria_name,
+            'mandatory_flag' => false,
+            'weight_score' => 0.0,
+            'expected_value' => null,
+            'min_value' => null,
+            'max_value' => null,
+            'note' => 'Stated on this request.',
+        ], $values);
+    }
+
+    /**
+     * One starting point from both sources.
+     *
+     * The client's standing criteria supply the weights, since they describe
+     * how much this client cares about each factor; the request supplies the
+     * values, since they are what this particular posting asks for. Where only
+     * one source mentions a criterion it is taken as it is.
+     */
+    private function mergeSuggestions(array $fromCompany, array $fromRequest): array
+    {
+        $merged = [];
+
+        foreach ($fromCompany as $row) {
+            $merged[$row['criteria_code']] = $row + ['sources' => ['company']];
+        }
+
+        foreach ($fromRequest as $row) {
+            $code = $row['criteria_code'];
+
+            if (! isset($merged[$code])) {
+                $merged[$code] = $row + ['sources' => ['request']];
+
+                continue;
+            }
+
+            foreach (['expected_value', 'min_value', 'max_value'] as $field) {
+                if ($row[$field] !== null) {
+                    $merged[$code][$field] = $row[$field];
+                }
+            }
+
+            $merged[$code]['mandatory_flag'] = $merged[$code]['mandatory_flag'] || $row['mandatory_flag'];
+            $merged[$code]['sources'][] = 'request';
+        }
+
+        return array_values($merged);
     }
 
     /**
@@ -327,6 +469,9 @@ class JobRequestController extends Controller
                         default => 'none',
                     },
                     'options' => $options,
+                    // For lists: whether every item is required and graded by
+                    // the share held, or any one item is enough.
+                    'list_match' => CompetencyScoringService::listMode($criterion->criteria_type),
                 ]);
             });
     }
@@ -419,9 +564,7 @@ class JobRequestController extends Controller
             'job_request_id' => $jobRequest->id,
             'evaluated_candidates' => count($scores),
             'qualified_candidates' => count(array_filter($scores, fn ($s) => $s->passedAllGates)),
-            'ranked' => MatchResource::collection(
-                $jobRequest->matches()->with('applicant')->orderBy('rank_order')->get()
-            ),
+            'ranked' => MatchResource::collection($this->orderedMatches($jobRequest)),
             'notice' => 'These are recommendations. Deployment requires explicit HR action.',
         ], 'Evaluation completed');
     }
@@ -436,15 +579,35 @@ class JobRequestController extends Controller
             'recommendation_level' => ['nullable', 'string'],
         ]);
 
-        $matches = $jobRequest->matches()
-            ->with('applicant')
-            ->when($filters['only_qualified'] ?? false, fn ($q) => $q->qualified())
-            ->when($filters['only_shortlisted'] ?? false, fn ($q) => $q->shortlisted())
-            ->when($filters['recommendation_level'] ?? null, fn ($q, $v) => $q->where('recommendation_level', $v))
-            ->orderBy('rank_order')
-            ->get();
+        $matches = $this->orderedMatches($jobRequest, function ($q) use ($filters) {
+            $q->when($filters['only_qualified'] ?? false, fn ($q) => $q->qualified())
+                ->when($filters['only_shortlisted'] ?? false, fn ($q) => $q->shortlisted())
+                ->when($filters['recommendation_level'] ?? null, fn ($q, $v) => $q->where('recommendation_level', $v));
+        });
 
         return ApiResponse::success(MatchResource::collection($matches));
+    }
+
+    /**
+     * The request's results, ranked first and kept history after.
+     *
+     * Ordered with the unranked rows last on every database: PostgreSQL sorts
+     * nulls first in ascending order where MySQL and SQLite sort them last, so
+     * leaving it to the engine would put the history at the top of the list on
+     * one platform and the bottom on the others.
+     */
+    private function orderedMatches(JobRequest $jobRequest, ?\Closure $filter = null)
+    {
+        return $jobRequest->matches()
+            ->reorder()
+            ->with('applicant')
+            ->when($filter, $filter)
+            ->orderByRaw('CASE WHEN rank_order IS NULL THEN 1 ELSE 0 END')
+            ->orderBy('rank_order')
+            ->get()
+            // The request is already in hand; attaching it saves a query per
+            // row when each result is compared with the position applied for.
+            ->each(fn (JobRequestMatch $match) => $match->setRelation('jobRequest', $jobRequest));
     }
 
     /**

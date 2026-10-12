@@ -140,6 +140,14 @@ CREATE DATABASE empower CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 php backend/laravel/artisan migrate --seed
 ```
 
+The demo coordinator accounts (`coordinator.a@` and `coordinator.b@cdemanpower.local`,
+password from `SEED_COORDINATOR_PASSWORD`) come with the demo data. To add them
+to a database already in use without resetting its demo applicants:
+
+```bash
+php backend/laravel/artisan db:seed --class=CoordinatorDemoSeeder
+```
+
 **Moving data between them** — for the final defense, once the demo data is
 worth keeping:
 
@@ -148,7 +156,8 @@ php backend/laravel/artisan empower:copy-database --from=mysql --to=pgsql
 ```
 
 Migrate the target first; the command copies rows, not structure. It empties
-each target table before filling it, only ever touches EMPOWER's own tables, and
+each target table before filling it, only ever touches EMPOWER's own tables, runs
+as a single transaction (a failed copy leaves the target as it was), and
 resets PostgreSQL's id sequences afterwards — without that last step the copy
 looks fine and then the first new record fails with a duplicate key error.
 
@@ -173,7 +182,9 @@ The system holds personal and sensitive personal information covered by the
   that expire within minutes — never a public path.
 - Access is role-based, and the portal resolves every record from the signed-in
   user rather than from an identifier in the URL, so there is nothing to tamper
-  with.
+  with. CDE coordinators work the same way: each is assigned to one client
+  company, and every coordinator request is scoped to that client on the
+  server.
 - Every consequential action is written to an audit trail with who did it and
   what changed.
 - The site is marked `noindex`, and no credentials are committed to this

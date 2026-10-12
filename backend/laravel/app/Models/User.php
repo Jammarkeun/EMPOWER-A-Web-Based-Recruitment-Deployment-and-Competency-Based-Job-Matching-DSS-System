@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -77,6 +79,7 @@ class User extends Authenticatable
         'application' => 'Application updates',
         'requirements' => 'Document reviews',
         'deployment' => 'Placement and deployment',
+        'coordination' => 'Violation reports and coordination',
         'general' => 'Everything else',
     ];
 
@@ -128,6 +131,31 @@ class User extends Authenticatable
     public function isStaff(): bool
     {
         return in_array($this->user_type, ['admin', 'hr'], true);
+    }
+
+    /**
+     * A CDE coordinator: an agency employee assigned to one client company.
+     *
+     * Deliberately not staff in the sense above. A coordinator holds none of
+     * HR's permissions and reaches only their own client's records.
+     */
+    public function isCoordinator(): bool
+    {
+        return $this->user_type === 'coordinator';
+    }
+
+    public function coordinatorAssignments(): HasMany
+    {
+        return $this->hasMany(CoordinatorAssignment::class, 'coordinator_user_id')->orderByDesc('assigned_at');
+    }
+
+    /** The client this coordinator covers now, if any. */
+    public function activeCoordinatorAssignment(): HasOne
+    {
+        return $this->hasOne(CoordinatorAssignment::class, 'coordinator_user_id')->ofMany(
+            ['id' => 'max'],
+            fn ($query) => $query->where('status', 'active')->whereNull('unassigned_at')
+        );
     }
 
     /**

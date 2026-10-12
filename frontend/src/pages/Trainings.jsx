@@ -20,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatDate } from '@/lib/utils'
+import { formatDate, todayISO } from '@/lib/utils'
 
 export default function Trainings() {
   const { can } = useAuth()
@@ -105,7 +105,7 @@ export default function Trainings() {
 function NewTrainingDialog({ open, onOpenChange, onCreated }) {
   const [form, setForm] = React.useState({
     training_title: '',
-    training_date: new Date().toISOString().slice(0, 10),
+    training_date: todayISO(),
     location: '',
     trainer_name: '',
   })

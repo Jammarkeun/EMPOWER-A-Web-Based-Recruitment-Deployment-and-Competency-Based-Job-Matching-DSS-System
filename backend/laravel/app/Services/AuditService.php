@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\AuditLog;
+use App\Models\CoordinatorAssignment;
+use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Request;
@@ -38,14 +40,22 @@ class AuditService
         int|string|null $recordId = null,
         ?array $oldValues = null,
         ?array $newValues = null,
+        ?int $clientCompanyId = null,
+        ?User $actor = null,
     ): ?AuditLog {
         try {
+            // Passed explicitly where there is no signed-in user yet - a login.
+            $actor ??= Auth::user();
+
             return AuditLog::create([
-                'actor_user_id' => Auth::id(),
+                'actor_user_id' => $actor?->id ?? Auth::id(),
+                // The capacity they acted in, as it was at the time.
+                'actor_role' => $actor?->user_type,
                 'action_type' => $action,
                 'module_key' => $module,
                 'record_type' => $recordType ? class_basename($recordType) : null,
                 'record_id' => $recordId,
+                'client_company_id' => $clientCompanyId ?? $this->coordinatorCompany($actor),
                 'old_values_json' => $this->redact($oldValues),
                 'new_values_json' => $this->redact($newValues),
                 'ip_address' => Request::ip(),
@@ -72,6 +82,22 @@ class AuditService
      * Records only the fields that actually changed, so a diff is readable
      * rather than a wall of unchanged columns.
      */
+    /**
+     * The client a coordinator was acting for, so every entry they cause is
+     * tied to that client without each caller having to remember it.
+     */
+    private function coordinatorCompany(?User $actor): ?int
+    {
+        if (! $actor?->isCoordinator()) {
+            return null;
+        }
+
+        return CoordinatorAssignment::query()
+            ->where('coordinator_user_id', $actor->id)
+            ->active()
+            ->value('client_company_id');
+    }
+
     public function recordUpdate(
         string $module,
         string $recordType,

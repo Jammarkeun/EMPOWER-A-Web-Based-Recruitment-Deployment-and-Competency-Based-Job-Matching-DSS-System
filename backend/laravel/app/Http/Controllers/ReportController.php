@@ -83,6 +83,7 @@ class ReportController extends Controller
                 'export_format' => $data['format'],
                 'status' => 'queued',
                 'requested_by' => $request->user()->id,
+                'requested_at' => now(),
             ]);
 
             BuildReportExport::dispatch($queued->id);

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Sparkles, CheckCircle2, XCircle, Info, Scale, ShieldCheck } from 'lucide-react'
+import { Sparkles, CheckCircle2, XCircle, Scale, ShieldCheck, Info } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -7,26 +7,38 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import { StatusBadge } from '@/components/ui/badge'
+import { cn, formatDateTime } from '@/lib/utils'
+import CriterionDetails from '@/components/CriterionDetails'
 
 /**
- * MatchBreakdownDialog displays an interactive, granular breakdown of how
- * an applicant's score was computed by the Competency Matching DSS Engine.
+ * How one applicant's score was reached, criterion by criterion.
+ *
+ * Read straight from the ranking the engine saved: the percentage, the
+ * recommendation band (set by the administrator, not by this screen), every
+ * mandatory requirement and whether it was met, and every scored criterion with
+ * the points awarded and the reason. Nothing is recomputed here, so what HR
+ * reads is exactly what the engine decided and why.
  */
 export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jobPosition }) {
   if (!candidate) return null
 
   const {
     applicant_name,
-    overall_score = 0,
+    percentage_score = 0,
+    raw_score,
+    max_score,
     hard_filter_pass = true,
-    breakdown = [],
-    failed_filters = [],
-    created_at,
+    recommendation_level,
+    recommendation_label,
+    breakdown,
+    evaluated_at,
   } = candidate
 
-  const scorePercentage = Math.round(overall_score)
+  const criteria = breakdown?.criteria ?? []
+  const gates = criteria.filter((c) => c.is_gate)
+  const scored = criteria.filter((c) => !c.is_gate)
+  const failedGates = breakdown?.failed_gates ?? []
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -34,156 +46,159 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
         <DialogHeader>
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
-            <DialogTitle className="text-xl">Competency DSS Match Breakdown</DialogTitle>
+            <DialogTitle className="text-xl">How this score was reached</DialogTitle>
           </div>
           <DialogDescription>
-            Scoring algorithm trace for <strong className="text-foreground">{applicant_name}</strong> against{' '}
-            <strong className="text-foreground">{jobPosition ?? 'Position'}</strong>.
+            <strong className="text-foreground">{applicant_name}</strong> against{' '}
+            <strong className="text-foreground">{jobPosition ?? 'this request'}</strong>
+            {evaluated_at && <> · evaluated {formatDateTime(evaluated_at)}</>}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5 py-2">
-          {/* Top Score Summary Banner */}
           <div className="grid gap-4 sm:grid-cols-3">
-            <div className="rounded-xl border bg-card p-4 space-y-1 text-center sm:text-left">
-              <span className="text-xs uppercase tracking-wider text-muted-foreground font-medium">Overall Match</span>
-              <div className="flex items-baseline gap-1 justify-center sm:justify-start">
-                <span className="text-3xl font-bold tabular-nums text-primary">{scorePercentage}%</span>
-                <span className="text-xs text-muted-foreground">fit score</span>
+            <div className="space-y-1 rounded-xl border bg-card p-4">
+              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Score</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-3xl font-bold tabular-nums text-primary">{percentage_score}%</span>
+                {max_score > 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    {raw_score} of {max_score} pts
+                  </span>
+                )}
               </div>
             </div>
 
-            <div className="rounded-xl border bg-card p-4 space-y-1 text-center sm:text-left">
-              <span className="text-xs uppercase tracking-wider text-muted-foreground font-medium">Mandatory Criteria</span>
-              <div className="flex items-center gap-1.5 justify-center sm:justify-start pt-1">
+            <div className="space-y-1 rounded-xl border bg-card p-4">
+              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Mandatory requirements
+              </span>
+              <div className="flex items-center gap-1.5 pt-1">
                 {hard_filter_pass ? (
                   <>
                     <CheckCircle2 className="h-5 w-5 text-success" />
-                    <span className="text-sm font-semibold text-success">All Mandatory Passed</span>
+                    <span className="text-sm font-semibold text-success">
+                      {gates.length ? `All ${gates.length} met` : 'None set'}
+                    </span>
                   </>
                 ) : (
                   <>
                     <XCircle className="h-5 w-5 text-destructive" />
-                    <span className="text-sm font-semibold text-destructive">Disqualified by Filter</span>
+                    <span className="text-sm font-semibold text-destructive">
+                      {failedGates.length} not met
+                    </span>
                   </>
                 )}
               </div>
             </div>
 
-            <div className="rounded-xl border bg-card p-4 space-y-1 text-center sm:text-left">
-              <span className="text-xs uppercase tracking-wider text-muted-foreground font-medium">Suitability Status</span>
+            <div className="space-y-1 rounded-xl border bg-card p-4">
+              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Recommendation
+              </span>
               <div className="pt-1">
-                <Badge
-                  variant={
-                    scorePercentage >= 80 && hard_filter_pass
-                      ? 'success'
-                      : scorePercentage >= 60 && hard_filter_pass
-                      ? 'warning'
-                      : 'destructive'
-                  }
-                  className="px-2.5 py-1 text-xs"
-                >
-                  {scorePercentage >= 80 && hard_filter_pass
-                    ? 'Highly Qualified'
-                    : scorePercentage >= 60 && hard_filter_pass
-                    ? 'Potentially Suitable'
-                    : 'Unsuited'}
-                </Badge>
+                <StatusBadge status={recommendation_level} label={recommendation_label} />
               </div>
             </div>
           </div>
 
-          {/* Disqualification warning banner if mandatory criteria failed */}
-          {!hard_filter_pass && failed_filters.length > 0 && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3.5 flex items-start gap-3">
-              <XCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
-              <div className="space-y-1 text-xs">
-                <p className="font-semibold text-destructive">Mandatory Filter Failure</p>
-                <p className="text-destructive/90">
-                  This candidate was flagged as unsuited because they failed the following mandatory requirement(s):{' '}
-                  <span className="font-medium underline">{failed_filters.join(', ')}</span>.
-                </p>
-              </div>
+          {!hard_filter_pass && failedGates.length > 0 && (
+            <div className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3.5">
+              <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+              <p className="text-xs text-destructive/90">
+                Not eligible regardless of score: the client requires{' '}
+                <span className="font-medium">{failedGates.join(', ')}</span>, and this applicant does not
+                meet {failedGates.length === 1 ? 'it' : 'them'}.
+              </p>
             </div>
           )}
 
-          {/* Breakdown Items List */}
-          <div className="space-y-3">
-            <h4 className="text-sm font-semibold flex items-center gap-1.5">
+          {gates.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="flex items-center gap-1.5 text-sm font-semibold">
+                <ShieldCheck className="h-4 w-4 text-primary" />
+                Mandatory requirements
+              </h4>
+              <ul className="space-y-2">
+                {gates.map((item) => (
+                  <li key={item.criteria} className="rounded-lg border bg-card p-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      {item.passed ? (
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+                      ) : (
+                        <XCircle className="h-4 w-4 shrink-0 text-destructive" />
+                      )}
+                      <span className="text-sm font-semibold">{item.label}</span>
+                    </div>
+                    <p className="mt-1 pl-6 text-muted-foreground">{item.explanation}</p>
+                    <CriterionDetails details={item.details} className="pl-6" />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <h4 className="flex items-center gap-1.5 text-sm font-semibold">
               <Scale className="h-4 w-4 text-primary" />
-              Criteria Evaluation Matrix
+              Scored criteria
             </h4>
 
-            {Array.isArray(breakdown) && breakdown.length > 0 ? (
-              <div className="space-y-2 max-h-[22rem] overflow-y-auto pr-1">
-                {breakdown.map((item, idx) => {
-                  const weight = Number(item.weight ?? item.criteria_weight ?? 0)
-                  const score = Number(item.score ?? item.earned_score ?? 0)
-                  const pct = weight > 0 ? Math.min(100, Math.round((score / weight) * 100)) : 0
-                  const isHard = Boolean(item.is_mandatory || item.type === 'hard_filter')
+            {scored.length > 0 ? (
+              <div className="max-h-[22rem] space-y-2 overflow-y-auto pr-1">
+                {scored.map((item) => {
+                  const pct = item.weight > 0 ? Math.min(100, Math.round((item.score / item.weight) * 100)) : 0
 
                   return (
-                    <div key={item.code ?? idx} className="rounded-lg border p-3 bg-card space-y-2 text-xs">
+                    <div key={item.criteria} className="space-y-2 rounded-lg border bg-card p-3 text-xs">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          {item.passed !== false ? (
-                            <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
+                          {item.score > 0 ? (
+                            <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
                           ) : (
-                            <XCircle className="h-4 w-4 text-destructive shrink-0" />
+                            <XCircle className="h-4 w-4 shrink-0 text-destructive" />
                           )}
-                          <span className="font-semibold text-foreground text-sm">
-                            {item.title ?? item.criterion_name ?? item.code}
-                          </span>
-                          {isHard && (
-                            <Badge variant="outline" className="text-[10px] uppercase border-destructive/40 text-destructive">
-                              Mandatory
-                            </Badge>
-                          )}
+                          <span className="text-sm font-semibold text-foreground">{item.label}</span>
                         </div>
-
                         <div className="flex items-center gap-2 font-mono text-muted-foreground">
                           <span>
-                            {score} / {weight} pts
+                            {item.score} / {item.weight} pts
                           </span>
                           <span className="font-semibold text-foreground">({pct}%)</span>
                         </div>
                       </div>
 
-                      {/* Progress bar */}
                       <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                         <div
                           className={cn(
                             'h-full transition-all duration-300',
-                            item.passed === false
-                              ? 'bg-destructive'
-                              : pct >= 80
-                              ? 'bg-success'
-                              : pct >= 50
-                              ? 'bg-warning'
-                              : 'bg-destructive'
+                            pct >= 100 ? 'bg-success' : pct > 0 ? 'bg-warning' : 'bg-destructive'
                           )}
                           style={{ width: `${pct}%` }}
                         />
                       </div>
 
-                      {item.explanation && (
-                        <p className="text-muted-foreground italic pl-6 text-[11px]">
-                          Reason: {item.explanation}
-                        </p>
-                      )}
+                      <p className="pl-6 text-[11px] text-muted-foreground">{item.explanation}</p>
+                      <CriterionDetails details={item.details} className="pl-6" />
                     </div>
                   )
                 })}
               </div>
             ) : (
               <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">
-                No detailed criterion breakdown available for this match trace.
+                No scored criteria on this evaluation.
               </div>
             )}
           </div>
+
+          <p className="flex items-start gap-2 text-xs text-muted-foreground">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            Mandatory requirements decide eligibility and carry no points. The score is the points
+            awarded over the points available on the scored criteria. It is a recommendation; nobody is
+            deployed until HR records it.
+          </p>
         </div>
       </DialogContent>
     </Dialog>
   )
 }
-

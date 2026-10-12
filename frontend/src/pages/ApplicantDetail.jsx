@@ -30,6 +30,7 @@ import { formatDate, formatDateTime, humanise, cn } from '@/lib/utils'
 import { PortalAccessDialog } from '@/pages/Users'
 import ApplicantProgress from '@/components/ApplicantProgress'
 import DeployApplicantDialog from '@/components/dialogs/DeployApplicantDialog'
+import MatchingProfileDialog from '@/components/dialogs/MatchingProfileDialog'
 
 export default function ApplicantDetail() {
   const { id } = useParams()
@@ -38,6 +39,7 @@ export default function ApplicantDetail() {
 
   const { data, loading, error, refetch, setData } = useApi(`/applicants/${id}`)
   const [portalOpen, setPortalOpen] = React.useState(false)
+  const [profileOpen, setProfileOpen] = React.useState(false)
   const [deployOpen, setDeployOpen] = React.useState(false)
   const [moving, setMoving] = React.useState(false)
 
@@ -103,6 +105,7 @@ export default function ApplicantDetail() {
             transitions={allowed_transitions}
             busy={moving}
             canChange={can('applicants.change_status')}
+            employeeId={applicant.employee?.id}
             onMove={async (status) => {
               // Deployment is the one move that needs facts the status cannot
               // carry - which client, which position, from when - so it opens a
@@ -200,7 +203,16 @@ export default function ApplicantDetail() {
         </TabsContent>
 
         <TabsContent value="profile">
-          <ProfilePanel applicant={applicant} />
+          <ProfilePanel
+            applicant={applicant}
+            onEdit={can('applicants.update') ? () => setProfileOpen(true) : null}
+          />
+          <MatchingProfileDialog
+            open={profileOpen}
+            onOpenChange={setProfileOpen}
+            applicant={applicant}
+            onSaved={refetch}
+          />
         </TabsContent>
 
         <TabsContent value="timeline">
@@ -348,7 +360,7 @@ function IdentityCheckPanel({ applicant, onChanged }) {
  * tells HR nothing they can act on, whereas a list tells them exactly what to
  * chase.
  */
-function FolderStatus({ folder }) {
+export function FolderStatus({ folder }) {
   const outstanding = [...(folder.missing_primary ?? []), ...(folder.missing_final ?? [])]
 
   return (
@@ -406,7 +418,12 @@ function verificationOf(requirement) {
   return VERIFICATION[requirement.review_state] ?? VERIFICATION.not_uploaded
 }
 
-function RequirementsPanel({ applicant, onChanged }) {
+/**
+ * Exported for the document library, which opens an applicant's folder with
+ * this same panel - so reviewing a document works identically from either
+ * screen rather than being written twice and drifting apart.
+ */
+export function RequirementsPanel({ applicant, onChanged }) {
   const { can } = useAuth()
   const toast = useToast()
 
@@ -788,7 +805,7 @@ function RequirementsPanel({ applicant, onChanged }) {
   )
 }
 
-function ProfilePanel({ applicant }) {
+function ProfilePanel({ applicant, onEdit }) {
   const details = [
     ['Sex', applicant.sex ? humanise(applicant.sex) : null],
     ['Date of birth', applicant.birth_date ? formatDate(applicant.birth_date) : null],
@@ -805,7 +822,30 @@ function ProfilePanel({ applicant }) {
     ['How they applied', humanise(applicant.source_channel)],
   ].filter(([, value]) => value)
 
+  const hasProfile =
+    applicant.educations?.length || applicant.experiences?.length || applicant.skills?.length || applicant.certifications?.length
+
   return (
+    <div className="space-y-4">
+      {/*
+        What the competency evaluation reads. Said here because these sections
+        used to be display-only with nothing anywhere to fill them in, so every
+        applicant scored zero on education, experience, skills, and
+        certificates.
+      */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2.5">
+        <p className="text-xs text-muted-foreground">
+          {hasProfile
+            ? 'Education, experience, skills, certificates, and the screening details below are what the matching compares with a request.'
+            : 'No qualifications recorded yet, so this applicant scores nothing on education, experience, skills, or certificates. Record them from the resume.'}
+        </p>
+        {onEdit && (
+          <Button size="sm" variant={hasProfile ? 'outline' : 'default'} onClick={onEdit}>
+            Edit matching profile
+          </Button>
+        )}
+      </div>
+
     <div className="grid gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
@@ -872,6 +912,25 @@ function ProfilePanel({ applicant }) {
 
         <Card>
           <CardHeader>
+            <CardTitle>Skills</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {!applicant.skills?.length ? (
+              <p className="text-sm text-muted-foreground">No skills recorded.</p>
+            ) : (
+              <ul className="flex flex-wrap gap-1.5">
+                {applicant.skills.map((skill) => (
+                  <li key={skill.id ?? skill.skill_name}>
+                    <Badge tone="outline">{skill.skill_name}</Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>Certifications</CardTitle>
           </CardHeader>
           <CardContent>
@@ -894,6 +953,7 @@ function ProfilePanel({ applicant }) {
           </CardContent>
         </Card>
       </div>
+    </div>
     </div>
   )
 }

@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field, FormGrid } from '@/components/ui/form'
+import { todayISO } from '@/lib/utils'
 
 export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
   const [companies, setCompanies] = React.useState([])
@@ -294,7 +295,7 @@ function emptyForm() {
     job_position_id: '',
     position_title: '',
     workers_needed: '1',
-    date_requested: new Date().toISOString().slice(0, 10),
+    date_requested: todayISO(),
     deployment_deadline: '',
     required_education: '',
     required_experience_months: '',
