@@ -2,9 +2,9 @@
 
 namespace App\Notifications;
 
-use App\Models\Applicant;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Notifications\Notification;
 
 /**
@@ -41,16 +41,12 @@ abstract class EmpowerNotification extends Notification
      */
     public function via(object $notifiable): array
     {
-        $user = match (true) {
-            $notifiable instanceof User => $notifiable,
-            default => User::query()
-                ->when(
-                    $notifiable instanceof Applicant,
-                    fn ($q) => $q->where('applicant_id', $notifiable->getKey()),
-                    fn ($q) => $q->where('employee_id', $notifiable->getKey())
-                )
-                ->first(),
-        };
+        // Resolved exactly as the inbox resolves it (User::notifiableRecords),
+        // so the account that reads a notification is the one whose
+        // preferences decide whether it is sent (audit WF-13).
+        $user = $notifiable instanceof User
+            ? $notifiable
+            : ($notifiable instanceof Model ? User::portalAccountFor($notifiable) : null);
 
         // Nobody to ask means nobody has opted out. A record with no portal
         // account still accrues its notifications, which is what makes them

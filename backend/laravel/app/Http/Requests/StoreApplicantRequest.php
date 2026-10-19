@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Applicant;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -15,7 +16,7 @@ class StoreApplicantRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'source_channel' => ['required', Rule::in(['walk_in', 'messenger', 'email', 'online'])],
+            'source_channel' => ['required', Rule::in(Applicant::SOURCE_CHANNELS)],
 
             'first_name' => ['required', 'string', 'max:100'],
             'middle_name' => ['nullable', 'string', 'max:100'],

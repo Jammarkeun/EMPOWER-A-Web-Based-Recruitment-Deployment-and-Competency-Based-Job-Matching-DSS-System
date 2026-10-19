@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 
 export default function Clients() {
   const { can } = useAuth()

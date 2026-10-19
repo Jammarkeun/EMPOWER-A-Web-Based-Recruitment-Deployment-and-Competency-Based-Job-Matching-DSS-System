@@ -24,10 +24,12 @@ walking into the office through to their placement, and on to separation.
 | **Manpower requests** | Client requests recorded against a department, with headcount tracked as workers are deployed. |
 | **Applicant lifecycle** | Application → screening → requirements → training → client evaluation → deployment, every change dated and attributed. |
 | **The folder system, digitally** | The agency's Folder 1 / 2 / 3 filing, derived automatically from the documents actually verified. No manual re-filing. |
+| **Training** | Sessions with a roster: enrol, mark attendance, record completion. A recorded completion — not a status typed by hand — is what lets an applicant be endorsed to a client. |
 | **Competency matching** | Ranks eligible applicants against criteria HR sets per position, and shows how every point was awarded. |
-| **Employment and separation** | An applicant becomes an employee without losing their recruitment history; resignations and terminations run to archive. |
+| **Employment and separation** | An applicant becomes an employee without losing their recruitment history; moves between departments of the same client are recorded with a reason; resignations and terminations run to archive. |
 | **Self-service portal** | Applicants register, see which documents to bring, send copies ahead, and follow their own progress. |
-| **Reports** | PDF and Excel on agency letterhead, for client meetings. |
+| **Reports** | PDF, Excel and CSV on agency letterhead, for client meetings. Text that could run as a spreadsheet formula is neutralised. |
+| **Audit trail and retention** | Who changed which field, from what to what. Records past the agency's retention estimates are listed for a person to review; nothing is deleted automatically. |
 
 Payroll is deliberately out of scope.
 
@@ -63,7 +65,7 @@ deliberate act by a person.
 | --- | --- |
 | PHP **8.2+** | 8.0 will not run Laravel 12. If XAMPP is installed, make sure the newer PHP comes first on your PATH. |
 | Composer | Installs the PHP dependencies. |
-| Node **18+** | |
+| Node **22.13+** | Vite 8 needs 20.19 or later; the frontend tests (Vitest 5, jsdom 29) need 22.13. |
 | Python **3.10+** | Only for document reading, which is optional. |
 
 Then, from the repository root:
@@ -161,6 +163,24 @@ as a single transaction (a failed copy leaves the target as it was), and
 resets PostgreSQL's id sequences afterwards — without that last step the copy
 looks fine and then the first new record fails with a duplicate key error.
 
+**After migrating a database that was already in use**, bring every stored
+applicant folder in line with the current requirement rules once:
+
+```bash
+php backend/laravel/artisan empower:recalculate-folders
+```
+
+It only ever changes folders, never an applicant's stage. Settings runs it by
+itself after a change to which documents are required, and the daily expiry
+check (`php artisan schedule:run` from cron, or `schedule:work` while
+developing) runs it after documents lapse. Settings shows whether the last run
+finished.
+
+**After pulling new code**, run `php backend/laravel/artisan migrate` on each
+database you use (local MariaDB and Supabase). The October 2026 changes are two
+additive migrations: a `retention_reviews` table, and a `must_change_password`
+column on `users` (false for every existing account).
+
 Otherwise, in three terminals:
 
 ```bash
@@ -169,24 +189,70 @@ npm run dev --prefix frontend           # Frontend   :5173
 python backend/ocr_service/main.py      # OCR        :8001
 ```
 
+### Tests
+
 ```bash
-php artisan test                        # 97 tests
+php artisan test                        # backend: whole suite, SQLite in memory
+npm test --prefix frontend              # frontend: Vitest + Testing Library, jsdom
+npm run test:watch --prefix frontend    # frontend, re-running on change
 ```
+
+The backend suite (about 460 tests) covers the lifecycle and its gates, the
+API's permissions and every business rule. The frontend suite checks what the
+screens do with a given response — the API, the signed-in account and toasts
+are test doubles — so a frontend test that hides a button proves nothing about
+who the server lets in; that is the backend suite's job. CI
+(`.github/workflows/ci.yml`) runs the backend suite on SQLite, MariaDB 10.4 and
+PostgreSQL 17, then the frontend tests and build.
+
+The deployment concurrency tests are opt-in: they need a separate database
+named `empower_test` on the XAMPP server (never `empower`), and the commands
+are at the top of `tests/Feature/ConcurrentDeploymentTest.php`.
+
+The project does not use Docker. Locally it runs on XAMPP (MariaDB); it is
+deployed on Supabase. CI on GitHub provides its own throwaway MariaDB and
+PostgreSQL for the test matrix; nothing of it runs on your machine.
+
+### Password recovery
+
+There are two ways back into an account:
+
+1. **At the office (always available).** An administrator opens *Users &
+   Access → Reset password*. The system generates a temporary password and
+   shows it once; the administrator never types or knows a working password.
+   Until the holder chooses their own, the API answers that account only to let
+   them do so. Portal access and new staff accounts start the same way.
+2. **By emailed link (off until mail works).** Set `PASSWORD_RESET_EMAIL=true`
+   **and** a real mailer (`MAIL_MAILER=smtp` with its host and credentials).
+   With the default `MAIL_MAILER=log` it stays off on purpose: the "email" would
+   be written to the log, reset link included. The link is single use, expires
+   in 60 minutes, and the "Forgot your password?" page answers the same way
+   whether or not an account exists. Expired tokens are cleared daily by the
+   scheduler (`auth:clear-resets`).
 
 ## Handling personal data
 
 The system holds personal and sensitive personal information covered by the
 **Data Privacy Act of 2012 (RA 10173)**. Accordingly:
 
-- Documents live in a private bucket and are reachable only through signed URLs
-  that expire within minutes — never a public path.
+- Documents and photos live on a private disk — the Supabase bucket, or
+  `storage/app/private/documents` locally (`DOCUMENT_DISK=documents`) — and are
+  reachable only through signed links that expire within minutes. The
+  application refuses to store or open files on a public disk.
 - Access is role-based, and the portal resolves every record from the signed-in
   user rather than from an identifier in the URL, so there is nothing to tamper
   with. CDE coordinators work the same way: each is assigned to one client
   company, and every coordinator request is scoped to that client on the
   server.
-- Every consequential action is written to an audit trail with who did it and
-  what changed.
+- Every consequential action is written to an audit trail with who did it and,
+  field by field, what changed. Credentials are masked at any depth, and the
+  trail cannot be edited or deleted from the application.
+- Passwords the office issues are temporary and must be replaced at the first
+  sign-in.
+- Retention is a prompt, not an automatic deletion: *Retention Review* lists
+  unhired applicants with no activity past the configured months and closed
+  records whose legal documents are past the configured years, for a person to
+  keep on file or archive.
 - The site is marked `noindex`, and no credentials are committed to this
   repository.
 

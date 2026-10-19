@@ -39,15 +39,26 @@ class ApiResponse
         return self::success($data, $message, 201);
     }
 
+    /**
+     * @param  string|null  $code  A stable, machine-readable reason for the
+     *                             screen to act on (for example
+     *                             "password_change_required"), beside the
+     *                             human message.
+     */
     public static function error(
         string $message,
         int $status = 400,
         array $errors = [],
+        ?string $code = null,
     ): JsonResponse {
         $payload = [
             'success' => false,
             'message' => $message,
         ];
+
+        if ($code !== null) {
+            $payload['code'] = $code;
+        }
 
         if ($errors !== []) {
             $payload['errors'] = $errors;

@@ -6,12 +6,12 @@ use App\Models\Applicant;
 use App\Models\User;
 
 /**
- * Staff act through permissions; portal users reach only their own record.
+ * The staff view of an applicant record, decided by permission alone.
  *
- * The portal check is the important one. An applicant account holds no staff
- * permissions at all, so without an explicit ownership test every portal request
- * would simply be denied - and with a careless one, an applicant could read
- * another applicant's birth certificate.
+ * Portal accounts never pass these checks. An applicant reads their own record
+ * through /portal, which resolves it from the signed-in account and returns
+ * only what is meant for them; the staff routes are also closed to portal
+ * accounts by the `staff` middleware.
  */
 class ApplicantPolicy
 {
@@ -20,13 +20,36 @@ class ApplicantPolicy
         return $user->can('applicants.view');
     }
 
+    /**
+     * Viewing the staff record is staff work.
+     *
+     * An applicant reads their own record through the portal, which returns
+     * only what is meant for them. The owner used to be let through here too,
+     * which opened the HR view of their own file - interview ratings, internal
+     * remarks, their ranking against other applicants - and let opening a
+     * document mark it "under review" as if an officer had.
+     */
     public function view(User $user, Applicant $applicant): bool
     {
-        if ($user->can('applicants.view')) {
-            return true;
-        }
+        return $user->can('applicants.view');
+    }
 
-        return $this->owns($user, $applicant);
+    /**
+     * An applicant's documents: the record (applicants.view) and the papers
+     * themselves (requirements.view).
+     */
+    public function viewRequirements(User $user, Applicant $applicant): bool
+    {
+        return $user->can('applicants.view') && $user->can('requirements.view');
+    }
+
+    /**
+     * Closing a record off to the archive is archives.create, on top of being
+     * allowed to move the applicant at all.
+     */
+    public function archive(User $user, Applicant $applicant): bool
+    {
+        return $user->can('applicants.change_status') && $user->can('archives.create');
     }
 
     public function create(User $user): bool
@@ -56,9 +79,15 @@ class ApplicantPolicy
         return $user->can('applicants.change_status');
     }
 
+    /**
+     * Not used by any route: applicants upload through the portal, which
+     * resolves the record from their own account, and staff do not upload on
+     * an applicant's behalf. Kept staff-only so it cannot become an owner
+     * fallback if a route is added later.
+     */
     public function uploadRequirement(User $user, Applicant $applicant): bool
     {
-        return $user->can('requirements.upload') || $this->owns($user, $applicant);
+        return $user->can('requirements.upload');
     }
 
     public function verifyRequirement(User $user, Applicant $applicant): bool
@@ -71,10 +100,5 @@ class ApplicantPolicy
     public function delete(User $user, Applicant $applicant): bool
     {
         return $user->can('applicants.delete');
-    }
-
-    private function owns(User $user, Applicant $applicant): bool
-    {
-        return $user->applicant_id === $applicant->id;
     }
 }

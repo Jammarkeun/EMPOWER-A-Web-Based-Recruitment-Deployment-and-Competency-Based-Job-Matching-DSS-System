@@ -12,17 +12,30 @@ import {
   UserPlus,
   AlertTriangle,
   Target,
+  History,
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
+import { useApplicantStatuses } from '@/hooks/useApplicantStatuses'
 import { useAuth } from '@/contexts/AuthContext'
-import { post } from '@/lib/api'
+import { patch, post } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
+import PersonAvatar from '@/components/PersonAvatar'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
+import { Field } from '@/components/ui/form'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
 import CriterionDetails from '@/components/CriterionDetails'
 import { FillBar } from './JobRequests'
@@ -42,6 +55,7 @@ export default function JobRequestDetail() {
   const [criteriaOpen, setCriteriaOpen] = React.useState(false)
   const [deployTarget, setDeployTarget] = React.useState(null)
   const [breakdownTarget, setBreakdownTarget] = React.useState(null)
+  const [statusOpen, setStatusOpen] = React.useState(false)
 
   async function handleEvaluate() {
     setEvaluating(true)
@@ -53,6 +67,7 @@ export default function JobRequestDetail() {
         `${response.data.qualified_candidates} of ${response.data.evaluated_candidates} candidates met every mandatory requirement.`
       )
       rankings.refetch()
+      request.refetch()
     } catch (error) {
       toast.error('Could not run evaluation', error.message)
     } finally {
@@ -107,8 +122,14 @@ export default function JobRequestDetail() {
         <Card>
           <CardContent className="pt-5">
             <p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p>
-            <div className="mt-2">
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               <StatusBadge status={job.request_status} />
+              {/* Only the changes the server would accept from here (R-16). */}
+              {can('job_requests.close') && job.status_changes?.length > 0 && (
+                <Button size="sm" variant="link" className="h-auto px-0" onClick={() => setStatusOpen(true)}>
+                  Change
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -144,15 +165,29 @@ export default function JobRequestDetail() {
         </Card>
       )}
 
-      {job.evaluation?.is_stale && (
+      {/*
+        Out of date: something a result was scored against has changed since.
+        Provisional: the ranking does not cover the pool as it stands - some
+        applicants not yet scored, results carried over from a narrower run,
+        or people who have left the pool (S-01, S-02). Ranks are consistent
+        either way; a run over the whole pool settles both.
+      */}
+      {(job.evaluation?.is_stale || job.evaluation?.is_provisional) && (
         <Card className="mb-5 border-warning/40 bg-warning/5">
           <CardContent className="flex flex-wrap items-start gap-3 py-4">
             <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">The criteria changed after this ranking was produced</p>
-              <p className="text-sm text-muted-foreground">
-                Criteria saved {formatDateTime(job.evaluation.criteria_saved_at)}; ranking from{' '}
-                {formatDateTime(job.evaluation.last_evaluated_at)}. Run the evaluation again before relying on it.
+              <p className="text-sm font-medium">
+                {job.evaluation.is_stale ? 'Part of this ranking is out of date' : 'This ranking is provisional'}
+              </p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-muted-foreground">
+                {(job.evaluation.provisional_reasons ?? []).map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Last evaluated {formatDateTime(job.evaluation.last_evaluated_at)}. Run the evaluation over the whole pool
+                before relying on the order.
               </p>
             </div>
             {can('matching.evaluate') && (
@@ -193,6 +228,7 @@ export default function JobRequestDetail() {
 
         <TabsContent value="details">
           <DetailsPanel job={job} canEdit={can('job_requests.configure_criteria')} onEdit={() => setCriteriaOpen(true)} />
+          <StatusHistory history={job.status_history} />
         </TabsContent>
       </Tabs>
 
@@ -223,6 +259,8 @@ export default function JobRequestDetail() {
         candidate={breakdownTarget}
         jobPosition={job.position_title}
       />
+
+      <RequestStatusDialog job={job} open={statusOpen} onOpenChange={setStatusOpen} onChanged={request.refetch} />
     </>
   )
 }
@@ -240,6 +278,9 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
   const [shortlisting, setShortlisting] = React.useState(false)
   const [selected, setSelected] = React.useState([])
   const toast = useToast()
+  // The statuses the server will deploy from today - narrower when Settings
+  // require the client's approval first - rather than a list kept here.
+  const { deployable } = useApplicantStatuses({ enabled: canDeploy })
 
   if (rankings.loading) return <LoadingState label="Loading rankings…" />
   if (rankings.error) return <ErrorState message={rankings.error.message} onRetry={rankings.refetch} />
@@ -332,6 +373,7 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
+                  <PersonAvatar src={match.photo_url} name={match.applicant_name} size="xs" />
                   <Link
                     to={`/applicants/${match.applicant_id}`}
                     className="font-medium text-primary hover:underline"
@@ -349,6 +391,16 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
                   {match.in_current_pool === false && (
                     <Badge tone="muted" title="Kept because they were shortlisted; they have since left the candidate pool.">
                       No longer in the pool
+                    </Badge>
+                  )}
+                  {match.is_stale && (
+                    <Badge tone="warning" title={(match.stale_reasons ?? []).map(staleReasonLabel).join('; ')}>
+                      Out of date
+                    </Badge>
+                  )}
+                  {match.from_earlier_run && (
+                    <Badge tone="muted" title="Carried over from an earlier, narrower evaluation rather than rescored by the latest one.">
+                      From an earlier run
                     </Badge>
                   )}
                   {match.applied_for_this_position ? (
@@ -398,7 +450,7 @@ function RankingsPanel({ rankings, canDeploy, canShortlist, jobRequestId, onDepl
                 {canDeploy &&
                   match.hard_filter_pass &&
                   match.in_current_pool !== false &&
-                  ['approved', 'ready_for_deployment'].includes(match.current_status) && (
+                  deployable.includes(match.current_status) && (
                   <Button size="sm" variant="outline" onClick={() => onDeploy(match)}>
                     <UserPlus className="h-3.5 w-3.5" />
                     Deploy
@@ -678,5 +730,160 @@ function DetailsPanel({ job, canEdit, onEdit }) {
         </dl>
       </CardContent>
     </Card>
+  )
+}
+
+function staleReasonLabel(reason) {
+  return (
+    {
+      criteria_changed: 'The criteria changed after this result was scored',
+      profile_changed: "The applicant's details changed after this result was scored",
+      left_pool: 'The applicant is no longer in the eligible pool',
+    }[reason] ?? humanise(reason)
+  )
+}
+
+/**
+ * Every status change on this request, whoever or whatever made it (R-16): an
+ * officer, a deployment filling a position, or a new headcount.
+ */
+function StatusHistory({ history }) {
+  if (!history?.length) return null
+
+  const sources = { manual: 'Changed by hand', deployment: 'After a deployment', headcount: 'After a headcount change' }
+
+  return (
+    <Card className="mt-5">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <History className="h-4 w-4 text-muted-foreground" />
+          Status history
+        </CardTitle>
+        <CardDescription>Newest first. Closing, cancelling and reopening always carry a reason.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ol className="space-y-3">
+          {history.map((row) => (
+            <li key={row.id} className="rounded-row bg-inset p-3">
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <StatusBadge status={row.from_status} />
+                <span className="text-muted-foreground">to</span>
+                <StatusBadge status={row.to_status} />
+                <span className="text-xs text-muted-foreground">
+                  {sources[row.source] ?? humanise(row.source)}
+                  {row.changed_by && ` · ${row.changed_by}`}
+                  {row.changed_at && ` · ${formatDateTime(row.changed_at)}`}
+                </span>
+              </div>
+              {row.reason && <p className="mt-1 text-xs text-muted-foreground">{row.reason}</p>}
+            </li>
+          ))}
+        </ol>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * Changes the request's status. Offers only what the server's transition map
+ * allows from here, and asks for a reason where one is owed; the server checks
+ * both again regardless.
+ */
+function RequestStatusDialog({ job, open, onOpenChange, onChanged }) {
+  const toast = useToast()
+  const options = job.status_changes ?? []
+  const [status, setStatus] = React.useState('')
+  const [reason, setReason] = React.useState('')
+  const [errors, setErrors] = React.useState({})
+  const [submitting, setSubmitting] = React.useState(false)
+
+  // Reset on each opening only; the options come with the request it opened on.
+  React.useEffect(() => {
+    if (open) {
+      setStatus(options[0]?.status ?? '')
+      setReason('')
+      setErrors({})
+    }
+  }, [open])
+
+  const chosen = options.find((option) => option.status === status)
+
+  async function submit(event) {
+    event.preventDefault()
+    setSubmitting(true)
+    setErrors({})
+
+    try {
+      const response = await patch(`/job-requests/${job.id}/status`, {
+        request_status: status,
+        ...(reason.trim() ? { reason: reason.trim() } : {}),
+      })
+      toast.success('Request status updated', `Now ${humanise(response.data?.request_status ?? status)}.`)
+      onOpenChange(false)
+      onChanged()
+    } catch (error) {
+      if (error.isValidation) setErrors(error.errors)
+      else toast.error('Status not changed', error.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Change request status</DialogTitle>
+          <DialogDescription>
+            Currently {humanise(job.request_status)}. Partially fulfilled and fulfilled follow the headcount and are set by
+            the system as deployments are recorded.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={submit} className="space-y-4" noValidate>
+          <div role="radiogroup" aria-label="New status" className="flex flex-wrap gap-2">
+            {options.map((option) => (
+              <Button
+                key={option.status}
+                type="button"
+                role="radio"
+                aria-checked={status === option.status}
+                variant={status === option.status ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setStatus(option.status)}
+              >
+                {option.reopens ? 'Reopen' : humanise(option.status)}
+              </Button>
+            ))}
+          </div>
+          {chosen?.reopens && (
+            <p className="text-xs text-muted-foreground">
+              A reopened request goes back to open, or to partially fulfilled if workers are already deployed against it.
+            </p>
+          )}
+          {errors.request_status?.[0] && <p className="text-xs font-medium text-destructive">{errors.request_status[0]}</p>}
+
+          <Field
+            label="Reason"
+            htmlFor="request_status_reason"
+            required={Boolean(chosen?.requires_reason)}
+            hint={chosen?.requires_reason ? undefined : 'Optional for this change.'}
+            error={errors.reason?.[0]}
+          >
+            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} />
+          </Field>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={submitting || !status || (chosen?.requires_reason && !reason.trim())}>
+              {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              Change status
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

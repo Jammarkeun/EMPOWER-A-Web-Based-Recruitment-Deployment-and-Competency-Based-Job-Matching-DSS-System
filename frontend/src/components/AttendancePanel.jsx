@@ -492,7 +492,7 @@ function DtrEditor({ employee, days, onCancel, onSaved }) {
                   .map(([, messages]) => messages[0])
 
                 return (
-                  <TableRow key={day.date} className={cn(changed.includes(day.date) && 'bg-primary/[0.04]')}>
+                  <TableRow key={day.date} className={cn(changed.includes(day.date) && '[&>td]:!bg-inset-selected')}>
                     <TableCell className="whitespace-nowrap">
                       <span className="inline-block w-9 text-xs text-muted-foreground">{day.weekday}</span>
                       {formatDate(day.date)}

@@ -7,6 +7,7 @@ use App\Models\Applicant;
 use App\Models\ClientCompany;
 use App\Models\Employee;
 use App\Models\JobRequest;
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -81,6 +82,7 @@ class SearchController extends Controller
                 ])),
                 'badge' => str_replace('folder_', 'Folder ', (string) $a->folder_category),
                 'url' => "/applicants/{$a->id}",
+                'image' => app(ProfilePhotoService::class)->url($a->profile_photo_path),
             ]);
 
         return ['type' => 'applicants', 'label' => 'Applicants', 'results' => $results->all()];
@@ -107,6 +109,7 @@ class SearchController extends Controller
                 ])),
                 'badge' => ucfirst((string) $e->employment_status),
                 'url' => "/employees/{$e->id}",
+                'image' => app(ProfilePhotoService::class)->url($e->applicant?->profile_photo_path),
             ]);
 
         return ['type' => 'employees', 'label' => 'Employees', 'results' => $results->all()];

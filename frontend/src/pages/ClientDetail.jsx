@@ -27,7 +27,7 @@ import ConfirmActionDialog from '@/components/ConfirmActionDialog'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 import { FillBar } from './JobRequests'
 import { formatDate, cn } from '@/lib/utils'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
@@ -241,7 +241,7 @@ export default function ClientDetail() {
 
 function SummaryTile({ label, value, hint, icon: Icon, to }) {
   const content = (
-    <div className="rounded-xl border bg-card p-4 shadow-sm transition-colors hover:border-primary/30">
+    <div className="h-full rounded-panel bg-card p-5 transition-shadow hover:shadow-float">
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
         {Icon && <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />}

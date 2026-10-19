@@ -322,6 +322,9 @@ class SeparationService
         $employee->deployments()->where('deployment_status', 'active')->update([
             'deployment_status' => 'ended',
             'end_date' => $effectiveDate,
+            // Frees the one-active-deployment guard, so the person can be
+            // deployed again later (audit S-04).
+            'active_employee_id' => null,
         ]);
     }
 

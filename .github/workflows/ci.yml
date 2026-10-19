@@ -1,0 +1,169 @@
+# Continuous integration for EMPOWER (audit R-13).
+#
+# Runs the PHPUnit suite on the three database engines the project supports -
+# SQLite (the default test engine), MariaDB 10.4 (local XAMPP) and PostgreSQL 17
+# (Supabase) - builds the frontend, and checks dependencies for known
+# vulnerabilities.
+#
+# No secrets are used or needed: every database is a throwaway service
+# container, and documents go to the faked disk the tests configure. The
+# workflow can therefore run safely on pull requests, including from forks.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, mariadb, pgsql]
+
+    services:
+      mariadb:
+        image: mariadb:10.4
+        env:
+          MARIADB_ROOT_PASSWORD: ci-only-password
+          MARIADB_DATABASE: empower_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: empower_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    defaults:
+      run:
+        working-directory: backend/laravel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, intl, bcmath, gd, zip, pdo_sqlite, pdo_mysql, pdo_pgsql
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ hashFiles('backend/laravel/composer.lock') }}
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Prepare the environment file
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+
+      # The process environment outranks both .env and phpunit.xml, so these
+      # are the values the suite actually connects with. Every connection
+      # setting is spelled out so nothing can fall through to .env.example.
+      - name: Point the suite at MariaDB
+        if: matrix.database == 'mariadb'
+        run: |
+          {
+            echo "DB_CONNECTION=mysql"
+            echo "MYSQL_HOST=127.0.0.1"
+            echo "MYSQL_PORT=3306"
+            echo "MYSQL_DATABASE=empower_test"
+            echo "MYSQL_USERNAME=root"
+            echo "MYSQL_PASSWORD=ci-only-password"
+          } >> "$GITHUB_ENV"
+
+      - name: Point the suite at PostgreSQL
+        if: matrix.database == 'pgsql'
+        run: |
+          {
+            echo "DB_CONNECTION=pgsql"
+            echo "PGSQL_HOST=127.0.0.1"
+            echo "PGSQL_PORT=5432"
+            echo "PGSQL_DATABASE=empower_test"
+            echo "PGSQL_USERNAME=postgres"
+            echo "PGSQL_PASSWORD=ci-only-password"
+            echo "DB_SSLMODE=disable"
+          } >> "$GITHUB_ENV"
+
+      - name: Run the test suite
+        run: php vendor/bin/phpunit --colors=never
+
+  backend-audit:
+    name: PHP dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend/laravel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - name: Check composer.lock for known vulnerabilities
+        run: composer audit --locked --no-interaction
+
+  frontend:
+    name: Frontend tests, build and audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Component and logic tests (Vitest, jsdom). The matching-example test
+      # reads backend/laravel/config/empower.php, which the checkout provides.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Production dependencies only, failing on high or critical. The two
+      # moderate react-router advisories need a major upgrade and are tracked
+      # separately; build-time Tailwind 3 advisories never reach the browser.
+      - name: Check production dependencies for known vulnerabilities
+        run: npm audit --omit=dev --audit-level=high

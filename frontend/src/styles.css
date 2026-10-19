@@ -14,30 +14,33 @@
  * red/green pairing alone fails for the most common forms of colour blindness
  * and disappears entirely in the black-and-white reports HR prints for client
  * meetings.
+ *
+ * Every value is an HSL triple so Tailwind can apply opacity to it; the hex in
+ * each comment is the colour as originally specified.
  */
 @layer base {
   :root {
     /* Brand & Navy Palette */
-    --color-navy-900: #0B1F5E;   /* Sidebar background */
-    --color-navy-800: #12307A;   /* Sidebar hover */
-    --color-navy-700: #173B8F;   /* Sidebar active background */
-    --color-brand:    #234B9B;   /* Links, primary buttons, focus accents */
-    --color-brand-hover: #1C3F85;
+    --navy-900: 227 79% 21%;         /* #0B1F5E  Sidebar background */
+    --navy-800: 225 74% 27%;         /* #12307A  Sidebar hover */
+    --navy-700: 223 72% 33%;         /* #173B8F  Sidebar active background */
+    --brand: 220 63% 37%;            /* #234B9B  Links, primary buttons, focus accents */
+    --brand-hover: 220 65% 32%;      /* #1C3F85 */
 
-    --color-text:        #10213A;
-    --color-text-muted:  #64748B;
-    --color-text-subtle: #94A3B8;
-    --color-bg:          #F7F9FC;   /* App background */
-    --color-surface:     #FFFFFF;
-    --color-border:      #D9E1EC;
-    --color-border-strong: #C3CEDD;
+    --text: 216 57% 15%;             /* #10213A */
+    --text-muted: 215 16% 47%;       /* #64748B */
+    --text-subtle: 215 20% 65%;      /* #94A3B8 */
+    --border-strong: 215 28% 82%;    /* #C3CEDD */
 
-    /* Base Surfaces (HSL aliases for Tailwind compatibility) */
+    /* Base Surfaces */
     --background: 220 33% 98%;       /* #F7F9FC */
     --foreground: 216 57% 15%;       /* #10213A */
 
-    --card: 0 0% 100%;              /* #FFFFFF */
-    --card-foreground: 216 57% 15%;  /* #10213A */
+    --card: 0 0% 100%;               /* #FFFFFF */
+    --card-foreground: 216 57% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 216 57% 15%;
 
     --primary: 220 63% 37%;          /* #234B9B */
     --primary-foreground: 0 0% 100%;
@@ -45,7 +48,7 @@
     --secondary: 216 28% 95%;        /* #F0F4F9 */
     --secondary-foreground: 216 57% 15%;
 
-    --muted: 215 25% 95%;           /* #F1F5F9 */
+    --muted: 215 25% 95%;            /* #F1F5F9 */
     --muted-foreground: 215 16% 45%; /* #64748B */
 
     --accent: 216 28% 95%;
@@ -60,7 +63,7 @@
     --warning: 33 100% 35%;
     --warning-foreground: 0 0% 100%;
 
-    --border: 215 25% 89%;          /* #D9E1EC */
+    --border: 215 25% 89%;           /* #D9E1EC */
     --input: 215 25% 89%;
     --ring: 220 63% 37%;
 
@@ -72,34 +75,49 @@
     --sidebar-active: 223 72% 33%;   /* #173B8F */
     --sidebar-border: 225 60% 24%;
 
+    /*
+     * Recessed surfaces inside a white panel: list rows, inner cards, tracks.
+     * Drawn from the palette above rather than adding colours of their own.
+     */
+    --inset: 215 25% 95%;            /* = muted */
+    --inset-selected: 218 92% 95%;   /* = info background, a brand-blue tint */
+    --inset-selected-border: 216 87% 82%;
+    --hatch: 215 25% 89%;            /* = border, the stripes of an unfilled track */
+
     /* Semantic Status Tokens (Light Mode) */
-    --status-success-bg: #E6F4EA;
-    --status-success-text: #137333;
-    --status-success-border: #CEEAD6;
+    --status-success-bg: 137 39% 93%;      /* #E6F4EA */
+    --status-success-text: 140 72% 26%;    /* #137333 */
+    --status-success-border: 137 40% 86%;  /* #CEEAD6 */
+    --status-success-dot: 140 72% 26%;
 
-    --status-warning-bg: #FEF7E0;
-    --status-warning-text: #B06000;
-    --status-warning-border: #FCE8E6;
+    --status-warning-bg: 46 94% 94%;       /* #FEF7E0 */
+    --status-warning-text: 33 100% 35%;    /* #B06000 */
+    --status-warning-border: 5 79% 95%;    /* #FCE8E6 */
+    --status-warning-dot: 33 100% 35%;
 
-    --status-info-bg: #E8F0FE;
-    --status-info-text: #1A73E8;
-    --status-info-border: #D2E3FC;
+    --status-info-bg: 218 92% 95%;         /* #E8F0FE */
+    --status-info-text: 214 82% 51%;       /* #1A73E8 */
+    --status-info-border: 216 87% 91%;     /* #D2E3FC */
+    --status-info-dot: 214 82% 51%;
 
-    --status-danger-bg: #FCE8E6;
-    --status-danger-text: #C5221F;
-    --status-danger-border: #FAD2CF;
+    --status-danger-bg: 5 79% 95%;         /* #FCE8E6 */
+    --status-danger-text: 1 73% 45%;       /* #C5221F */
+    --status-danger-border: 4 81% 90%;     /* #FAD2CF */
+    --status-danger-dot: 1 73% 45%;
 
-    --status-neutral-bg: #F1F3F4;
-    --status-neutral-text: #5F6368;
-    --status-neutral-border: #DADCE0;
+    --status-neutral-bg: 200 12% 95%;      /* #F1F3F4 */
+    --status-neutral-text: 213 5% 39%;     /* #5F6368 */
+    --status-neutral-border: 220 9% 87%;   /* #DADCE0 */
+    --status-neutral-dot: 213 5% 39%;
 
-    /* Strict Radii Token Scale */
-    --radius-control: 6px;   /* Buttons, inputs, custom selects */
-    --radius-panel:   10px;  /* Cards, panels, table containers */
-    --radius-modal:   12px;  /* Dialogs, popovers */
-    --radius-badge:   999px; /* Status badges ONLY */
-    --radius-tag:     4px;   /* Counts & tags */
-    --radius:         6px;
+    /* Radii */
+    --radius-control: 14px;  /* Inputs, selects */
+    --radius-row: 16px;      /* List rows, inner cards, tiles */
+    --radius-panel: 20px;    /* Panels */
+    --radius-modal: 24px;    /* Dialogs */
+    --radius-badge: 999px;   /* Status chips */
+    --radius-tag: 8px;       /* Counts & tags */
+    --radius: 14px;
   }
 
   /* Dark theme */
@@ -109,6 +127,9 @@
 
     --card: 222 40% 11%;
     --card-foreground: 210 30% 92%;
+
+    --popover: 222 40% 11%;
+    --popover-foreground: 210 30% 92%;
 
     --primary: 218 65% 58%;
     --primary-foreground: 222 47% 9%;
@@ -136,26 +157,39 @@
     --sidebar-active: 223 60% 26%;
     --sidebar-border: 225 50% 18%;
 
-    /* Semantic Status Tokens (Dark Mode) */
-    --status-success-bg: rgba(19, 115, 51, 0.2);
-    --status-success-text: #81C995;
-    --status-success-border: rgba(129, 201, 149, 0.3);
+    --inset: 217 30% 16%;
+    --inset-selected: 216 61% 19%;
+    --inset-selected-border: 218 31% 30%;
+    --hatch: 217 28% 21%;
 
-    --status-warning-bg: rgba(176, 96, 0, 0.2);
-    --status-warning-text: #FDE293;
-    --status-warning-border: rgba(253, 226, 147, 0.3);
+    /*
+     * Semantic Status Tokens (Dark Mode). Originally translucent rgba over the
+     * card; written here as that blend on the dark card so they take opacity.
+     */
+    --status-success-bg: 178 42% 12%;      /* rgba(19,115,51,.2) */
+    --status-success-text: 137 40% 65%;    /* #81C995 */
+    --status-success-border: 168 21% 25%;  /* rgba(129,201,149,.3) */
+    --status-success-dot: 137 40% 65%;
 
-    --status-info-bg: rgba(26, 115, 232, 0.2);
-    --status-info-text: #8AB4F8;
-    --status-info-border: rgba(138, 180, 248, 0.3);
+    --status-warning-bg: 25 22% 16%;       /* rgba(176,96,0,.2) */
+    --status-warning-text: 45 96% 78%;     /* #FDE293 */
+    --status-warning-border: 49 10% 31%;   /* rgba(253,226,147,.3) */
+    --status-warning-dot: 45 96% 78%;
 
-    --status-danger-bg: rgba(197, 34, 31, 0.2);
-    --status-danger-text: #F28B82;
-    --status-danger-border: rgba(242, 139, 130, 0.3);
+    --status-info-bg: 216 61% 19%;         /* rgba(26,115,232,.2) */
+    --status-info-text: 217 89% 76%;       /* #8AB4F8 */
+    --status-info-border: 218 31% 30%;     /* rgba(138,180,248,.3) */
+    --status-info-dot: 217 89% 76%;
 
-    --status-neutral-bg: rgba(255, 255, 255, 0.08);
-    --status-neutral-text: #BDC1C6;
-    --status-neutral-border: rgba(255, 255, 255, 0.15);
+    --status-danger-bg: 335 34% 16%;       /* rgba(197,34,31,.2) */
+    --status-danger-text: 5 81% 73%;       /* #F28B82 */
+    --status-danger-border: 342 18% 28%;   /* rgba(242,139,130,.3) */
+    --status-danger-dot: 5 81% 73%;
+
+    --status-neutral-bg: 220 22% 18%;      /* rgba(255,255,255,.08) */
+    --status-neutral-text: 213 7% 76%;     /* #BDC1C6 */
+    --status-neutral-border: 221 15% 24%;  /* rgba(255,255,255,.15) */
+    --status-neutral-dot: 213 7% 76%;
   }
 
   * {
@@ -163,7 +197,7 @@
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background font-sans text-foreground antialiased;
     font-feature-settings: 'rlig' 1, 'calt' 1;
   }
 
@@ -183,6 +217,25 @@
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
     }
+  }
+}
+
+@layer components {
+  /* The one highlighted figure on a screen: brand blue deepening into navy. */
+  .surface-highlight {
+    background-image: linear-gradient(180deg, hsl(var(--brand)), hsl(var(--navy-900)));
+  }
+
+  /* The unfilled part of a progress track, drawn as fine diagonal stripes. */
+  .track-hatch {
+    background-color: hsl(var(--inset));
+    background-image: repeating-linear-gradient(-45deg, hsl(var(--hatch)) 0 2px, transparent 2px 7px);
+  }
+
+  /* The same stripes in white, for a track on the highlight. */
+  .track-hatch-light {
+    background-color: rgb(255 255 255 / 0.15);
+    background-image: repeating-linear-gradient(-45deg, rgb(255 255 255 / 0.3) 0 2px, transparent 2px 7px);
   }
 }
 

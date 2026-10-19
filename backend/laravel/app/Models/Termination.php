@@ -10,6 +10,9 @@ class Termination extends Model
 {
     use HasFactory;
 
+    /** draft | for_review -> finalized (administrator) or withdrawn (SeparationService). */
+    public const STATUSES = ['draft', 'for_review', 'finalized', 'withdrawn'];
+
     protected $fillable = [
         'employee_id',
         'reason',

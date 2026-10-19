@@ -49,8 +49,8 @@ class JobRequestResource extends JsonResource
 
             'criteria' => RequestCriterionResource::collection($this->whenLoaded('criteria')),
             // Only on the single-request view, where criteria are loaded: it
-            // costs two aggregate queries, which a list of requests should not
-            // pay per row.
+            // costs three aggregate queries (see evaluationState), which a list
+            // of requests should not pay per row.
             'evaluation' => $this->whenLoaded('criteria', fn () => $this->evaluationState()),
             'job_position_id' => $this->job_position_id,
             'criteria_count' => $this->whenCounted('criteria'),

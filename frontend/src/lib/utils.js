@@ -27,6 +27,8 @@ export function humanise(value) {
  * another kind of account; the API refuses those screens' data anyway.
  */
 export function homePathFor(user) {
+  // Still on a password the office issued: the only page the API will serve.
+  if (user?.must_change_password) return '/change-password'
   if (['applicant', 'employee'].includes(user?.user_type)) return '/portal'
   if (user?.user_type === 'coordinator') return '/coordinator'
   return '/dashboard'

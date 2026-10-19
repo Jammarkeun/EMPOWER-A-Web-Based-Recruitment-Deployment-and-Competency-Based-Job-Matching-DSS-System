@@ -8,13 +8,14 @@ use App\Models\Applicant;
 use App\Models\ApplicantRequirement;
 use App\Models\Employee;
 use App\Models\RequirementType;
-use App\Models\User;
-use App\Notifications\PlacementResponseRecorded;
 use App\Services\AuditService;
 use App\Services\DocumentStorageService;
 use App\Services\FolderCategoryService;
 use App\Services\OcrService;
+use App\Services\PlacementService;
+use App\Services\ProfilePhotoService;
 use App\Services\SeparationService;
+use App\Support\ApplicantStatuses;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +36,7 @@ class PortalController extends Controller
         private readonly FolderCategoryService $folders,
         private readonly DocumentStorageService $storage,
         private readonly SeparationService $separation,
+        private readonly PlacementService $placements,
         private readonly AuditService $audit,
     ) {
     }
@@ -49,6 +51,8 @@ class PortalController extends Controller
 
         $applicant->load(['requirements.requirementType', 'statusHistory', 'preferredPosition.company']);
         $folder = $this->folders->explain($applicant);
+        $endorsement = $this->placements->openEndorsement($applicant)?->load('jobRequest.company');
+        $currentDecision = $this->placements->currentDecision($endorsement);
 
         return ApiResponse::success([
             'person' => [
@@ -67,11 +71,14 @@ class PortalController extends Controller
                 'status' => $applicant->current_status,
                 'position' => $applicant->preferred_position,
                 'position_company' => $applicant->preferredPosition?->company?->company_name,
-                'status_label' => ucwords(str_replace('_', ' ', $applicant->current_status)),
+                'status_label' => ApplicantStatuses::label($applicant->current_status),
                 'explanation' => $this->explainStatus($applicant->current_status),
                 'applied_on' => $applicant->application_date?->toDateString(),
-                'stage_number' => $this->stageNumber($applicant->current_status),
-                'total_stages' => 6,
+                // Null once the record is closed: a resigned, terminated or
+                // archived record is not "stage 6 of 6" (audit UX-05).
+                'stage_number' => ApplicantStatuses::stageNumber($applicant->current_status),
+                'total_stages' => count(ApplicantStatuses::STAGES),
+                'record_closed' => ApplicantStatuses::isClosed($applicant->current_status),
 
                 // Someone who registered online is waiting on one thing only:
                 // walking into the office. Saying so plainly here is what stops
@@ -91,9 +98,15 @@ class PortalController extends Controller
                  * the job. Asking here means the answer is on the record
                  * instead of in whoever took the phone call.
                  */
-                'placement_decision_due' => $this->awaitingPlacementResponse($applicant),
-                'placement_response' => $applicant->placement_response,
-                'placement_responded_at' => $applicant->placement_responded_at?->toIso8601String(),
+                // The answer to the current endorsement only. A new endorsement
+                // asks again; an earlier answer to another placement is not
+                // carried over (audit R-05, R-07).
+                'placement_decision_due' => $this->placements->decisionDue($applicant),
+                'placement_response' => $currentDecision?->decision,
+                'placement_responded_at' => $currentDecision?->decided_at?->toIso8601String(),
+                // Which placement, when the office said which request it is.
+                'placement_position' => $endorsement?->jobRequest?->position_title,
+                'placement_company' => $endorsement?->jobRequest?->company?->company_name,
             ],
             'documents' => [
                 'folder_label' => $folder['label'],
@@ -142,7 +155,9 @@ class PortalController extends Controller
             ] : null,
             'timeline' => $applicant->statusHistory->take(8)->map(fn ($h) => [
                 'status' => ucwords(str_replace('_', ' ', $h->to_status)),
-                'reason' => $h->reason,
+                'reason' => $h->wasWrittenAutomaticallyAtDeployment()
+                    ? \App\Models\ApplicationStatusHistory::AUTO_WRITTEN_NOTE
+                    : $h->reason,
                 'occurred_at' => $h->changed_at?->toIso8601String(),
             ])->values(),
         ]);
@@ -454,47 +469,32 @@ class PortalController extends Controller
     {
         $applicant = $this->applicant($request);
 
-        if (! $this->awaitingPlacementResponse($applicant)) {
-            return ApiResponse::error(
-                'There is no placement waiting for your answer at the moment.',
-                409
-            );
-        }
-
         $data = $request->validate([
             'response' => ['required', Rule::in(['accepted', 'declined'])],
             'note' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $applicant->forceFill([
-            'placement_response' => $data['response'],
-            'placement_responded_at' => now(),
-            'placement_response_note' => $data['note'] ?? null,
-        ])->save();
+        if (! $this->placements->decisionDue($applicant)) {
+            return ApiResponse::error(
+                in_array($applicant->current_status, PlacementService::ENDORSED_STATUSES, true)
+                    ? 'You have already answered for this placement. Please contact the office if you have changed your mind.'
+                    : 'There is no placement waiting for your answer at the moment.',
+                409
+            );
+        }
 
-        $this->audit->record(
-            action: 'update',
-            module: 'portal',
-            recordType: Applicant::class,
-            recordId: $applicant->id,
-            newValues: [
-                'placement_response' => $data['response'],
-                'answered_by' => 'applicant',
-                'note' => $data['note'] ?? null,
-            ],
+        // Recorded against this endorsement only, by the applicant, with the
+        // office notified once it has saved.
+        $decision = $this->placements->recordApplicantDecision(
+            $applicant,
+            $request->user(),
+            $data['response'],
+            $data['note'] ?? null
         );
 
-        // The office needs to know, and quickly: a decline means the client is
-        // expecting somebody who is not coming.
-        User::query()
-            ->whereIn('user_type', ['admin', 'hr'])
-            ->where('is_active', true)
-            ->get()
-            ->each->notify(new PlacementResponseRecorded($applicant, $data['response']));
-
         return ApiResponse::success([
-            'placement_response' => $applicant->placement_response,
-            'placement_responded_at' => $applicant->placement_responded_at?->toIso8601String(),
+            'placement_response' => $decision->decision,
+            'placement_responded_at' => $decision->decided_at?->toIso8601String(),
         ], $data['response'] === 'accepted'
             ? 'Thank you. We have told the office you want to go ahead.'
             : 'Thank you for letting us know. Our staff will be in touch.');
@@ -518,11 +518,46 @@ class PortalController extends Controller
         ]);
 
         $before = $applicant->only(array_keys($data));
-        $applicant->update($data);
+        $applicant->fill($data);
+
+        // Availability is scored when matching, so a new date makes rankings
+        // scored against the old one out of date (audit S-02). The office's own
+        // edit screen already said so; this one did not.
+        $scoredChanged = $applicant->isDirty('availability_date');
+
+        DB::transaction(function () use ($applicant, $scoredChanged) {
+            $applicant->save();
+
+            if ($scoredChanged) {
+                $applicant->markScoredProfileChanged();
+            }
+        });
 
         $this->audit->recordUpdate('portal', Applicant::class, $applicant->id, $before, $data);
 
         return ApiResponse::success(null, 'Your contact details have been updated');
+    }
+
+    /**
+     * Sets or replaces the applicant's own profile picture.
+     *
+     * Like everything here, the applicant is the signed-in user's own record and
+     * never one named in the request, so there is no identifier to change in
+     * order to reach somebody else's picture. Success is only reported once the
+     * file is stored and the record points at it.
+     */
+    public function uploadPhoto(Request $request, ProfilePhotoService $photos): JsonResponse
+    {
+        $applicant = $this->applicant($request);
+
+        $request->validate(['photo' => $photos->rules()], $photos->messages('photo'));
+
+        $photos->replace($applicant, $request->file('photo'));
+
+        return ApiResponse::success(
+            ['photo_url' => $photos->url($applicant->profile_photo_path)],
+            'Your profile picture has been updated.'
+        );
     }
 
     /**
@@ -642,19 +677,6 @@ class PortalController extends Controller
     }
 
     /**
-     * Whether the applicant has an offer of work in front of them right now.
-     *
-     * Only during client evaluation and approval. Before that there is no job to
-     * accept, and once deployed the question has answered itself. Someone who
-     * has already replied is not asked again.
-     */
-    private function awaitingPlacementResponse(Applicant $applicant): bool
-    {
-        return in_array($applicant->current_status, ['client_evaluation', 'approved'], true)
-            && is_null($applicant->placement_response);
-    }
-
-    /**
      * The applicant's current placement, if they actually have one.
      *
      * Returns null unless the lifecycle says deployed **and** there is an
@@ -725,21 +747,4 @@ class PortalController extends Controller
         };
     }
 
-    /**
-     * Collapses the internal lifecycle into six stages a person can follow.
-     *
-     * The full map has fifteen states, most of which are meaningful only to HR.
-     */
-    private function stageNumber(string $status): int
-    {
-        return match ($status) {
-            'applied' => 1,
-            'initial_screening', 'incomplete_requirements' => 2,
-            'primary_requirements_complete', 'pending_final_requirements' => 3,
-            'ready_for_deployment', 'training_scheduled', 'training_completed' => 4,
-            'client_evaluation', 'approved' => 5,
-            'deployed', 'active' => 6,
-            default => 6,
-        };
-    }
 }

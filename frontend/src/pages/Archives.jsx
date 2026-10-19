@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows, VirtualizedList } from '@/components/ui/states'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 
 /**
  * Archived records stay searchable. Losing the ability to answer "did this

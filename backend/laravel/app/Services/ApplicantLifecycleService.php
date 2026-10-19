@@ -24,24 +24,99 @@ class ApplicantLifecycleService
     public function __construct(
         private readonly AuditService $audit,
         private readonly FolderCategoryService $folders,
+        private readonly PlacementService $placements,
     ) {
     }
 
+    /**
+     * @param  array<string, mixed>  $attributes  Fields that belong to this move - the
+     *                                            disposition of an application that stops,
+     *                                            say - written in the same transaction, and
+     *                                            only once the move has been validated
+     */
     public function transition(
         Applicant $applicant,
         string $toStatus,
         User $actor,
         ?string $reason = null,
+        array $attributes = [],
+        array $context = [],
+    ): Applicant {
+        $this->assertTransitionAllowed($applicant->current_status, $toStatus);
+
+        return $this->apply($applicant, $toStatus, $actor, $reason, $attributes, $context);
+    }
+
+    /**
+     * A move a workflow makes on its own authority, from the statuses it names.
+     *
+     * The transition map is also what the applicant screen offers as buttons, so
+     * a move that only a workflow may make - deploying straight from "ready for
+     * deployment", or the training module withdrawing a completion it recorded
+     * in error - is kept out of it. The workflow states exactly which statuses
+     * it may start from; everything else (the gates, the history row, the audit
+     * entry, the lock) is the same as any other move.
+     *
+     * @param  list<string>  $allowedFrom
+     */
+    public function transitionForWorkflow(
+        Applicant $applicant,
+        string $toStatus,
+        User $actor,
+        ?string $reason,
+        array $allowedFrom,
+        array $attributes = [],
+        array $context = [],
     ): Applicant {
         $from = $applicant->current_status;
 
-        $this->assertTransitionAllowed($from, $toStatus);
+        if ($from === $toStatus) {
+            throw new RuntimeException('The applicant is already in this status.');
+        }
+
+        if (! in_array($from, $allowedFrom, true)) {
+            throw new InvalidTransitionException($from, $toStatus, $allowedFrom);
+        }
+
+        return $this->apply($applicant, $toStatus, $actor, $reason, $attributes, $context);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context  `notify` => false to skip the applicant's
+     *                                         status notification (a workflow sending its
+     *                                         own); `job_request_id` for an endorsement
+     */
+    private function apply(
+        Applicant $applicant,
+        string $toStatus,
+        User $actor,
+        ?string $reason,
+        array $attributes,
+        array $context,
+    ): Applicant {
+        $from = $applicant->current_status;
+
         $this->assertGatesSatisfied($applicant, $toStatus);
 
-        $applicant = DB::transaction(function () use ($applicant, $from, $toStatus, $actor, $reason) {
-            $applicant->forceFill(['current_status' => $toStatus])->save();
+        $applicant = DB::transaction(function () use ($applicant, $from, $toStatus, $actor, $reason, $attributes, $context) {
+            /*
+             * The move was validated against the status this request loaded.
+             * Locking the row and reading it again inside the transaction stops
+             * two officers' simultaneous changes from both passing that check
+             * and leaving a history that skips or repeats a step.
+             */
+            $current = Applicant::query()->whereKey($applicant->getKey())->lockForUpdate()->value('current_status');
 
-            ApplicationStatusHistory::create([
+            if ($current !== $from) {
+                throw new RuntimeException(
+                    'This applicant\'s status was changed by someone else a moment ago. Reload the record and try again.',
+                    409
+                );
+            }
+
+            $applicant->forceFill(array_merge($attributes, ['current_status' => $toStatus]))->save();
+
+            $history = ApplicationStatusHistory::create([
                 'applicant_id' => $applicant->id,
                 'from_status' => $from,
                 'to_status' => $toStatus,
@@ -50,13 +125,17 @@ class ApplicantLifecycleService
                 'changed_at' => now(),
             ]);
 
+            // Opens an endorsement when the applicant is put forward to a
+            // client, and closes it when they leave that stage (R-05, R-07).
+            $this->placements->syncEndorsement($applicant, $from, $toStatus, $actor, $history, $context);
+
             $this->audit->record(
                 action: 'update',
                 module: 'applicants',
                 recordType: Applicant::class,
                 recordId: $applicant->id,
                 oldValues: ['current_status' => $from],
-                newValues: ['current_status' => $toStatus, 'reason' => $reason],
+                newValues: array_merge($attributes, ['current_status' => $toStatus, 'reason' => $reason]),
             );
 
             if ($toStatus === 'archived') {
@@ -92,9 +171,15 @@ class ApplicantLifecycleService
             return $applicant->refresh();
         });
 
-        // Sent after the transaction commits, not inside it: a notification for a
-        // status change that then rolled back would be worse than none.
-        $applicant->notify(new ApplicationStatusChanged($applicant, $toStatus));
+        /*
+         * Sent only once the change has committed - including when this move is
+         * one step inside a larger operation (a deployment, a training record, a
+         * separation) whose own transaction is still open. A notification for a
+         * change that then rolled back would be worse than none.
+         */
+        if ($context['notify'] ?? true) {
+            DB::afterCommit(fn () => $applicant->notify(new ApplicationStatusChanged($applicant, $toStatus)));
+        }
 
         return $applicant;
     }
@@ -224,6 +309,8 @@ class ApplicantLifecycleService
             'separation' => 'Employment ends through the separation process on the employee record: a resignation '
                 .'is completed after clearance, and a termination is finalised by an administrator. '
                 .'It cannot be set as a status on its own.',
+            'training' => 'Training is recorded on the Training screen: enrol the applicant in a session, then '
+                .'record their attendance and completion there. It cannot be set as a status on its own.',
             default => null,
         };
 
@@ -321,23 +408,23 @@ class ApplicantLifecycleService
     }
 
     /**
-     * Whether this applicant has actually been through training.
+     * Whether this applicant has actually been through training (audit R-06).
      *
-     * Two ways of having done so, and both are honest. A completed enrolment is
-     * the record the training module writes; already being past
-     * `training_completed` in the lifecycle covers an applicant whose training
-     * was recorded before this gate existed, or handled outside the module.
-     * Requiring only the enrolment row would have stranded every applicant
-     * already mid-process on the day this shipped.
+     * Only a recorded completion counts: an enrolment marked completed, by an
+     * officer, in a session that was not cancelled. The status word alone used
+     * to count too ("training completed" set by hand on the applicant screen),
+     * which let the gate pass with no training on record at all; that path is
+     * closed, and training statuses now belong to the training module.
+     *
+     * Training completed outside EMPOWER has no way in yet. Whether CDE accepts
+     * it, and on what evidence, is an open question (audit Q7); until it is
+     * answered nothing here pretends a session took place.
      */
-    private function hasCompletedTraining(Applicant $applicant): bool
+    public function hasCompletedTraining(Applicant $applicant): bool
     {
-        if ($applicant->current_status === 'training_completed') {
-            return true;
-        }
-
         return $applicant->trainingEnrollments()
             ->where('completion_status', 'completed')
+            ->whereHas('training', fn ($q) => $q->where('status', '!=', 'cancelled'))
             ->exists();
     }
 

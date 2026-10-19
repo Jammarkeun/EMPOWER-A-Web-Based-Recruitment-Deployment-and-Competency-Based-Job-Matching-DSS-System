@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\PlacementDecision;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -88,9 +89,13 @@ class PlacementResponseTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.placement_response', 'accepted');
 
-        $applicant->refresh();
-        $this->assertSame('accepted', $applicant->placement_response);
-        $this->assertNotNull($applicant->placement_responded_at);
+        // Kept against the endorsement it answers (audit R-05), not in
+        // columns on the applicant.
+        $decision = PlacementDecision::where('applicant_id', $applicant->id)->sole();
+        $this->assertSame('accepted', $decision->decision);
+        $this->assertSame('applicant', $decision->source);
+        $this->assertNotNull($decision->endorsement_id);
+        $this->assertNotNull($decision->decided_at);
     }
 
     /**
@@ -121,9 +126,9 @@ class PlacementResponseTest extends TestCase
             'note' => 'The travel is too far for the night shift.',
         ])->assertOk();
 
-        $applicant->refresh();
-        $this->assertSame('declined', $applicant->placement_response);
-        $this->assertSame('The travel is too far for the night shift.', $applicant->placement_response_note);
+        $decision = PlacementDecision::where('applicant_id', $applicant->id)->sole();
+        $this->assertSame('declined', $decision->decision);
+        $this->assertSame('The travel is too far for the night shift.', $decision->note);
     }
 
     /**
@@ -152,7 +157,8 @@ class PlacementResponseTest extends TestCase
         $this->postJson('/api/v1/portal/placement-response', ['response' => 'accepted'])->assertOk();
         $this->postJson('/api/v1/portal/placement-response', ['response' => 'declined'])->assertStatus(409);
 
-        $this->assertSame('accepted', $applicant->refresh()->placement_response);
+        $decision = PlacementDecision::where('applicant_id', $applicant->id)->sole();
+        $this->assertSame('accepted', $decision->decision);
     }
 
     public function test_only_accepted_or_declined_are_understood(): void
@@ -228,6 +234,8 @@ class PlacementResponseTest extends TestCase
     /**
      * The answer is the applicant's to give. Staff have no route to give it for
      * them, and the field is not writable through the applicant update endpoint.
+     * The office can correct an answer once one exists (audit R-07), but not
+     * supply the first one.
      */
     public function test_staff_cannot_answer_on_the_applicants_behalf(): void
     {
@@ -244,5 +252,12 @@ class PlacementResponseTest extends TestCase
             $applicant->refresh()->placement_response,
             'placement_response is not mass assignable, so a staff update cannot set it.'
         );
+
+        $this->postJson("/api/v1/applicants/{$applicant->id}/placement-decisions", [
+            'decision' => 'accepted',
+            'correction_reason' => 'Said yes on the phone.',
+        ])->assertStatus(409);
+
+        $this->assertSame(0, PlacementDecision::where('applicant_id', $applicant->id)->count());
     }
 }

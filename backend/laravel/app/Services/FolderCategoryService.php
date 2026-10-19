@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Applicant;
 use App\Models\RequirementType;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Derives an applicant's folder category from their verified documents.
@@ -22,23 +23,56 @@ class FolderCategoryService
 {
     /**
      * Recompute and persist the category. Returns the resulting category.
+     *
+     * The applicant's row is locked while the category is worked out and
+     * written (audit R-17). Folder recalculation now also runs in bulk after a
+     * Settings change, and without the lock a document verification computed
+     * from the old rules could land after the bulk pass and put a stale folder
+     * back. With it, every folder write is computed from what was committed
+     * when its lock was taken, and the last one wins correctly.
+     *
+     * The stored value is compared rather than the model in hand, which may
+     * have been loaded before somebody else changed the folder.
      */
     public function recalculate(Applicant $applicant): string
     {
-        $category = $this->determine($applicant);
+        return DB::transaction(function () use ($applicant) {
+            $stored = Applicant::withTrashed()
+                ->whereKey($applicant->getKey())
+                ->lockForUpdate()
+                ->value('folder_category');
 
-        if ($applicant->folder_category !== $category) {
-            $applicant->forceFill(['folder_category' => $category])->save();
-        }
+            $applicant->unsetRelation('requirements');
+            $category = $this->determine($applicant);
 
-        return $category;
+            if ($stored !== $category) {
+                Applicant::withTrashed()
+                    ->whereKey($applicant->getKey())
+                    ->update(['folder_category' => $category]);
+            }
+
+            $applicant->forceFill(['folder_category' => $category])
+                ->syncOriginalAttribute('folder_category');
+
+            return $category;
+        });
     }
 
     public function determine(Applicant $applicant): string
     {
-        $required = $this->requiredTypes();
-        $verified = $this->verifiedTypeIds($applicant);
+        return $this->categoryFor($this->requiredTypes(), $this->verifiedTypeIds($applicant));
+    }
 
+    /**
+     * The rule itself, given the currently required types and the type IDs an
+     * applicant has satisfied. Shared with the bulk recalculation so the two
+     * can never disagree.
+     *
+     * @param  Collection<int, RequirementType>  $required
+     * @param  Collection<int, int>  $verified
+     */
+    public function categoryFor(Collection $required, Collection $verified): string
+    {
         $primaryIds = $required->where('requirement_group', 'primary')->pluck('id');
         $finalIds = $required->where('requirement_group', 'final')->pluck('id');
 
@@ -104,7 +138,7 @@ class FolderCategoryService
     }
 
     /** @return Collection<int, RequirementType> */
-    private function requiredTypes(): Collection
+    public function requiredTypes(): Collection
     {
         return RequirementType::query()
             ->active()

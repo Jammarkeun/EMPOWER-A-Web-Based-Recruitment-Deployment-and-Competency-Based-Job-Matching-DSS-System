@@ -3,15 +3,19 @@
 namespace App\Http\Controllers;
 
 use App\Http\Responses\ApiResponse;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Notifications\DatabaseNotification;
+use Illuminate\Support\Str;
 
 /**
  * In-app notifications for the signed-in user.
  *
- * Notifications are always scoped to the authenticated notifiable, so a user can
- * only ever read their own. There is deliberately no route that lists another
- * user's notifications.
+ * Notifications are always scoped to the records belonging to the signed-in
+ * login, so a user can only ever read their own. There is deliberately no
+ * route that lists another user's notifications.
  */
 class NotificationController extends Controller
 {
@@ -22,13 +26,11 @@ class NotificationController extends Controller
             'per_page' => ['nullable', 'integer', 'between:1,50'],
         ]);
 
-        $notifiable = $this->notifiable($request);
-
-        $query = $filters['unread_only'] ?? false
-            ? $notifiable->unreadNotifications()
-            : $notifiable->notifications();
-
-        $notifications = $query->paginate($filters['per_page'] ?? 20);
+        $notifications = $this->own($request)
+            ->when($filters['unread_only'] ?? false, fn ($q) => $q->whereNull('read_at'))
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::success([
             'notifications' => collect($notifications->items())->map(fn ($n) => [
@@ -41,7 +43,7 @@ class NotificationController extends Controller
                 'read_at' => $n->read_at?->toIso8601String(),
                 'created_at' => $n->created_at?->toIso8601String(),
             ]),
-            'unread_count' => $notifiable->unreadNotifications()->count(),
+            'unread_count' => $this->own($request)->whereNull('read_at')->count(),
         ], 'Notifications retrieved', 200, [
             'current_page' => $notifications->currentPage(),
             'last_page' => $notifications->lastPage(),
@@ -67,8 +69,8 @@ class NotificationController extends Controller
      */
     public function unreadCount(Request $request): JsonResponse
     {
-        $unread = $this->notifiable($request)
-            ->unreadNotifications()
+        $unread = $this->own($request)
+            ->whereNull('read_at')
             ->get(['id', 'data']);
 
         $byCategory = $unread
@@ -83,7 +85,11 @@ class NotificationController extends Controller
 
     public function markRead(Request $request, string $id): JsonResponse
     {
-        $notification = $this->notifiable($request)->notifications()->findOrFail($id);
+        // The id column is a UUID; PostgreSQL rejects anything else with an
+        // error rather than finding nothing, so it is turned away first.
+        abort_unless(Str::isUuid($id), 404);
+
+        $notification = $this->own($request)->whereKey($id)->firstOrFail();
         $notification->markAsRead();
 
         return ApiResponse::success(null, 'Notification marked as read');
@@ -91,30 +97,43 @@ class NotificationController extends Controller
 
     public function markAllRead(Request $request): JsonResponse
     {
-        $this->notifiable($request)->unreadNotifications->markAsRead();
+        $this->own($request)->whereNull('read_at')->update(['read_at' => now()]);
 
         return ApiResponse::success(null, 'All notifications marked as read');
     }
 
     /**
-     * Resolves who the notifications belong to.
+     * The notifications this login may read.
      *
-     * A portal login is attached to an applicant or employee record, and
-     * lifecycle notifications are addressed to that record rather than to the
-     * user account, so the notifiable is resolved through the link.
+     * @return Builder<DatabaseNotification>
      */
-    private function notifiable(Request $request)
+    private function own(Request $request): Builder
     {
-        $user = $request->user();
+        $records = $this->records($request);
 
-        if ($user->user_type === 'applicant' && $user->applicant) {
-            return $user->applicant;
-        }
+        return DatabaseNotification::query()->where(function (Builder $query) use ($records) {
+            foreach ($records as $record) {
+                $query->orWhere(fn (Builder $q) => $q
+                    ->where('notifiable_type', $record->getMorphClass())
+                    ->where('notifiable_id', $record->getKey()));
+            }
+        });
+    }
 
-        if ($user->user_type === 'employee' && $user->employee) {
-            return $user->employee;
-        }
-
-        return $user;
+    /**
+     * Every record whose notifications belong to this login (audit S-03).
+     *
+     * A portal login used to be resolved to one record only, so an employee -
+     * whose login is linked to their employee record - never saw the
+     * deployment notice sent to the applicant record they came from, nor even
+     * the notice that their own password had changed. The rule lives on the
+     * User model now, beside its reverse that decides whose notification
+     * preferences apply, so the two cannot drift apart.
+     *
+     * @return list<Model>
+     */
+    private function records(Request $request): array
+    {
+        return $request->user()->notifiableRecords();
     }
 }

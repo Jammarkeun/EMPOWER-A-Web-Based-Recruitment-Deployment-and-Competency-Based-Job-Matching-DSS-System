@@ -5,10 +5,12 @@ use App\Http\Responses\ApiResponse;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -38,11 +40,31 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,
             'active' => \App\Http\Middleware\EnsureUserIsActive::class,
+            'password.current' => \App\Http\Middleware\EnsurePasswordIsCurrent::class,
             'portal' => \App\Http\Middleware\EnsurePortalUser::class,
+            'staff' => \App\Http\Middleware\EnsureStaffAccount::class,
             'coordinator' => \App\Http\Middleware\EnsureCoordinator::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        /*
+         * Database failures are logged without their bound values.
+         *
+         * Laravel's own report of a QueryException interpolates every binding
+         * into the message - names, addresses, birth dates - and writes it to
+         * the log. The statement with its placeholders and the SQLSTATE are
+         * enough to diagnose the failure; the personal data is not needed.
+         */
+        $exceptions->report(function (QueryException $e) {
+            Log::error('Database query failed', [
+                'sqlstate' => $e->errorInfo[0] ?? (string) $e->getCode(),
+                'driver_code' => $e->errorInfo[1] ?? null,
+                'connection' => $e->getConnectionName(),
+                'sql' => $e->getSql(),
+                'path' => request()?->path(),
+            ]);
+        })->stop();
+
         /*
          * Every API failure is translated into the contract's error envelope.
          * Without this Laravel returns its own HTML or JSON shapes depending on
@@ -52,6 +74,14 @@ return Application::configure(basePath: dirname(__DIR__))
             if (! $request->is('api/*') && ! $request->expectsJson()) {
                 return null;
             }
+
+            // Shown in place of any detail that belongs in the log, not the
+            // browser: SQL, storage endpoints, file paths, library internals.
+            $serverError = fn () => ApiResponse::error(
+                'Something went wrong on our side. Please try again, and contact the '
+                .'system administrator if it keeps happening.',
+                500
+            );
 
             return match (true) {
                 $e instanceof ValidationException => ApiResponse::error(
@@ -101,14 +131,38 @@ return Application::configure(basePath: dirname(__DIR__))
                     $e->getStatusCode()
                 ),
 
-                // Business rules raised from the service layer, such as
-                // attempting to deploy an applicant with missing documents.
-                $e instanceof RuntimeException => ApiResponse::error(
+                /*
+                 * A database error never reaches the browser.
+                 *
+                 * QueryException is a RuntimeException (through PDOException),
+                 * so without this arm the one below returned its message - the
+                 * SQL statement with every bound value - to whoever made the
+                 * request, whatever APP_DEBUG said. Checked first, and in debug
+                 * mode too: a demo runs with debug on.
+                 */
+                $e instanceof QueryException,
+                $e instanceof PDOException => $serverError(),
+
+                /*
+                 * Business rules raised by EMPOWER's own services, such as
+                 * attempting to deploy an applicant with missing documents.
+                 *
+                 * Only messages written in this application are shown. A
+                 * RuntimeException thrown inside a library - the storage SDK,
+                 * the filesystem, the spreadsheet writer - describes endpoints,
+                 * object keys and paths, so it is logged and answered with the
+                 * generic message instead.
+                 */
+                $e instanceof RuntimeException && str_starts_with($e->getFile(), app_path()) => ApiResponse::error(
                     $e->getMessage(),
-                    $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 400
+                    is_int($e->getCode()) && $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 400
                 ),
 
-                default => null,
+                $e instanceof RuntimeException => $serverError(),
+
+                // Anything else: Laravel's detailed page while developing, the
+                // generic envelope everywhere else.
+                default => config('app.debug') ? null : $serverError(),
             };
         });
     })->create();

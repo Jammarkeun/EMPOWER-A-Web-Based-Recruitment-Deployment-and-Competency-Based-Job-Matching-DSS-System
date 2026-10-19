@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Http\Responses\ApiResponse;
 use App\Models\CriteriaCatalog;
+use App\Models\FolderRecalculation;
 use App\Models\RequirementType;
 use App\Services\AuditService;
+use App\Services\FolderRecalculationService;
 use App\Services\SettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,9 +26,18 @@ use Illuminate\Validation\Rule;
  */
 class SettingsController extends Controller
 {
+    /**
+     * The fields of a requirement type that decide folders. A change to any of
+     * them changes the rule for every applicant at once, so stored folders are
+     * recalculated straight after it (audit R-17). Its name and whether it
+     * carries an expiry date do not affect anybody's folder.
+     */
+    private const FOLDER_FIELDS = ['is_required', 'requirement_group', 'active_flag'];
+
     public function __construct(
         private readonly SettingsService $settings,
         private readonly AuditService $audit,
+        private readonly FolderRecalculationService $recalculations,
     ) {
     }
 
@@ -43,7 +54,27 @@ class SettingsController extends Controller
             // Lets the screen render read-only for HR rather than showing
             // controls that would be refused on submit.
             'can_edit' => $request->user()->can('settings.update'),
+            // So a recalculation that failed or was cut off is visible, and can
+            // be run again, rather than leaving folders quietly out of date.
+            'folder_recalculation' => $this->recalculations->latest()?->present(),
         ]);
+    }
+
+    /**
+     * Runs the folder recalculation on request: to finish one that failed or
+     * was interrupted, or to check that every stored folder matches the rules.
+     * Safe to repeat; it only ever corrects folders.
+     */
+    public function recalculateFolders(Request $request): JsonResponse
+    {
+        $this->authorize('manageSettings');
+
+        $run = $this->recalculations->run('manual', $request->user(), 'Requested from Settings.');
+
+        return ApiResponse::success(
+            ['folder_recalculation' => $run->present()],
+            $this->recalculationMessage('Folder recalculation finished', $run),
+        );
     }
 
     public function update(Request $request): JsonResponse
@@ -134,7 +165,21 @@ class SettingsController extends Controller
 
         $this->audit->record('create', 'settings', RequirementType::class, $type->id, null, $data);
 
-        return ApiResponse::created($type, 'Requirement added');
+        // A new optional document changes nobody's folder; a new required one
+        // changes everybody's who has not yet handed it in.
+        $run = $type->is_required
+            ? $this->recalculations->run(
+                'requirement_change',
+                $request->user(),
+                "Required document added: {$type->requirement_name}.",
+                $type,
+            )
+            : null;
+
+        return ApiResponse::created(
+            $type->toArray() + ['folder_recalculation' => $run?->present()],
+            $this->recalculationMessage('Requirement added', $run),
+        );
     }
 
     public function updateRequirementType(Request $request, RequirementType $requirementType): JsonResponse
@@ -154,7 +199,47 @@ class SettingsController extends Controller
 
         $this->audit->recordUpdate('settings', RequirementType::class, $requirementType->id, $before, $data);
 
-        return ApiResponse::success($requirementType->fresh(), 'Requirement updated');
+        $fresh = $requirementType->fresh();
+
+        // Only when the change could move a folder, and only after it is saved,
+        // so the recalculation reads the new rule.
+        $changedRule = collect(self::FOLDER_FIELDS)->contains(
+            fn (string $field) => array_key_exists($field, $before) && $before[$field] !== $fresh->{$field}
+        );
+
+        $run = $changedRule
+            ? $this->recalculations->run(
+                'requirement_change',
+                $request->user(),
+                "Requirement changed: {$fresh->requirement_name}.",
+                $fresh,
+            )
+            : null;
+
+        return ApiResponse::success(
+            $fresh->toArray() + ['folder_recalculation' => $run?->present()],
+            $this->recalculationMessage('Requirement updated', $run),
+        );
+    }
+
+    /**
+     * Says what the follow-up recalculation did, so a failure is never silent.
+     */
+    private function recalculationMessage(string $done, ?FolderRecalculation $run): string
+    {
+        if (! $run) {
+            return $done;
+        }
+
+        if ($run->status !== 'completed') {
+            return "{$done}, but recalculating applicant folders did not finish. "
+                .'Use "Recalculate folders" in Settings to finish it.';
+        }
+
+        return $run->applicants_changed === 0
+            ? "{$done}. All {$run->applicants_checked} applicant folder(s) already matched."
+            : "{$done}. {$run->applicants_changed} of {$run->applicants_checked} applicant folder(s) "
+                .'were updated to match.';
     }
 
     // ----------------------------------------------------- competency criteria

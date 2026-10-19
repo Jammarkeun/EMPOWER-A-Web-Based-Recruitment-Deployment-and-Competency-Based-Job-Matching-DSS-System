@@ -135,6 +135,13 @@ class SettingsService
             'type' => 'boolean',
             'rules' => ['boolean'],
         ],
+        'empower.require_client_approval_before_deployment' => [
+            'group' => 'policy',
+            'label' => 'Require recorded client approval before deployment',
+            'help' => 'Awaiting CDE confirmation. When on, a worker can only be deployed after an officer has recorded the client\'s approval by moving them to "Approved". When off, a deployment can be recorded from "Ready for deployment", and the history says that no approval was recorded.',
+            'type' => 'boolean',
+            'rules' => ['boolean'],
+        ],
 
         // --- retention ---
         'empower.retention.unhired_applicant_months' => [

@@ -14,6 +14,7 @@ use App\Models\JobRequest;
 use App\Models\ViolationReport;
 use App\Services\AttendanceService;
 use App\Services\AuditService;
+use App\Services\ProfilePhotoService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -369,6 +370,9 @@ class CoordinatorController extends Controller
         return [
             'id' => $e->id,
             'full_name' => $e->full_name,
+            // Only ever reached for a worker at the coordinator's own client:
+            // every caller checks the assignment scope before presenting.
+            'photo_url' => app(ProfilePhotoService::class)->url($e->applicant?->profile_photo_path),
             'employee_number' => $e->employee_number,
             'biometric_number' => $e->biometric_number,
             'position' => $e->current_position_title,

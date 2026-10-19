@@ -11,8 +11,8 @@ const SelectTrigger = React.forwardRef(({ className, children, ...props }, ref) 
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-9 w-full items-center justify-between rounded-control border border-border bg-card px-3 py-1.5 text-sm transition-colors',
-      'placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-brand focus:border-brand',
+      'flex h-11 w-full items-center justify-between rounded-control border border-transparent bg-inset px-4 py-2 text-sm transition-colors',
+      'placeholder:text-muted-foreground focus:outline-none focus:border-brand focus:bg-card focus:ring-1 focus:ring-brand',
       'disabled:cursor-not-allowed disabled:opacity-50 aria-[invalid=true]:border-destructive',
       '[&>span]:line-clamp-1',
       className
@@ -54,7 +54,7 @@ const SelectContent = React.forwardRef(({ className, children, position = 'poppe
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-panel border border-border bg-popover text-popover-foreground shadow-md',
+        'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-row border border-border/70 bg-popover text-popover-foreground shadow-float',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2',
         position === 'popper' &&
           'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',
@@ -92,8 +92,8 @@ const SelectItem = React.forwardRef(({ className, children, ...props }, ref) => 
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex w-full cursor-default select-none items-center rounded-control py-1.5 pl-8 pr-2 text-sm outline-none transition-colors',
-      'focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      'relative flex w-full cursor-default select-none items-center rounded-[10px] py-2 pl-8 pr-2 text-sm outline-none transition-colors',
+      'focus:bg-inset-selected focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className
     )}
     {...props}

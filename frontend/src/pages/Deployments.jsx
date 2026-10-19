@@ -9,7 +9,7 @@ import { Select } from '@/components/ui/select'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { formatDate } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 
 export default function Deployments() {
   const [searchParams, setSearchParams] = useSearchParams()

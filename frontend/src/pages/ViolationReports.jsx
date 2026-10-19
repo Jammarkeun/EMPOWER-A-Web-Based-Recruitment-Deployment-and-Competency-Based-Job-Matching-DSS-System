@@ -7,7 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate, formatDateTime } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 import { ReportStatus } from './coordinator/CoordinatorEmployeeDetail'
 
 const STATUS_OPTIONS = [
@@ -78,7 +78,7 @@ export default function ViolationReports() {
       />
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={5} columns={6} />
         </div>
       ) : error ? (

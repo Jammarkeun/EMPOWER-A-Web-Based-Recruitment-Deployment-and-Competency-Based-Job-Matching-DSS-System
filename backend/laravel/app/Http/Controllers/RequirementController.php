@@ -38,7 +38,7 @@ class RequirementController extends Controller
 
     public function index(Applicant $applicant): JsonResponse
     {
-        $this->authorize('view', $applicant);
+        $this->authorize('viewRequirements', $applicant);
 
         $applicant->load([
             'requirements.requirementType',
@@ -176,7 +176,7 @@ class RequirementController extends Controller
         RequirementType $requirementType,
         DocumentReviewService $review,
     ): JsonResponse {
-        $this->authorize('view', $applicant);
+        $this->authorize('viewRequirements', $applicant);
 
         $requirement = ApplicantRequirement::where('applicant_id', $applicant->id)
             ->where('requirement_type_id', $requirementType->id)

@@ -5,12 +5,18 @@ namespace App\Http\Controllers;
 use App\Http\Responses\ApiResponse;
 use App\Models\Archive;
 use App\Models\AuditLog;
+use App\Models\User;
+use App\Services\AuditTrailPresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
 class ArchiveController extends Controller
 {
+    public function __construct(private readonly AuditTrailPresenter $auditTrail)
+    {
+    }
+
     /**
      * Archived records stay searchable. Losing the ability to answer "did this
      * person work for us, and how did it end" is exactly the problem the paper
@@ -91,8 +97,44 @@ class ArchiveController extends Controller
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('created_at', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('created_at', '<=', $v))
             ->orderByDesc('created_at')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 50);
 
+        // Who did what to which record, field by field (audit R-28), rather
+        // than the raw rows with only their new values readable.
+        $logs->setCollection(collect($this->auditTrail->present($logs->getCollection())));
+
         return ApiResponse::paginated($logs, 'Audit trail retrieved');
+    }
+
+    /**
+     * The values the audit filters can offer: only those that occur in the
+     * trail, so a filter never lists an action nothing has recorded.
+     */
+    public function auditLogFacets(): JsonResponse
+    {
+        $this->authorize('viewAuditLogs');
+
+        $distinct = fn (string $column) => AuditLog::query()
+            ->whereNotNull($column)
+            ->distinct()
+            ->orderBy($column)
+            ->pluck($column)
+            ->values();
+
+        return ApiResponse::success([
+            'action_types' => $distinct('action_type'),
+            'modules' => $distinct('module_key'),
+            'record_types' => $distinct('record_type'),
+            'roles' => $distinct('actor_role'),
+            'actors' => User::query()
+                ->whereIn('id', AuditLog::query()->whereNotNull('actor_user_id')->distinct()->select('actor_user_id'))
+                ->orderBy('first_name')
+                ->orderBy('last_name')
+                ->limit(300)
+                ->get()
+                ->map(fn (User $user) => ['id' => $user->id, 'name' => $user->full_name, 'user_type' => $user->user_type])
+                ->values(),
+        ]);
     }
 }

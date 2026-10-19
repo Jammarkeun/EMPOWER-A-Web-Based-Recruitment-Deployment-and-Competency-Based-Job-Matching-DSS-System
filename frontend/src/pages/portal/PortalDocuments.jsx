@@ -176,7 +176,7 @@ export default function PortalDocuments() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">My documents</h1>
+        <h1 className="text-[26px] font-normal leading-tight tracking-[-0.01em] sm:text-[32px]">My documents</h1>
         <p className="text-sm text-muted-foreground">
           Send your documents ahead of time so the office can check them before you visit.
         </p>

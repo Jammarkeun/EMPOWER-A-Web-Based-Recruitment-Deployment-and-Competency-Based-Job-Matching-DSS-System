@@ -8,6 +8,7 @@ use App\Models\ApplicantRequirement;
 use App\Models\RequirementType;
 use App\Services\DocumentReviewService;
 use App\Services\DocumentStorageService;
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -46,9 +47,9 @@ class DocumentLibraryController extends Controller
      * The documents themselves are read through the applicant's own
      * requirements endpoint, which authorises against the applicant record.
      */
-    public function applicants(Request $request): JsonResponse
+    public function applicants(Request $request, ProfilePhotoService $photos): JsonResponse
     {
-        $this->authorize('viewAny', Applicant::class);
+        $this->authorize('viewDocuments');
 
         $filters = $request->validate([
             'search' => ['nullable', 'string', 'max:120'],
@@ -93,6 +94,7 @@ class DocumentLibraryController extends Controller
             $applicants->through(fn (Applicant $a) => [
                 'id' => $a->id,
                 'full_name' => $a->full_name,
+                'photo_url' => $photos->url($a->profile_photo_path),
                 'applicant_code' => $a->applicant_code,
                 'current_status' => $a->current_status,
                 'folder_category' => $a->folder_category,
@@ -118,7 +120,7 @@ class DocumentLibraryController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $this->authorize('viewAny', Applicant::class);
+        $this->authorize('viewDocuments');
 
         $filters = $request->validate([
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
@@ -146,9 +148,9 @@ class DocumentLibraryController extends Controller
     /**
      * What is inside one folder.
      */
-    public function show(Request $request, RequirementType $requirementType): JsonResponse
+    public function show(Request $request, RequirementType $requirementType, ProfilePhotoService $photos): JsonResponse
     {
-        $this->authorize('viewAny', Applicant::class);
+        $this->authorize('viewDocuments');
 
         $filters = $request->validate([
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
@@ -179,6 +181,9 @@ class DocumentLibraryController extends Controller
                 'applicant' => [
                     'id' => $r->applicant?->id,
                     'name' => $r->applicant?->full_name,
+                    // The applicant's own picture, so the reviewer can see whose
+                    // document this is. Never the document itself.
+                    'photo_url' => $photos->url($r->applicant?->profile_photo_path),
                     'applicant_code' => $r->applicant?->applicant_code,
                 ],
             ]),
@@ -198,7 +203,7 @@ class DocumentLibraryController extends Controller
         ApplicantRequirement $requirement,
         DocumentReviewService $review,
     ): JsonResponse {
-        $this->authorize('viewAny', Applicant::class);
+        $this->authorize('viewDocuments');
 
         if (! $requirement->file_path) {
             return ApiResponse::error('That requirement has no uploaded file.', 404);

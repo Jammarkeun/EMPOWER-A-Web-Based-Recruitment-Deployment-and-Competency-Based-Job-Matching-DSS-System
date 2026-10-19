@@ -43,9 +43,20 @@ api.interceptors.request.use((config) => {
  */
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     const status = error.response?.status
-    const payload = error.response?.data ?? {}
+    let payload = error.response?.data ?? {}
+
+    // A download (responseType "blob") receives its error as a Blob too, so
+    // the server's message - "Choose a report format", say - was lost behind a
+    // generic one. Read it back when it is the usual JSON envelope.
+    if (typeof Blob !== 'undefined' && payload instanceof Blob) {
+      try {
+        payload = payload.type?.includes('json') ? JSON.parse(await payload.text()) : {}
+      } catch {
+        payload = {}
+      }
+    }
 
     // An expired or revoked token should return the user to the login screen
     // rather than leaving them on a page that silently fails to load.
@@ -56,6 +67,12 @@ api.interceptors.response.use(
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'
       }
+    }
+
+    // Still on an office-issued password: the server answers nothing else
+    // until it is replaced, so go to the one page that can do it.
+    if (status === 403 && payload.code === 'password_change_required' && !window.location.pathname.startsWith('/change-password')) {
+      window.location.href = '/change-password'
     }
 
     return Promise.reject({
@@ -134,6 +151,11 @@ export async function put(url, body) {
 
 export async function patch(url, body) {
   const { data } = await api.patch(url, body)
+  return data
+}
+
+export async function del(url) {
+  const { data } = await api.delete(url)
   return data
 }
 

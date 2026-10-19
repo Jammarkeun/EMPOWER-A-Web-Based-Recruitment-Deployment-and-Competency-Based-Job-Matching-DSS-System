@@ -32,6 +32,8 @@ export default defineConfig({
     // including the shape of the API, to anyone opening devtools on the
     // deployed site.
     sourcemap: false,
-    chunkSizeWarningLimit: 900,
+    // Vite's default limit again. It was raised to 900 kB to quiet the single
+    // 1 MB bundle; pages now load on demand (App.jsx), so a chunk past 500 kB
+    // is worth hearing about.
   },
 })

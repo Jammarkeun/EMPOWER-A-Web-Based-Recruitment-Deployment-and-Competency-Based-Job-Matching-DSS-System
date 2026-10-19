@@ -108,8 +108,8 @@ precisely the failure the paper folders allowed.
 | `primary_requirements_complete` | HR / admin, or automatically | Every required primary document verified | Folder recalculated to Folder 2 | "Your primary documents are complete" | Folder 2 — pending medicals |
 | `pending_final_requirements` | HR / admin, or automatically | Applicant is called in to complete the laboratories | Same | "Please complete your medical examination" | Awaiting medicals |
 | `ready_for_deployment` | HR / admin, or automatically | Primary **and** final requirements verified | Folder recalculated to Folder 1 | "All your requirements are verified" | Folder 1 — deployable |
-| `training_scheduled` | HR / admin (`training.create`) | Applicant enrolled in a training session | Training record, schedule, enrolment | "You have been scheduled for training" | The training roster |
-| `training_completed` | HR / admin (`training.update`) | Attendance and completion recorded | Enrolment outcome | "Awaiting endorsement to a client company" | Ready to endorse |
+| `training_scheduled` | The training workflow only, on an HR / admin action (`training.update`) | Applicant enrolled in a session on its roster; undone if they are removed from it or the session is cancelled | Enrolment, by whom and when | "You have been scheduled for training" | The training roster; the applicant record's Training card |
+| `training_completed` | The training workflow only, on an HR / admin action (`training.update`) | Completion recorded for an applicant marked present, on or after the session date | Attendance and completion, each with the officer and time | "Awaiting endorsement to a client company" | Ready to endorse |
 | `client_evaluation` | HR / admin (`matching.shortlist`) | Applicant endorsed to the client | Shortlist entry against the request | "Your profile has been endorsed" — **and the accept/decline question appears** | Who is with which client |
 | *placement response* | **The applicant, and only them** | Applicant answers on their own portal | `placement_response`, `placement_responded_at`, `placement_response_note`; audit entry; HR notified | Their own answer, shown back | "Accepted" or "Declined" on the applicant record |
 | `approved` | HR / admin | Client company confirms acceptance | History row | "The client company has approved your application" | Cleared to deploy |
@@ -138,14 +138,19 @@ Two rules are enforced by the system rather than by memory:
    request can still take a worker, the client company is active, the applicant
    is in Folder 1, they are not already actively deployed, **and they have not
    declined the placement**.
-3. **Employment and separation statuses belong to their workflows.**
-   `deployed` and `active` are reached only by recording a deployment, and
+3. **Training, employment and separation statuses belong to their workflows.**
+   `training_scheduled` and `training_completed` are reached only through a
+   session's roster, `deployed` and `active` only by recording a deployment, and
    `resigned` and `terminated` only by completing a resignation or finalising a
    termination (`config/empower.php → workflow_owned_statuses`). The generic
    status endpoint refuses them with HTTP 409, and the applicant screen does not
-   offer them, so nobody can be "terminated" by a button that changes a word
-   with no termination record, review, or confirmation behind it.
-4. **Ending employment is confirmed twice.** The screen asks for a confirmation
+   offer them, so nobody can be "terminated" — or "trained" — by a button that
+   changes a word with no record behind it.
+4. **Endorsement requires a recorded completion.** Moving an applicant to
+   `client_evaluation` is refused unless a completion is recorded in a session
+   that was not cancelled (`require_training_before_deployment`, on by default).
+   The applicant screen says so before the click rather than after.
+5. **Ending employment is confirmed twice.** The screen asks for a confirmation
    that names the person and what will happen (for a termination, by typing the
    employee number), and the API separately refuses to complete a resignation or
    finalise a termination unless the request carries `confirm: true`.
@@ -193,6 +198,12 @@ any of them.
 | Request already filled | `canAcceptDeployment()` refuses another deployment against it |
 | Client company deactivated | Its positions leave the application form and it can raise no new requests |
 | Applicant already deployed | A second active deployment is refused |
+| Status reached with every document verified, then a document lapses or is rejected | The status stays; the applicant list and record show "Documents lapsed" beside it, and deployment stays refused until the folder is back to Folder 1. Whether the status should fall back is still CDE's call (audit Q4) |
+| Training session cancelled | Refused if anybody's completion is recorded on it. Otherwise everybody scheduled only for it returns to "ready for deployment"; the roster is kept as a record and the session cannot be reopened (schedule a new one — our rule) |
+| Completion recorded in error | Withdrawn from the roster with a confirmation; the applicant returns to "training scheduled", unless they were already endorsed on the strength of it, in which case the withdrawal is refused |
+| Session details wrong | Corrected on the session page and audited field by field. Its date cannot move into the future once attendance is recorded, and it cannot be marked under way or completed before its date |
+| A worker moves to another client | Not a reassignment: recorded as a new deployment against that client's request, so headcounts and the client's coordinator stay right (decided 2026-10-19) |
+| Forgotten password | The office issues a temporary password that must be replaced at the next sign-in; an emailed reset link is offered only once a real mailer is configured |
 | Termination filed in error, or the grounds do not hold | Withdrawn with a required reason; the employee stays active and the termination stays on file |
 | A second resignation or termination filed while one is open | Refused until the open one is completed, finalised, or withdrawn |
 | An employee tries a staff separation route on themselves | Refused (403). Their only separation action is filing a resignation through the portal |
@@ -212,8 +223,13 @@ confirmed policy, and each is a question for the next client meeting:
    agency hands to a client would be worse than omitting it.
 2. **Where training sits.** The recording places training after the applicant is
    called and has completed their documents, but at the client's site with the
-   client's coordinator. The system models it as an agency-scheduled session; how
-   attendance is confirmed when the client hosts it is not settled.
+   client's coordinator. The system models it as a session the agency schedules
+   and records; training the client hosts is recorded as a session whose location
+   is the client's site. How attendance is confirmed when the client hosts it is
+   still not settled — the officer who marks attendance is named on the roster,
+   but nothing records *how* they knew. Training completed outside EMPOWER, with
+   no session on any roster, is **not** accepted (decided 2026-10-19, audit Q7):
+   the endorsement gate rests only on a recorded completion.
 3. **The three post-training assessments.** The client's assessment, the agency's,
    and the applicant's are described as separate. Only the applicant's is
    recorded distinctly; the other two are collapsed into the move to `approved`.
@@ -232,7 +248,15 @@ confirmed policy, and each is a question for the next client meeting:
    are held roughly three months "depending on the situation". All three are now
    configurable policies that prompt a review rather than delete anything, since
    the agency's own wording makes clear these are operating estimates and not
-   fixed rules.
+   fixed rules. The *Retention Review* screen lists what is due: an unhired
+   applicant whose last recorded activity (application, status change, or a
+   document added or reviewed) is older than the configured months, and a
+   resigned, terminated or archived record whose legal documents have been kept
+   longer than the configured years since it closed. Where each clock starts is
+   **our reading**, stated on every row. A reviewer keeps the record on file
+   until a date with a reason, or archives an unhired applicant through the
+   ordinary status change. Nothing is deleted, and no disposal of documents is
+   offered — that would need a procedure CDE has not given.
 7. **The requisition's own criteria.** The example criteria — height, lifting
    capacity, hours standing — map onto the criteria catalogue, but "kayang
    bumuhat ng 25 kilos to 50 kilos" is currently free-text under physical
@@ -260,9 +284,14 @@ confirmed policy, and each is a question for the next client meeting:
 | Work schedule | HR / admin (`attendance.manage`) | Work days, shift start and end (a shift ending at or before it starts runs past midnight), effective date. A change closes the previous schedule the day before, so earlier days keep the schedule that applied to them | Employee record → Attendance (DTR) |
 | Daily time record | HR / admin (`attendance.manage`), copied from the client's DTR | Time-in, time-out, remarks per day; only days within the employment period and not in the future | Same |
 | Comparison | Computed on demand, never stored | Per day: on schedule, late (minutes), left early (minutes), past scheduled end (minutes), absent, missing time-in/out, worked on a rest day, no schedule in force | Employee record; Attendance (DTR) page for the whole workforce, filterable to those needing attention |
+| Reassignment | HR / admin (`deployment.reassign`) | A move to another department, position or supervisor **at the same client** (decided 2026-10-19, audit Q8), with the effective date and a required reason. The previous placement stays as a history row; the audit entry records each field before and after. The date falls between the placement's start (or its last move) and today — a move is recorded once it has happened (our rule). Refused into an inactive department, for a placement that has ended, or when nothing would change | Employee record → Assignment, with every move under its placement |
 
 The comparison computes no pay and applies no deduction: payroll remains out of
 scope.
+
+A worker moving to **another client** is not reassigned: the move is recorded as
+a new deployment against that client's own request, so each request's headcount
+and each client's coordinator see the right people.
 
 ---
 
@@ -284,6 +313,21 @@ login, and the client still has no access to the system.
 | Deactivation | Blocks sign-in and revokes access at once; their reports remain on file. |
 | Notifications | HR hears when a report is submitted; the coordinator hears what HR decided, and when a worker at their client reaches the review threshold. Coordinators receive no agency-wide notices. |
 | Audit | Every entry records the actor's role and, for a coordinator, the client they acted for - including sign-in and viewing an employee record. |
+
+---
+
+## 8. Notifications for applicants and employees
+
+A notification is addressed to the record its event concerns — a status change,
+a reviewed document or a deployment to the applicant record, a password change
+to the login. A portal login reads everything addressed to the person's own
+records: the login, their applicant record and, once deployed, their employee
+record, whichever of `applicant_id` and `employee_id` links the login to them.
+Whether a notification is sent at all is decided by that same login's
+preferences (`User::notifiableRecords()` and its reverse,
+`User::portalAccountFor()`), so an employee who mutes a category no longer
+receives it through the applicant record. Nothing is sent to anybody else's
+inbox, and the unread badge counts exactly the rows that inbox reads.
 
 ---
 

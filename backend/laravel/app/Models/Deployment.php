@@ -12,6 +12,22 @@ class Deployment extends Model
 {
     use HasFactory;
 
+    /**
+     * What the placement history needs to be read in names rather than ids.
+     * Prefix with the path to the deployment when loading it from elsewhere
+     * (an employee's deployments, say).
+     */
+    /** As the deployments migration documents them. */
+    public const STATUSES = ['active', 'completed', 'transferred', 'ended'];
+
+    public const HISTORY_RELATIONS = [
+        'history.fromDepartment',
+        'history.toDepartment',
+        'history.fromCompany',
+        'history.toCompany',
+        'history.changedBy',
+    ];
+
     protected $fillable = [
         'deployment_code',
         'employee_id',
@@ -33,6 +49,22 @@ class Deployment extends Model
             'deployment_date' => 'date:Y-m-d',
             'end_date' => 'date:Y-m-d',
         ];
+    }
+
+    /**
+     * Keeps the database's one-active-deployment guard in step with the
+     * status (audit S-04): the employee's id while the deployment is active,
+     * empty once it is not. A missing status counts as active, as the column
+     * default does. Bulk updates that bypass the model must set it themselves;
+     * see SeparationService.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (Deployment $deployment) {
+            $deployment->active_employee_id = ($deployment->deployment_status ?? 'active') === 'active'
+                ? $deployment->employee_id
+                : null;
+        });
     }
 
     public function employee(): BelongsTo

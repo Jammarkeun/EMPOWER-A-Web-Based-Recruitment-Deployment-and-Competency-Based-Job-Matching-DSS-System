@@ -11,24 +11,13 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field } from '@/components/ui/form'
 import { EmptyState, LoadingState } from '@/components/ui/states'
-import { cn } from '@/lib/utils'
+import { cn, humanise } from '@/lib/utils'
 
-/** Options for the filters a report can declare. */
-const FILTER_OPTIONS = {
-  current_status: [
-    'applied', 'initial_screening', 'incomplete_requirements', 'primary_requirements_complete',
-    'pending_final_requirements', 'ready_for_deployment', 'training_scheduled', 'training_completed',
-    'client_evaluation', 'approved', 'deployed', 'active', 'resigned', 'terminated', 'archived',
-  ],
-  employment_status: ['active', 'resigned', 'terminated', 'archived'],
-  folder_category: ['folder_1', 'folder_2', 'folder_3'],
-  request_status: ['open', 'in_progress', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'],
-  deployment_status: ['active', 'completed', 'transferred', 'ended'],
-  violation_type: ['awol', 'absences', 'suspension', 'late', 'misconduct', 'policy_violation'],
-  source_channel: ['walk_in', 'messenger', 'email'],
-  status: ['active', 'inactive', 'open', 'under_review', 'resolved', 'escalated', 'scheduled', 'completed', 'cancelled', 'filed', 'finalized', 'for_review'],
-}
-
+/*
+ * The values each choice filter accepts come with the report catalogue
+ * (GET /reports, `options`), per report, from the vocabulary that owns them.
+ * They used to be listed here, with one "status" list shared by every report.
+ */
 const FILTER_LABELS = {
   date_from: 'From date',
   date_to: 'To date',
@@ -190,7 +179,11 @@ export default function Reports() {
           }
         }
 
-        throw new Error('The report is taking longer than expected. Check Reports again shortly.')
+        // Said plainly: nothing downloads by itself later, so the officer has
+        // to come back to it.
+        throw new Error(
+          'The report is still being prepared on the server and will not download by itself. Export it again in a few minutes, or narrow the filters.'
+        )
       }
 
       const disposition = response.headers['content-disposition'] ?? ''
@@ -262,6 +255,7 @@ export default function Reports() {
                     key={key}
                     name={key}
                     value={filters[key] ?? ''}
+                    options={selected.options?.[key] ?? []}
                     clients={clients}
                     departments={departments}
                     positions={positions}
@@ -392,7 +386,7 @@ function ReportPreview({ preview }) {
   )
 }
 
-function FilterInput({ name, value, onChange, clients, departments, positions, companySelected }) {
+function FilterInput({ name, value, options = [], onChange, clients, departments, positions, companySelected }) {
   const label = FILTER_LABELS[name] ?? name
 
   if (name === 'date_from' || name === 'date_to') {
@@ -479,14 +473,12 @@ function FilterInput({ name, value, onChange, clients, departments, positions, c
     )
   }
 
-  const options = FILTER_OPTIONS[name] ?? []
-
   return (
     <Field label={label} htmlFor={name}>
       <Select id={name} value={value} onChange={(e) => onChange(e.target.value)} placeholder="All">
         {options.map((option) => (
           <option key={option} value={option}>
-            {option.split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')}
+            {humanise(option)}
           </option>
         ))}
       </Select>

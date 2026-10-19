@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Resources\EmployeeResource;
 use App\Http\Resources\ViolationResource;
 use App\Http\Responses\ApiResponse;
+use App\Models\Deployment;
 use App\Models\Employee;
 use App\Models\EmployeeViolation;
 use App\Models\Resignation;
@@ -72,7 +73,7 @@ class EmployeeController extends Controller
             'currentDepartment',
             'deployments.company',
             'deployments.department',
-            'deployments.history',
+            ...array_map(fn (string $relation) => "deployments.{$relation}", Deployment::HISTORY_RELATIONS),
             'violations.issuer',
             'violations.reporter',
             'violations.report',
@@ -174,7 +175,7 @@ class EmployeeController extends Controller
      */
     public function violations(Employee $employee): JsonResponse
     {
-        $this->authorize('view', $employee);
+        $this->authorize('viewViolations', $employee);
 
         $violations = $employee->violations()->with(['issuer', 'reporter', 'report'])->get();
         $active = $violations->filter->isActive();
@@ -212,7 +213,7 @@ class EmployeeController extends Controller
             'violation_type' => ['required', Rule::in(EmployeeViolation::TYPES)],
             'description' => ['required', 'string', 'max:2000'],
             'penalty' => ['nullable', 'string', 'max:190'],
-            'status' => ['nullable', Rule::in(['open', 'under_review', 'resolved', 'escalated'])],
+            'status' => ['nullable', Rule::in(EmployeeViolation::STATUSES)],
             'remarks' => ['nullable', 'string'],
             'evidence' => [
                 'nullable', 'file',
@@ -260,15 +261,15 @@ class EmployeeController extends Controller
 
     public function updateViolation(Request $request, Employee $employee, EmployeeViolation $violation): JsonResponse
     {
-        $this->authorize('recordViolation', $employee);
+        $this->authorize('updateViolation', $employee);
 
         abort_unless($violation->employee_id === $employee->id, 404);
 
         $data = $request->validate([
-            'violation_type' => ['sometimes', Rule::in(['awol', 'absences', 'suspension', 'late', 'misconduct', 'policy_violation'])],
+            'violation_type' => ['sometimes', Rule::in(EmployeeViolation::TYPES)],
             'description' => ['sometimes', 'string', 'max:2000'],
             'penalty' => ['nullable', 'string', 'max:190'],
-            'status' => ['sometimes', Rule::in(['open', 'under_review', 'resolved', 'escalated'])],
+            'status' => ['sometimes', Rule::in(EmployeeViolation::STATUSES)],
             'resolution_date' => ['nullable', 'date'],
             'remarks' => ['nullable', 'string'],
         ]);
@@ -283,7 +284,7 @@ class EmployeeController extends Controller
 
     public function violationEvidence(Employee $employee, EmployeeViolation $violation): JsonResponse
     {
-        $this->authorize('view', $employee);
+        $this->authorize('viewViolations', $employee);
 
         abort_unless($violation->employee_id === $employee->id, 404);
 

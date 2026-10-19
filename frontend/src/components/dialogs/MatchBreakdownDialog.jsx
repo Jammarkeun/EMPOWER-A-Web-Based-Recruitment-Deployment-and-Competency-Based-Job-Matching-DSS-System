@@ -57,7 +57,7 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
 
         <div className="space-y-5 py-2">
           <div className="grid gap-4 sm:grid-cols-3">
-            <div className="space-y-1 rounded-xl border bg-card p-4">
+            <div className="space-y-1 rounded-row bg-inset p-4">
               <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Score</span>
               <div className="flex items-baseline gap-1.5">
                 <span className="text-3xl font-bold tabular-nums text-primary">{percentage_score}%</span>
@@ -69,7 +69,7 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
               </div>
             </div>
 
-            <div className="space-y-1 rounded-xl border bg-card p-4">
+            <div className="space-y-1 rounded-row bg-inset p-4">
               <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Mandatory requirements
               </span>
@@ -92,7 +92,7 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
               </div>
             </div>
 
-            <div className="space-y-1 rounded-xl border bg-card p-4">
+            <div className="space-y-1 rounded-row bg-inset p-4">
               <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Recommendation
               </span>
@@ -121,7 +121,7 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
               </h4>
               <ul className="space-y-2">
                 {gates.map((item) => (
-                  <li key={item.criteria} className="rounded-lg border bg-card p-3 text-xs">
+                  <li key={item.criteria} className="rounded-row bg-inset p-3 text-xs">
                     <div className="flex items-center gap-2">
                       {item.passed ? (
                         <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
@@ -150,7 +150,7 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
                   const pct = item.weight > 0 ? Math.min(100, Math.round((item.score / item.weight) * 100)) : 0
 
                   return (
-                    <div key={item.criteria} className="space-y-2 rounded-lg border bg-card p-3 text-xs">
+                    <div key={item.criteria} className="space-y-2 rounded-row bg-inset p-3 text-xs">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           {item.score > 0 ? (

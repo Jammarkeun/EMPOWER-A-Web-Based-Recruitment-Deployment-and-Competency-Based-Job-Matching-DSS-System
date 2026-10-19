@@ -1,11 +1,12 @@
 import * as React from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
-import { Loader2, FileWarning, Truck, Clock, AlertTriangle, ArrowLeft } from 'lucide-react'
+import { Loader2, FileWarning, Truck, Clock, AlertTriangle, ArrowLeft, ArrowRightLeft } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
 import { post, upload } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
+import PersonAvatar from '@/components/PersonAvatar'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -27,6 +28,7 @@ import { cn, formatDate, formatDateTime, humanise, todayISO } from '@/lib/utils'
 import SeparationPanel from '@/components/SeparationPanel'
 import AttendancePanel from '@/components/AttendancePanel'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import ReassignDialog from '@/components/dialogs/ReassignDialog'
 
 const TABS = ['assignment', 'attendance', 'violations', 'history']
 
@@ -37,6 +39,7 @@ export default function EmployeeDetail() {
 
   const [violationPrefill, setViolationPrefill] = React.useState(null)
   const [separationOpen, setSeparationOpen] = React.useState(false)
+  const [reassignOpen, setReassignOpen] = React.useState(false)
 
   // The open tab lives in the URL, so the attendance summary can link
   // straight to one employee's DTR and the back button returns to it.
@@ -60,11 +63,13 @@ export default function EmployeeDetail() {
     resignation: Boolean(resignation?.is_open),
     termination: Boolean(termination?.is_open),
   }
+  const activeDeployment = employee.deployments?.find((d) => d.deployment_status === 'active')
 
   return (
     <>
       <PageHeader
         breadcrumbs={[{ label: 'Employees', to: '/employees' }, { label: employee.full_name }]}
+        leading={<PersonAvatar src={employee.photo_url} name={employee.full_name} size="lg" />}
         title={employee.full_name}
         description={
           <>
@@ -76,6 +81,12 @@ export default function EmployeeDetail() {
         actions={
           employee.employment_status === 'active' && (
             <>
+              {can('deployment.reassign') && activeDeployment && (
+                <Button variant="outline" onClick={() => setReassignOpen(true)}>
+                  <ArrowRightLeft className="h-4 w-4" />
+                  Reassign
+                </Button>
+              )}
               {can('violations.create') && (
                 <Button variant="outline" onClick={() => setViolationPrefill({})}>
                   <FileWarning className="h-4 w-4" />
@@ -179,6 +190,26 @@ export default function EmployeeDetail() {
                           {deployment.end_date && ` to ${formatDate(deployment.end_date)}`}
                           <span className="ml-1 font-mono">· {deployment.deployment_code}</span>
                         </p>
+                        {deployment.history?.length > 0 && (
+                          <ol className="mt-2 space-y-1.5 border-t pt-2" aria-label="Moves within this placement">
+                            {deployment.history.map((move) => (
+                              <li key={move.id} className="text-xs">
+                                <p>
+                                  <span className="font-medium">{formatDate(move.effective_date)}</span>
+                                  {' · '}
+                                  {move.from_department ?? '—'}
+                                  {move.from_position_title ? ` (${move.from_position_title})` : ''} →{' '}
+                                  {move.to_department ?? '—'}
+                                  {move.to_position_title ? ` (${move.to_position_title})` : ''}
+                                </p>
+                                {move.reason && <p className="text-muted-foreground">{move.reason}</p>}
+                                {move.changed_by && (
+                                  <p className="text-muted-foreground">Recorded by {move.changed_by}</p>
+                                )}
+                              </li>
+                            ))}
+                          </ol>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -304,6 +335,15 @@ export default function EmployeeDetail() {
         openCases={openCases}
         onSaved={refetch}
       />
+      {activeDeployment && (
+        <ReassignDialog
+          open={reassignOpen}
+          onOpenChange={setReassignOpen}
+          employeeName={employee.full_name}
+          deployment={activeDeployment}
+          onSaved={refetch}
+        />
+      )}
     </>
   )
 }

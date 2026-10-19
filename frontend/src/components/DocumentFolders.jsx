@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import { formatDate, cn } from '@/lib/utils'
+import PersonAvatar from '@/components/PersonAvatar'
 
 /**
  * Uploaded documents, grouped by what kind of document they are.
@@ -193,8 +194,9 @@ function FolderContents({ folder, clientCompanyId, onBack }) {
                         they have is listed together. */}
                     <Link
                       to={`/documents?applicant=${row.applicant.id}`}
-                      className="text-primary hover:underline"
+                      className="inline-flex items-center gap-1.5 align-middle text-primary hover:underline"
                     >
+                      <PersonAvatar src={row.applicant.photo_url} name={row.applicant.name} size="xs" className="h-5 w-5 text-[8px]" />
                       {row.applicant.name}
                     </Link>
                     {row.submitted_at && <> · uploaded {formatDate(row.submitted_at)}</>}

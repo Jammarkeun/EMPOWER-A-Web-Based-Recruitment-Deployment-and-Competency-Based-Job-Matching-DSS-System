@@ -50,7 +50,13 @@ return [
     |
     */
 
-    'expiration' => null,
+    /*
+     * Audit R-08. Read from SANCTUM_EXPIRATION so the session policy can be
+     * set per environment without a code change. Unset or empty keeps the
+     * current behaviour (tokens never expire); the audit's proposal of 720
+     * minutes (12 hours) is awaiting approval and is NOT applied here.
+     */
+    'expiration' => filled(env('SANCTUM_EXPIRATION')) ? (int) env('SANCTUM_EXPIRATION') : null,
 
     /*
     |--------------------------------------------------------------------------

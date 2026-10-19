@@ -14,8 +14,8 @@ class DeploymentPolicy
 
     public function view(User $user, Deployment $deployment): bool
     {
-        return $user->can('deployment.view')
-            || $user->employee_id === $deployment->employee_id;
+        // Staff only; an employee sees their placements through the portal.
+        return $user->can('deployment.view');
     }
 
     public function create(User $user): bool

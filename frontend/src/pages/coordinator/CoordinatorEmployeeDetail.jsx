@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { Flag, Truck, CalendarClock, ShieldAlert } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { PageHeader } from '@/components/PageHeader'
+import PersonAvatar from '@/components/PersonAvatar'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
@@ -34,6 +35,7 @@ export default function CoordinatorEmployeeDetail() {
     <div className="space-y-5">
       <PageHeader
         breadcrumbs={[{ label: 'Employees', to: '/coordinator/employees' }, { label: employee.full_name }]}
+        leading={<PersonAvatar src={employee.photo_url} name={employee.full_name} size="lg" />}
         title={employee.full_name}
         description={
           <>

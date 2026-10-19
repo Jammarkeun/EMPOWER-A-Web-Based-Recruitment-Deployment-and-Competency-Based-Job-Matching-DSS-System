@@ -1,11 +1,21 @@
 # EMPOWER REST API Contract
 
+> **Scope of this document.** It describes the endpoints in prose. The
+> authoritative list of every route, with its middleware, is
+> `php artisan route:list --path=api` in `backend/laravel`. The sections marked
+> *(updated 2026-10-19)* were checked against the code on that date.
+
 ## API Standards
 - Base URL: /api/v1
 - Auth: Laravel Sanctum bearer token for protected endpoints.
 - Format: application/json, UTF-8.
-- Timezone: Asia/Manila, stored in UTC.
+- Timezone: Asia/Manila. Timestamps are stored as Manila wall time (since the
+  12 October 2026 migration) and returned as ISO 8601 with the +08:00 offset.
 - Pagination: page, per_page, sort_by, sort_dir.
+- An account still on an office-issued password (`must_change_password`) is
+  answered **403** with `"code": "password_change_required"` by every
+  authenticated endpoint except `GET /auth/me`, `POST /auth/logout` and
+  `POST /auth/change-password`.
 - Standard Response Envelope:
 
 ```json
@@ -74,13 +84,32 @@
 }
 ```
 
+The `user` object also carries `permissions` and `must_change_password`. When
+that is `true` the account must call `POST /auth/change-password` before
+anything else.
+
 ### POST /auth/logout
 - Public: No.
 - Response 200: Token revoked.
 
 ### GET /auth/me
 - Public: No.
-- Response 200: Current user profile, roles, permissions.
+- Response 200: Current user profile, roles, permissions, `must_change_password`.
+
+### POST /auth/change-password *(updated 2026-10-19)*
+- Public: No. Allowed while `must_change_password` is true.
+- Request: `current_password`, `password`, `password_confirmation`.
+- Rules: the password policy (12+ characters, not a common password) and a new
+  password different from the current one. Clears `must_change_password` and
+  ends every other session.
+
+### Password recovery *(updated 2026-10-19)*
+
+| Endpoint | Public | Behaviour |
+| --- | --- | --- |
+| `GET /auth/password-recovery` | Yes | `{ email_reset_available, link_expires_minutes, office: { name, address, contact } }`. Says nothing about any account. |
+| `POST /auth/forgot-password` | Yes, 5/hour per address | `{ email }`. **503** `code: email_reset_unavailable` unless `PASSWORD_RESET_EMAIL=true` and a real mailer is configured. Otherwise always **200** with the same message, whether or not an account exists; a link is sent after the response, at most three times an hour per address, never to a deactivated account. |
+| `POST /auth/reset-password` | Yes, 10/hour per address | `{ email, token, password, password_confirmation }`. **200** on success: password set, `must_change_password` cleared, every session ended, token deleted (single use). **422** for an invalid, used, expired (60 min) or mismatched link, or a password the policy refuses. |
 
 ## Applicant Self-Registration
 
@@ -210,22 +239,32 @@ creates the full document checklist in `missing` state; assigns the `portal`
 role only; and notifies every active admin and HR user that someone will be
 visiting.
 
-## Access Control
+## Access Control *(updated 2026-10-19)*
 
-### GET /roles
-### POST /roles
-### PUT /roles/{id}
-### GET /permissions
-### PUT /roles/{id}/permissions
+Roles and their permissions are seeded (`RolesAndPermissionsSeeder`) and read
+only; there are no endpoints that create roles or change their permissions.
+
 ### GET /users
+### GET /users/roles
 ### POST /users
-### PUT /users/{id}
-### PUT /users/{id}/status
+- Staff and coordinator accounts. The password the administrator sets is
+  temporary: the account starts with `must_change_password = true`.
+### GET /users/{id}
+### PATCH /users/{id}
+### PATCH /users/{id}/status
+### POST /users/{id}/reset-password
+- No request body. Generates a temporary password, ends every session, sets
+  `must_change_password`, and returns `{ temporary_password, notice }` once.
+  The administrator never chooses the password.
+### POST /users/portal-access
+- `{ applicant_id | employee_id, email }`. Returns the temporary password once;
+  the account starts with `must_change_password = true`.
+### GET /users/{id}/coordinator-assignments
+### POST /users/{id}/coordinator-assignment
 
 Validation highlights:
-- role_key unique.
 - email unique.
-- admin role assignment requires admin privilege.
+- a portal account cannot be given a staff role.
 
 ## Client Company and Departments
 
@@ -412,11 +451,29 @@ Business rules:
 
 ## Applicant Management
 
-### GET /applicants
-Filters:
-- source_channel, current_status, folder_category, readiness, search.
+### GET /applicants *(updated 2026-10-19)*
+Filters, all applied together on the server with the paging:
+- `search` — word by word: every word must appear in the first, middle or last
+  name, applicant code, contact number, email or position sought, so
+  "Juan Cruz" finds Juan Dela Cruz.
+- `current_status` — one of the statuses `GET /applicant-statuses` lists (422
+  otherwise).
+- `folder_category`, `source_channel` (`walk_in`, `messenger`, `email`,
+  `online`), `date_from`, `date_to`.
+- `preferred_position_id`; `client_company_id` — applicants who applied for any
+  of that client's positions.
 - `awaiting_identity_check=1` returns only applicants who registered online and
   have not yet been seen at the office. This is the queue the counter works from.
+- `documents_lapsed=1` — status reached with every document verified, folder no
+  longer Folder 1.
+
+Each row carries `status_label`, `stage` and `documents_lapsed`.
+
+### GET /applicant-statuses *(new 2026-10-19)*
+- Needs `applicants.view`.
+- `{ statuses: [{ value, label, stage, closed, past_document_gate, workflow }], stages: [{ key, label, statuses }], deployable: [...] }`
+  in lifecycle order. `deployable` is where a deployment can be recorded from
+  today (only `approved` when Settings require the client's approval).
 
 ### POST /applicants
 ### GET /applicants/{id}
@@ -612,12 +669,33 @@ Rules:
 - Evaluation does not create deployment.
 - HR must explicitly shortlist and confirm.
 
-## Training Management
+## Training Management *(updated 2026-10-19)*
 
 ### GET /trainings
+- Filters: `status` (`scheduled`, `ongoing`, `completed`, `cancelled`),
+  `date_from`, `date_to`; paginated, with enrolled / attended / completed counts.
 ### POST /trainings
+### GET /trainings/candidates
+- Applicants at a stage where training applies, each with any completed or
+  scheduled session. `awaiting_only=1` keeps only those without a completion.
 ### GET /trainings/{id}
+- The session with its roster: attendance and completion, each with who
+  recorded it and when.
+### PATCH /trainings/{id}
+- Details (`training_title`, `training_date`, `location`, `trainer_name`,
+  `remarks`) and `status`. Only what is sent changes; corrections are audited
+  field by field. Refused (409) when:
+  - the status move is not allowed — a cancelled session cannot be reopened, a
+    completed one can go back to `scheduled`/`ongoing` to add a late attendee;
+  - `ongoing` or `completed` is asked for before the session date;
+  - the date would move into the future once attendance or a completion is
+    recorded;
+  - cancelling a session with a completion recorded on it.
+- Response: the session as `GET /trainings/{id}` returns it.
 ### POST /trainings/{id}/enrollments
+- `{ applicant_ids: [...] }`. Each is enrolled or skipped with the reason
+  (already on the roster, not at a stage where training applies). Enrolling
+  moves the applicant to `training_scheduled`.
 ### PATCH /trainings/{id}/enrollments/{enrollmentId}
 
 Enrollment update payload:
@@ -632,6 +710,17 @@ Enrollment update payload:
 
 Rules:
 - Applicant must be in eligible status before enrollment.
+- No attendance or completion before the session date, or for a cancelled
+  session. A completion needs attendance `present` and moves the applicant to
+  `training_completed`. Withdrawing a completion moves them back, unless they
+  have already been endorsed on the strength of it.
+### DELETE /trainings/{id}/enrollments/{enrollmentId}
+- Only while nothing is recorded for that enrolment.
+
+`training_scheduled` and `training_completed` cannot be set through
+`PATCH /applicants/{id}/status`; they follow the roster. `GET /applicants/{id}`
+returns a `training` block — `requirement_met` is the same check the
+endorsement gate makes.
 
 ## Deployment and Employee Conversion
 
@@ -674,7 +763,18 @@ Refused (400) unless **all** of the following hold:
 
 ### GET /deployments
 ### GET /deployments/{id}
-### POST /deployments/{id}/reassign
+### POST /deployments/{id}/reassign *(updated 2026-10-19)*
+- Needs `deployment.reassign`. Within the employee's **current client only**.
+- Request: `client_department_id` (required), `position_title`,
+  `supervisor_name`, `effective_date` (required), `remarks` (the reason,
+  required), optional `change_type` (`reassignment` by default), optional
+  `client_company_id` (must be the current client).
+- Refused: 422 for another client, a department of another client or an
+  inactive one, a date before the placement began or its last move, a future
+  date, or a change that changes nothing; 409 for a placement or employee that
+  is no longer active.
+- Response: the deployment with its `history`, each move in names
+  (`from_department`, `to_department`, positions, `reason`, `changed_by`).
 ### GET /employees
 ### GET /employees/{id}
 ### PATCH /employees/{id}
@@ -770,6 +870,13 @@ Rules:
 - Muting suppresses the alert only. Documents are still verified and placements
   still recorded; nothing in the recruitment process depends on a notification
   having been delivered.
+- *(updated 2026-10-19)* For a notification addressed to an applicant or
+  employee record, the preferences that apply are those of the portal login
+  linked to that person by either `applicant_id` or `employee_id`
+  (`User::portalAccountFor()`) — the same login whose inbox reads it
+  (`User::notifiableRecords()`). Employee logins linked only to the employee
+  record used to have their muted categories ignored for anything addressed to
+  the applicant record.
 
 ## Applicant and Employee Portal
 
@@ -855,20 +962,51 @@ Filters:
 - entity_type, archived_at_from, archived_at_to, search.
 
 ### GET /archives/{id}
-### GET /audit-logs
-Filters:
-- actor_user_id, action_type, module_key, date_from, date_to.
+### GET /audit-logs *(updated 2026-10-19)*
+- Administrator only (`audit.view`). Read-only: no endpoint edits or deletes an
+  entry.
+- Filters: `actor_user_id`, `actor_role`, `client_company_id`, `action_type`,
+  `module_key`, `record_type`, `record_id`, `date_from`, `date_to`.
+- Each entry: `actor { id, name }`, `actor_role`, `company_name`,
+  `record { type, id, label }` (for example "APP-2026-0007 · Juan Dela Cruz"),
+  `detail_level` and `changes`. `detail_level` is `changes` when the entry holds
+  a value before and after, `values` when it holds only what was written, and
+  `activity` when it holds no values at all. Each change row is
+  `{ field, label, kind, before, after }` with `kind` `changed`, `recorded` (only
+  the new value is known) or `previous` (only the old one). Credentials are
+  shown as `[redacted]` at any depth.
 
-## Reports
+### GET /audit-logs/facets *(new 2026-10-19)*
+- The action types, modules, record types, roles and acting users that occur in
+  the trail, for the filters.
 
-### GET /reports/dashboard-summary
+### GET /retention-reviews *(new 2026-10-19)*
+- Needs `archives.view` and `applicants.view`. Filter `category`
+  (`unhired_applicant`, `closed_record_documents`), paginated.
+- `{ policy, counts, undated_closed_records, rows }`. Each row names the record,
+  the relevant date and why it is listed, the review due date, any earlier
+  decision whose date has passed, and the `actions` offered (`retain`; `archive`
+  for unhired applicants, through `PATCH /applicants/{id}/status`). Computed from
+  the retention settings; nothing is archived or deleted by listing.
+
+### POST /retention-reviews *(new 2026-10-19)*
+- Needs `archives.create`. `{ category, applicant_id, note, retain_until }` keeps
+  a listed record on file until the date (after today, within ten years).
+  **409** when the record is not due in that category. Audited.
+
+## Reports *(updated 2026-10-19)*
+
+### GET /reports
+- The catalogue: each report's `filters`, and `options` — the values each choice
+  filter accepts for that report, from the vocabulary that owns them.
+### POST /reports/preview
 ### POST /reports/export
 Request:
 
 ```json
 {
-  "report_type": "deployment",
-  "export_format": "xlsx",
+  "report_type": "deployments",
+  "format": "xlsx",
   "filters": {
     "client_company_id": 1,
     "date_from": "2026-01-01",
@@ -877,12 +1015,21 @@ Request:
 }
 ```
 
-Response 202:
+- `format` (`pdf`, `xlsx`, `csv`) is required (422 without it). A choice filter
+  with a value outside the report's own `options` is refused (422).
+- The rows are counted first. Below `empower.reports.queue_threshold_rows`
+  (1000) the file is built once and returned directly; at or above it the export
+  is queued and built once, by the job.
+- Text that could run as a spreadsheet formula (`=`, `+`, `-`, `@` and the
+  control characters before them) is written as text: prefixed with `'` in CSV,
+  stored as an explicit string cell in XLSX. Numbers are untouched.
+
+Response 202 (queued):
 
 ```json
 {
   "success": true,
-  "message": "Export queued",
+  "message": "Large report queued for generation",
   "data": {
     "export_id": 87,
     "status": "queued"
@@ -890,8 +1037,11 @@ Response 202:
 }
 ```
 
-### GET /reports/export/{id}
-- Returns queued, processing, completed, failed and file URL when completed.
+### GET /reports/exports/{id}
+- Returns `queued`, `processing`, `completed` or `failed`, and a download URL
+  when completed. A job whose first attempt fails goes back to `queued` for its
+  retry, and to `failed` only after the last attempt.
+### GET /reports/exports/{id}/download
 
 ## Validation Matrix (Critical)
 1. Lifecycle transition validation map is mandatory for applicant and employee status updates.

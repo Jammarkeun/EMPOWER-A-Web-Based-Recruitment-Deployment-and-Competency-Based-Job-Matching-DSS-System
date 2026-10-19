@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Notifications\PasswordChanged;
 use App\Rules\PasswordPolicy;
 use App\Services\AuditService;
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -214,7 +215,19 @@ class AuthController extends Controller
             ]);
         }
 
-        $user->forceFill(['password' => Hash::make($data['password'])])->save();
+        // Re-using the current password would leave a temporary one the office
+        // knows in use, and the forced change would mean nothing.
+        if (Hash::check($data['password'], $user->password)) {
+            throw ValidationException::withMessages([
+                'password' => ['Choose a password different from your current one.'],
+            ]);
+        }
+
+        $user->forceFill([
+            'password' => Hash::make($data['password']),
+            // The account holder chose this one: the office no longer knows it.
+            'must_change_password' => false,
+        ])->save();
 
         // Every other session is invalidated, which is the point of a password
         // change if the old one may have been compromised.
@@ -250,7 +263,15 @@ class AuthController extends Controller
             'user_type' => $user->user_type,
             'applicant_id' => $user->applicant_id,
             'employee_id' => $user->employee_id,
+            // A portal account's own picture, from its own applicant record.
+            // Staff accounts are not applicants and have none.
+            'photo_url' => $user->applicant_id
+                ? app(ProfilePhotoService::class)->url($user->applicant?->profile_photo_path)
+                : null,
             'last_login_at' => $user->last_login_at?->toIso8601String(),
+            // Still on a password the office issued: the screen shows only the
+            // change-password page, and the API refuses everything else.
+            'must_change_password' => (bool) $user->must_change_password,
             'roles' => $user->getRoleNames(),
             'permissions' => $user->getAllPermissions()->pluck('name'),
             // The client a coordinator covers, so the screen can name it. The

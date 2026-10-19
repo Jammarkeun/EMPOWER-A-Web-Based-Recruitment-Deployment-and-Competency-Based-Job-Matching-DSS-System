@@ -42,6 +42,15 @@ class JobRequestPolicy
         return $user->can('matching.evaluate');
     }
 
+    /**
+     * The ranked candidates for a request - matching.view, on top of being
+     * allowed to see the request itself.
+     */
+    public function viewRankings(User $user, JobRequest $request): bool
+    {
+        return $user->can('job_requests.view') && $user->can('matching.view');
+    }
+
     public function shortlist(User $user, JobRequest $request): bool
     {
         return $user->can('matching.shortlist');

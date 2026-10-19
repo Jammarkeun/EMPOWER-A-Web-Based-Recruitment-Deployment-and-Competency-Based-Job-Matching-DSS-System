@@ -34,7 +34,7 @@ export default function PortalEmployment() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">My employment</h1>
+          <h1 className="text-[26px] font-normal leading-tight tracking-[-0.01em] sm:text-[32px]">My employment</h1>
           <p className="text-sm text-muted-foreground">
             Employee number <span className="font-mono">{data.employee_number}</span>
           </p>

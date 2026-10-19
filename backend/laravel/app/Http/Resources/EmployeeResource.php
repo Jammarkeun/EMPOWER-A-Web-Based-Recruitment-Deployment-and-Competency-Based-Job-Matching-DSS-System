@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -18,6 +19,12 @@ class EmployeeResource extends JsonResource
             'employee_number' => $this->employee_number,
             'biometric_number' => $this->biometric_number,
             'full_name' => $this->whenLoaded('applicant', fn () => $this->applicant->full_name),
+            // The picture the person uploaded as an applicant, which stays theirs
+            // after they are placed.
+            'photo_url' => $this->whenLoaded(
+                'applicant',
+                fn () => app(ProfilePhotoService::class)->url($this->applicant?->profile_photo_path)
+            ),
 
             'current_company' => $this->whenLoaded('currentCompany', fn () => $this->currentCompany?->company_name),
             'current_department' => $this->whenLoaded('currentDepartment', fn () => $this->currentDepartment?->department_name),

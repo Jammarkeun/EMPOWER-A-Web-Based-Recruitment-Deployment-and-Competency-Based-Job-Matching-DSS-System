@@ -4,10 +4,14 @@ namespace App\Exports;
 
 use Maatwebsite\Excel\Concerns\FromArray;
 use Maatwebsite\Excel\Concerns\ShouldAutoSize;
+use Maatwebsite\Excel\Concerns\WithCustomValueBinder;
 use Maatwebsite\Excel\Concerns\WithEvents;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithTitle;
+use Maatwebsite\Excel\DefaultValueBinder;
 use Maatwebsite\Excel\Events\AfterSheet;
+use PhpOffice\PhpSpreadsheet\Cell\Cell;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Border;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
@@ -19,10 +23,29 @@ use PhpOffice\PhpSpreadsheet\Style\Fill;
  * sort it, filter it, pivot it — so the sheet is built with a frozen header row
  * and auto-filters rather than as a static picture of the PDF.
  */
-class ReportExport implements FromArray, WithHeadings, WithTitle, ShouldAutoSize, WithEvents
+class ReportExport extends DefaultValueBinder implements FromArray, WithHeadings, WithTitle, ShouldAutoSize, WithEvents, WithCustomValueBinder
 {
     public function __construct(private readonly array $report)
     {
+    }
+
+    /**
+     * Text is written as text, never as a formula.
+     *
+     * The default binder turns any string beginning with "=" into a formula, so
+     * a name an applicant typed as "=HYPERLINK(...)" ran when HR opened the
+     * file. Text that could start a formula is stored as an explicit string
+     * cell; numbers and everything else are bound as before.
+     */
+    public function bindValue(Cell $cell, $value)
+    {
+        if (SpreadsheetSafety::isDangerous($value)) {
+            $cell->setValueExplicit($value, DataType::TYPE_STRING);
+
+            return true;
+        }
+
+        return parent::bindValue($cell, $value);
     }
 
     public function array(): array

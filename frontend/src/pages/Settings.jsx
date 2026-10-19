@@ -15,6 +15,7 @@ import {
   Sun,
   Moon,
   Monitor,
+  FolderSync,
 } from 'lucide-react'
 import { get, put, post, patch } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
@@ -39,7 +40,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { cn, humanise } from '@/lib/utils'
+import { cn, formatDateTime, humanise } from '@/lib/utils'
 
 /**
  * System configuration, organised by what each group governs rather than by
@@ -335,8 +336,8 @@ function DocumentsTab({ data, canEdit, onChanged }) {
 
   async function toggle(type, field, value) {
     try {
-      await patch(`/settings/requirement-types/${type.id}`, { [field]: value })
-      toast.success('Requirement updated')
+      const response = await patch(`/settings/requirement-types/${type.id}`, { [field]: value })
+      reportRecalculation(toast, response)
       onChanged()
     } catch (error) {
       toast.error('Could not update requirement', error.message)
@@ -357,6 +358,8 @@ function DocumentsTab({ data, canEdit, onChanged }) {
         title="Document handling"
         description="Applies to every uploaded requirement and evidence file."
       />
+
+      <FolderRecalculationPanel run={data.folder_recalculation} canEdit={canEdit} onChanged={onChanged} />
 
       <Card>
         <CardHeader className="flex-row items-start justify-between space-y-0">
@@ -433,6 +436,101 @@ function DocumentsTab({ data, canEdit, onChanged }) {
 
       <NewRequirementDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreated={onChanged} />
     </div>
+  )
+}
+
+/**
+ * Says what the folder recalculation after a requirement change did (R-17).
+ * A run that did not finish is a warning, never a quiet success.
+ */
+function reportRecalculation(toast, response) {
+  const run = response.data?.folder_recalculation
+
+  if (run && run.state !== 'completed') {
+    toast.warning('Saved, but folders were not all recalculated', response.message)
+  } else {
+    toast.success(response.message ?? 'Requirement updated')
+  }
+}
+
+/**
+ * The last folder recalculation (R-17). Changing which documents are required
+ * recalculates every applicant's folder; this says whether that finished, and
+ * lets an administrator run it again after a failure or interruption.
+ * Folders only - no applicant's stage in the pipeline is changed by it.
+ */
+function FolderRecalculationPanel({ run, canEdit, onChanged }) {
+  const toast = useToast()
+  const [running, setRunning] = React.useState(false)
+
+  async function recalculate() {
+    setRunning(true)
+    try {
+      const response = await post('/settings/folder-recalculations')
+      const result = response.data?.folder_recalculation
+      if (result?.state === 'completed') toast.success('Folders recalculated', response.message)
+      else toast.warning('Recalculation did not finish', response.message)
+      onChanged()
+    } catch (error) {
+      toast.error('Could not recalculate folders', error.message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const tone = { completed: 'success', failed: 'destructive', interrupted: 'warning', running: 'info' }[run?.state] ?? 'muted'
+  const triggers = {
+    requirement_change: 'after a requirement change',
+    document_expiry: 'by the daily expiry check',
+    manual: 'on request',
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-start justify-between space-y-0">
+        <div className="space-y-1">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <FolderSync className="h-4 w-4 text-muted-foreground" />
+            Folder recalculation
+          </CardTitle>
+          <CardDescription>
+            Applicant folders follow the requirements above. They are recalculated after every change here and after
+            documents expire. Only folders change; no applicant's stage does.
+          </CardDescription>
+        </div>
+        {canEdit && (
+          <Button size="sm" variant={run?.needs_retry ? 'default' : 'outline'} onClick={recalculate} disabled={running}>
+            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderSync className="h-4 w-4" />}
+            {run?.needs_retry ? 'Finish recalculation' : 'Recalculate folders'}
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {run ? (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={tone}>{humanise(run.state)}</Badge>
+              <span className="text-muted-foreground">
+                Last run {triggers[run.trigger] ?? humanise(run.trigger)}
+                {run.requested_by && ` by ${run.requested_by}`}
+                {run.started_at && ` · ${formatDateTime(run.started_at)}`}
+              </span>
+            </div>
+            <p className="text-muted-foreground">
+              {run.applicants_checked} applicant(s) checked, {run.applicants_changed} folder(s) changed.
+            </p>
+            {run.error && <p className="text-status-danger-text">{run.error}</p>}
+            {run.state === 'interrupted' && (
+              <p className="text-status-warning-text">
+                This run stopped without finishing. Run it again so every folder matches the current requirements.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-muted-foreground">No recalculation has run yet.</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -758,8 +856,12 @@ function NewRequirementDialog({ open, onOpenChange, onCreated }) {
     setSaving(true)
 
     try {
-      await post('/settings/requirement-types', form)
-      toast.success('Requirement added', 'It now appears on every applicant checklist.')
+      const response = await post('/settings/requirement-types', form)
+      if (response.data?.folder_recalculation) {
+        reportRecalculation(toast, response)
+      } else {
+        toast.success('Requirement added', 'It now appears on every applicant checklist.')
+      }
       onOpenChange(false)
       onCreated()
     } catch (error) {

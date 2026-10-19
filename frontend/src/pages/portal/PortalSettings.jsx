@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field } from '@/components/ui/form'
 import NotificationPreferences from '@/components/NotificationPreferences'
+import ProfilePhotoUploader from '@/components/ProfilePhotoUploader'
 import { cn } from '@/lib/utils'
 
 /**
@@ -26,12 +27,14 @@ export default function PortalSettings() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+        <h1 className="text-[26px] font-normal leading-tight tracking-[-0.01em] sm:text-[32px]">Settings</h1>
         <p className="text-sm text-muted-foreground">
           How this portal looks, what it tells you about, and your sign-in.
         </p>
       </div>
 
+      {/* The same picture, and the same control, as on Profile. */}
+      <ProfilePhotoUploader />
       <AppearanceCard />
       <NotificationPreferences />
       <PasswordCard />

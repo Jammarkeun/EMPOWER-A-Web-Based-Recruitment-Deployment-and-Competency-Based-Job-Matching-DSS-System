@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class JobRequest extends Model
 {
@@ -103,40 +105,118 @@ class JobRequest extends Model
      * complained about extra workers arriving.
      */
     /**
-     * Whether the saved ranking still reflects the saved criteria.
+     * Everybody this request's evaluation looks at: applicants far enough
+     * along to be considered, less anyone already deployed against it.
      *
-     * Saving criteria replaces them, so the newest criterion row says when the
-     * criteria last changed. If that is later than the last evaluation, the
-     * ranking on screen was produced under rules that no longer apply and must
-     * be run again before anybody relies on it.
+     * Shared by the evaluation and by evaluationState(), so the number shown
+     * as "not yet evaluated" is counted against the same pool the evaluation
+     * ranks.
+     */
+    public function candidatePool(): Builder
+    {
+        return Applicant::query()
+            ->evaluable()
+            ->whereDoesntHave('employee.deployments', fn ($q) => $q->where('job_request_id', $this->id));
+    }
+
+    /**
+     * Whether the ranking on screen can be relied on as it stands.
+     *
+     * Out of date (`is_stale`) when a ranked result was scored against
+     * criteria or a profile that has since changed: each result records the
+     * versions it was scored against, so this is exact even for a change made
+     * while an evaluation was running (audit S-02).
+     *
+     * Provisional (`is_provisional`) when the ranking does not cover the pool
+     * as it is now: eligible applicants nobody has scored yet, results carried
+     * over from an earlier, narrower run, or ranked applicants who have since
+     * left the pool (audit S-01). Ranks are still consistent - every current
+     * result is ranked together - but they are not the whole picture.
      */
     public function evaluationState(): array
     {
-        // reorder(): matches() sorts by rank, and PostgreSQL refuses an
-        // aggregate alongside an ORDER BY on an ungrouped column.
-        $lastEvaluated = $this->matches()->reorder()->max('evaluated_at');
+        $evaluable = config('empower.evaluable_applicant_statuses');
+        $placeholders = implode(', ', array_fill(0, count($evaluable), '?'));
+
+        // One pass over the ranked results, so the request screen does not pay
+        // a round trip per figure against a remote database.
+        $stats = DB::table('job_request_matches as m')
+            ->join('applicants as a', 'a.id', '=', 'm.applicant_id')
+            ->where('m.job_request_id', $this->id)
+            ->whereNotNull('m.rank_order')
+            ->selectRaw('COUNT(*) AS ranked')
+            ->selectRaw('MAX(m.evaluated_at) AS last_evaluated')
+            ->selectRaw(
+                'COUNT(CASE WHEN m.scored_criteria_version IS NULL OR m.scored_criteria_version <> ? THEN 1 END) AS criteria_stale',
+                [(int) $this->criteria_version]
+            )
+            ->selectRaw('COUNT(CASE WHEN m.scored_profile_version IS NULL OR m.scored_profile_version <> a.profile_version THEN 1 END) AS profiles_stale')
+            ->selectRaw(
+                'COUNT(CASE WHEN m.evaluation_run IS NULL OR m.evaluation_run < ? THEN 1 END) AS from_earlier',
+                [(int) $this->evaluation_runs]
+            )
+            ->selectRaw("COUNT(CASE WHEN a.deleted_at IS NULL AND a.current_status IN ({$placeholders}) THEN 1 END) AS in_pool", $evaluable)
+            ->first();
+
+        $ranked = (int) ($stats->ranked ?? 0);
+        $inPool = (int) ($stats->in_pool ?? 0);
+        $lastEvaluated = $stats?->last_evaluated ? Carbon::parse($stats->last_evaluated) : null;
+
         $criteriaSaved = $this->criteria()->max('updated_at');
+        $criteriaSaved = $criteriaSaved ? Carbon::parse($criteriaSaved) : null;
 
-        $lastEvaluated = $lastEvaluated ? \Illuminate\Support\Carbon::parse($lastEvaluated) : null;
-        $criteriaSaved = $criteriaSaved ? \Illuminate\Support\Carbon::parse($criteriaSaved) : null;
+        // Results carried over from an earlier run than the latest one: only
+        // a narrowed run leaves any. Runs are numbered; a request last
+        // evaluated before they were has nothing to compare against.
+        $fromEarlierRuns = (int) $this->evaluation_runs > 0 ? (int) ($stats->from_earlier ?? 0) : 0;
 
-        $criteriaChanged = $lastEvaluated !== null
-            && $criteriaSaved !== null
-            && $criteriaSaved->greaterThan($lastEvaluated);
+        $poolSize = $this->candidatePool()->count();
+        $notYetEvaluated = max(0, $poolSize - $inPool);
+        $leftPool = max(0, $ranked - $inPool);
 
-        // Candidates whose scored profile was edited after they were ranked:
-        // their score on screen no longer describes them.
-        $profilesChanged = $this->matches()->reorder()
-            ->whereHas('applicant', fn ($q) => $q->whereColumn('applicants.profile_updated_at', '>', 'job_request_matches.evaluated_at'))
-            ->count();
+        $criteriaChanged = (int) ($stats->criteria_stale ?? 0) > 0;
+        $profilesChanged = (int) ($stats->profiles_stale ?? 0);
+        $isStale = $criteriaChanged || $profilesChanged > 0;
+
+        $reasons = [];
+        if ($ranked > 0) {
+            if ($notYetEvaluated > 0) {
+                $reasons[] = "{$notYetEvaluated} eligible applicant(s) have not been evaluated yet.";
+            }
+            if ($fromEarlierRuns > 0) {
+                $reasons[] = "{$fromEarlierRuns} result(s) were carried over from an earlier, narrower evaluation.";
+            }
+            if ($leftPool > 0) {
+                $reasons[] = "{$leftPool} ranked applicant(s) are no longer in the eligible pool.";
+            }
+            if ($criteriaChanged) {
+                $reasons[] = 'The criteria have changed since some results were scored.';
+            }
+            if ($profilesChanged > 0) {
+                $reasons[] = "{$profilesChanged} applicant profile(s) changed after they were scored.";
+            }
+        }
 
         return [
             'last_evaluated_at' => $lastEvaluated?->toIso8601String(),
             'criteria_saved_at' => $criteriaSaved?->toIso8601String(),
             'criteria_changed' => $criteriaChanged,
             'profiles_changed' => $profilesChanged,
-            'is_stale' => $criteriaChanged || $profilesChanged > 0,
+            'is_stale' => $isStale,
+            'pool_size' => $poolSize,
+            'ranked' => $ranked,
+            'not_yet_evaluated' => $notYetEvaluated,
+            'from_earlier_runs' => $fromEarlierRuns,
+            'left_pool' => $leftPool,
+            'is_provisional' => $reasons !== [],
+            'provisional_reasons' => $reasons,
         ];
+    }
+
+    /** Every status change, newest first (audit R-16). */
+    public function statusHistory(): HasMany
+    {
+        return $this->hasMany(JobRequestStatusHistory::class)->orderByDesc('changed_at')->orderByDesc('id');
     }
 
     public function canAcceptDeployment(): bool

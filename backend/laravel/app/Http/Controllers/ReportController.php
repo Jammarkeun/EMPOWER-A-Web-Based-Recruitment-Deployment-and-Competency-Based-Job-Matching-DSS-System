@@ -3,11 +3,19 @@
 namespace App\Http\Controllers;
 
 use App\Exports\ReportExport;
+use App\Exports\SpreadsheetSafety;
 use App\Jobs\BuildReportExport;
 use App\Models\ReportExport as ReportExportRecord;
 use App\Http\Responses\ApiResponse;
+use App\Models\Applicant;
+use App\Models\Deployment;
+use App\Models\EmployeeViolation;
+use App\Models\Resignation;
+use App\Models\Termination;
+use App\Models\Training;
 use App\Services\AuditService;
 use App\Services\Reporting\ReportBuilder;
+use App\Support\ApplicantStatuses;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -43,6 +51,8 @@ class ReportController extends Controller
                 'key' => $key,
                 'label' => $label,
                 'filters' => $this->filtersFor($key),
+                // The values each of this report's choice filters accepts.
+                'options' => $this->optionsFor($key),
             ])->values(),
         ]);
     }
@@ -73,10 +83,16 @@ class ReportController extends Controller
     {
         $this->authorize('exportReports');
 
-        $data = $this->validateRequest($request);
-        $report = $this->builder->build($data['report_type'], $data['filters'] ?? []);
+        $data = $this->validateRequest($request, forExport: true);
+        $filters = $data['filters'] ?? [];
 
-        if ($report['rows']->count() >= config('empower.reports.queue_threshold_rows', 1000)) {
+        /*
+         * Counted before anything is built (audit PERF-04). A report big
+         * enough to be queued used to be built in full here only to learn its
+         * size, and then built again by the job - double the work exactly
+         * when the report is largest.
+         */
+        if ($this->builder->count($data['report_type'], $filters) >= config('empower.reports.queue_threshold_rows', 1000)) {
             $queued = ReportExportRecord::create([
                 'report_type' => $data['report_type'],
                 'filter_json' => $data['filters'] ?? [],
@@ -93,6 +109,8 @@ class ReportController extends Controller
                 'status' => 'queued',
             ], 'Large report queued for generation', 202);
         }
+
+        $report = $this->builder->build($data['report_type'], $filters);
 
         $this->audit->record('export', 'reports', null, null, null, [
             'report_type' => $data['report_type'],
@@ -139,8 +157,10 @@ class ReportController extends Controller
             $output = fopen('php://output', 'wb');
             fputcsv($output, $report['columns']);
 
+            // Text that could start a formula is neutralised (audit R-09):
+            // applicant-typed names and addresses reach this file.
             foreach ($report['rows'] as $row) {
-                fputcsv($output, $row);
+                fputcsv($output, SpreadsheetSafety::row($row));
             }
 
             fclose($output);
@@ -162,11 +182,20 @@ class ReportController extends Controller
         return $pdf->download($filename);
     }
 
-    private function validateRequest(Request $request): array
+    private function validateRequest(Request $request, bool $forExport = false): array
     {
+        $type = (string) $request->input('report_type');
+        $options = array_key_exists($type, ReportBuilder::TYPES) ? $this->optionsFor($type) : [];
+
+        // A choice filter must name one of the report's own values: a typo or a
+        // value from another report used to produce a silently empty report.
+        $choice = fn (string $filter) => ['nullable', 'string', Rule::in($options[$filter] ?? [])];
+
         return $request->validate([
             'report_type' => ['required', Rule::in(array_keys(ReportBuilder::TYPES))],
-            'format' => ['required_with:format', Rule::in(['pdf', 'xlsx', 'csv'])],
+            // Required for an export (audit FN-08): "required_with:format" checked
+            // nothing, and a missing format reached the renderer as a 500.
+            'format' => [$forExport ? 'required' : 'nullable', Rule::in(['pdf', 'xlsx', 'csv'])],
             'filters' => ['nullable', 'array'],
             'filters.date_from' => ['nullable', 'date'],
             'filters.date_to' => ['nullable', 'date', 'after_or_equal:filters.date_from'],
@@ -186,15 +215,51 @@ class ReportController extends Controller
              * still chosen rather than typed.
              */
             'filters.position_title' => ['nullable', 'string', 'max:150'],
-            'filters.current_status' => ['nullable', 'string', 'max:60'],
-            'filters.employment_status' => ['nullable', 'string', 'max:40'],
-            'filters.folder_category' => ['nullable', Rule::in(['folder_1', 'folder_2', 'folder_3'])],
-            'filters.request_status' => ['nullable', 'string', 'max:40'],
-            'filters.deployment_status' => ['nullable', 'string', 'max:40'],
-            'filters.violation_type' => ['nullable', 'string', 'max:60'],
-            'filters.source_channel' => ['nullable', 'string', 'max:40'],
-            'filters.status' => ['nullable', 'string', 'max:40'],
+            'filters.current_status' => $choice('current_status'),
+            'filters.employment_status' => $choice('employment_status'),
+            'filters.folder_category' => $choice('folder_category'),
+            'filters.request_status' => $choice('request_status'),
+            'filters.deployment_status' => $choice('deployment_status'),
+            'filters.violation_type' => $choice('violation_type'),
+            'filters.source_channel' => $choice('source_channel'),
+            'filters.status' => $choice('status'),
         ]);
+    }
+
+    /**
+     * The values each choice filter of a report accepts, read from the
+     * vocabulary that owns them (audit CQ-02).
+     *
+     * The report picker used to keep its own lists, and one "status" list for
+     * every report - so the training report offered "finalized" and the
+     * termination report offered "scheduled", each returning nothing - and it
+     * left "online" out of the ways an applicant can apply.
+     *
+     * @return array<string, list<string>>
+     */
+    private function optionsFor(string $type): array
+    {
+        $status = match ($type) {
+            'clients' => ['active', 'inactive'],
+            'violations' => EmployeeViolation::STATUSES,
+            'training' => Training::STATUSES,
+            'resignations' => Resignation::STATUSES,
+            'terminations' => Termination::STATUSES,
+            default => [],
+        };
+
+        $all = [
+            'current_status' => ApplicantStatuses::all(),
+            'employment_status' => array_keys(config('empower.employee_transitions', [])),
+            'folder_category' => array_keys(config('empower.folders', [])),
+            'request_status' => array_keys(config('empower.job_request_transitions', [])),
+            'deployment_status' => Deployment::STATUSES,
+            'violation_type' => EmployeeViolation::TYPES,
+            'source_channel' => Applicant::SOURCE_CHANNELS,
+            'status' => $status,
+        ];
+
+        return array_intersect_key($all, array_flip($this->filtersFor($type)));
     }
 
     /** Which filters the picker should offer for a given report. */

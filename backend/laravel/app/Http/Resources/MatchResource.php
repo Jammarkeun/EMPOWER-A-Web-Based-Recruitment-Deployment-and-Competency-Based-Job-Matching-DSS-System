@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -24,6 +25,10 @@ class MatchResource extends JsonResource
             'applicant_id' => $this->applicant_id,
             'applicant_code' => $this->whenLoaded('applicant', fn () => $this->applicant->applicant_code),
             'applicant_name' => $this->whenLoaded('applicant', fn () => $this->applicant->full_name),
+            'photo_url' => $this->whenLoaded(
+                'applicant',
+                fn () => app(ProfilePhotoService::class)->url($this->applicant->profile_photo_path)
+            ),
             'folder_category' => $this->whenLoaded('applicant', fn () => $this->applicant->folder_category),
             'current_status' => $this->whenLoaded('applicant', fn () => $this->applicant->current_status),
 
@@ -44,6 +49,14 @@ class MatchResource extends JsonResource
             // A shortlisted result kept after the applicant left the pool has
             // no rank: it is a record of a decision, not a recommendation.
             'in_current_pool' => $this->rank_order !== null,
+
+            // This one result scored against criteria or a profile that has
+            // since changed, or whose applicant has left the pool (audit S-02).
+            'is_stale' => $this->resource->staleReasons() !== [],
+            'stale_reasons' => $this->resource->staleReasons(),
+            // Kept from an earlier, narrower run rather than rescored by the
+            // latest one (audit S-01).
+            'from_earlier_run' => $this->resource->isFromEarlierRun(),
 
             /*
              * What the applicant asked for, beside what they are being

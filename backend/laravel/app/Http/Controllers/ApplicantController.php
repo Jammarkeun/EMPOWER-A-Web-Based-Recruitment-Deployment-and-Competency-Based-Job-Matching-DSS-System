@@ -7,16 +7,23 @@ use App\Http\Resources\ApplicantResource;
 use App\Http\Resources\StatusHistoryResource;
 use App\Http\Responses\ApiResponse;
 use App\Models\Applicant;
+use App\Models\ApplicationStatusHistory;
 use App\Models\JobPosition;
+use App\Models\JobRequest;
+use App\Models\PlacementDecision;
 use App\Models\RequirementType;
+use App\Models\TrainingEnrollment;
 use App\Services\ApplicantLifecycleService;
 use App\Services\AuditService;
 use App\Services\FolderCategoryService;
+use App\Services\PlacementService;
 use App\Services\ReferenceCodeService;
+use App\Support\ApplicantStatuses;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ApplicantController extends Controller
 {
@@ -24,6 +31,7 @@ class ApplicantController extends Controller
         private readonly ApplicantLifecycleService $lifecycle,
         private readonly FolderCategoryService $folders,
         private readonly ReferenceCodeService $codes,
+        private readonly PlacementService $placements,
         private readonly AuditService $audit,
     ) {
     }
@@ -34,13 +42,17 @@ class ApplicantController extends Controller
 
         $filters = $request->validate([
             'search' => ['nullable', 'string', 'max:120'],
-            'current_status' => ['nullable', 'string'],
+            'current_status' => ['nullable', Rule::in(ApplicantStatuses::all())],
             'folder_category' => ['nullable', Rule::in(['folder_1', 'folder_2', 'folder_3'])],
-            'source_channel' => ['nullable', Rule::in(['walk_in', 'messenger', 'email', 'online'])],
+            'source_channel' => ['nullable', Rule::in(Applicant::SOURCE_CHANNELS)],
             'awaiting_identity_check' => ['nullable', 'boolean'],
             // Who applied for one position - the list a client's posting
             // opens onto from the company workspace.
             'preferred_position_id' => ['nullable', 'integer', 'exists:job_positions,id'],
+            // Who applied for any of one client's positions.
+            'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
+            // Status says every document was verified; the folder says not (WF-06).
+            'documents_lapsed' => ['nullable', 'boolean'],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
@@ -49,12 +61,20 @@ class ApplicantController extends Controller
         ]);
 
         $applicants = Applicant::query()
+            ->with('openEndorsement.currentDecision')
             ->search($filters['search'] ?? null)
             ->when($filters['current_status'] ?? null, fn ($q, $v) => $q->where('current_status', $v))
             ->when($filters['folder_category'] ?? null, fn ($q, $v) => $q->where('folder_category', $v))
             ->when($filters['source_channel'] ?? null, fn ($q, $v) => $q->where('source_channel', $v))
             ->when($filters['awaiting_identity_check'] ?? false, fn ($q) => $q->awaitingIdentityCheck())
             ->when($filters['preferred_position_id'] ?? null, fn ($q, $v) => $q->where('preferred_position_id', $v))
+            ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->whereHas(
+                'preferredPosition',
+                fn ($position) => $position->where('client_company_id', $v)
+            ))
+            ->when($filters['documents_lapsed'] ?? false, fn ($q) => $q
+                ->whereIn('current_status', config('empower.past_document_gate_statuses'))
+                ->where(fn ($folder) => $folder->whereNull('folder_category')->orWhere('folder_category', '!=', 'folder_1')))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '<=', $v))
             ->orderBy($filters['sort_by'] ?? 'application_date', $filters['sort_dir'] ?? 'desc')
@@ -93,10 +113,10 @@ class ApplicantController extends Controller
                 newValues: $request->validated(),
             );
 
-            return $applicant;
+            // Inside the same transaction, so a walk-in is never left created
+            // but stuck at "applied" if the move into screening fails.
+            return $this->lifecycle->transition($applicant, 'initial_screening', $request->user(), 'Applicant registered at the office.');
         });
-
-        $this->lifecycle->transition($applicant, 'initial_screening', $request->user(), 'Applicant registered at the office.');
 
         return ApiResponse::created(
             new ApplicantResource($applicant->fresh()->load('requirements.requirementType')),
@@ -141,13 +161,73 @@ class ApplicantController extends Controller
             'statusHistory.changedBy',
             'employee.currentCompany',
             'employee.currentDepartment',
+            'openEndorsement.currentDecision',
         ]);
 
         return ApiResponse::success([
             'applicant' => new ApplicantResource($applicant),
             'folder' => $this->folders->explain($applicant),
+            'placement' => $this->placements->present($applicant),
+            'training' => $this->trainingSummary($applicant),
             'allowed_transitions' => $this->lifecycle->offeredNextStatuses($applicant->current_status),
+            // The path the progress panel draws, in lifecycle order.
+            'stages' => ApplicantStatuses::stages(),
         ]);
+    }
+
+    /**
+     * The applicant-status vocabulary: every status in lifecycle order, its
+     * label and stage, and the stages themselves.
+     *
+     * Published so the screens that list or group statuses - the applicant
+     * filters, the report picker - read them from here instead of keeping their
+     * own copy. It holds no personal data, but it describes the recruitment
+     * pipeline, so it is for those who can see applicants: a coordinator, who
+     * passes the staff middleware, has no use for it.
+     */
+    public function statuses(): JsonResponse
+    {
+        $this->authorize('viewAny', Applicant::class);
+
+        return ApiResponse::success(ApplicantStatuses::describe());
+    }
+
+    /**
+     * Where the applicant stands on training, as the endorsement gate sees it.
+     *
+     * `requirement_met` is the very check the lifecycle makes before an
+     * endorsement, so the record and the gate cannot disagree. Each session is
+     * listed with what was actually recorded: being enrolled is not attending,
+     * and attending is not completing.
+     */
+    private function trainingSummary(Applicant $applicant): array
+    {
+        $enrolments = $applicant->trainingEnrollments()
+            ->with(['training', 'attendanceRecorder', 'completionRecorder'])
+            ->get()
+            ->sortByDesc(fn (TrainingEnrollment $e) => $e->training?->training_date?->toDateString())
+            ->values();
+
+        return [
+            // Training is the next step from "ready for deployment" onwards; a
+            // record before that only shows sessions it actually has.
+            'relevant' => $enrolments->isNotEmpty() || ApplicantStatuses::isPastDocumentGate($applicant->current_status),
+            'required_before_endorsement' => (bool) config('empower.require_training_before_deployment', true),
+            'requirement_met' => $this->lifecycle->hasCompletedTraining($applicant),
+            'sessions' => $enrolments->map(fn (TrainingEnrollment $e) => [
+                'training_id' => $e->training_id,
+                'training_code' => $e->training?->training_code,
+                'title' => $e->training?->training_title,
+                'date' => $e->training?->training_date?->toDateString(),
+                'session_status' => $e->training?->status,
+                'attendance_status' => $e->attendance_status,
+                'attendance_recorded_by' => $e->attendanceRecorder?->full_name,
+                'completion_status' => $e->completion_status,
+                'completion_recorded_by' => $e->completionRecorder?->full_name,
+                'completion_recorded_at' => $e->completion_recorded_at?->toIso8601String(),
+                'counts_towards_requirement' => $e->hasCompleted() && $e->training && ! $e->training->isCancelled(),
+            ])->all(),
+        ];
     }
 
     /**
@@ -192,12 +272,16 @@ class ApplicantController extends Controller
         $applicant->fill(array_merge($data, ['updated_by' => $request->user()->id]));
 
         // A change to anything the matching engine scores makes earlier
-        // rankings that include this applicant out of date.
-        if ($applicant->isDirty(self::SCORED_FIELDS)) {
-            $applicant->forceFill(['profile_updated_at' => now()]);
-        }
+        // rankings that include this applicant out of date (audit S-02).
+        $scoredChanged = $applicant->isDirty(self::SCORED_FIELDS);
 
-        $applicant->save();
+        DB::transaction(function () use ($applicant, $scoredChanged) {
+            $applicant->save();
+
+            if ($scoredChanged) {
+                $applicant->markScoredProfileChanged();
+            }
+        });
 
         $this->audit->recordUpdate('applicants', Applicant::class, $applicant->id, $before, $data);
 
@@ -230,34 +314,95 @@ class ApplicantController extends Controller
                 Rule::in(['incomplete_requirements', 'not_suitable', 'other']),
             ],
             'disposition_note' => ['nullable', 'string', 'max:255'],
+
+            // Which request the applicant is being put forward for, when the
+            // officer knows. Optional, and only meaningful for an endorsement:
+            // the applicant's answer then belongs to that client's request.
+            'job_request_id' => ['nullable', 'integer', 'exists:job_requests,id'],
         ]);
 
-        // Employment and separation statuses belong to their workflows. Checked
-        // before anything is written, so a refused move leaves no disposition
-        // behind on the record either.
+        if (! empty($data['job_request_id'])) {
+            if ($data['to_status'] !== 'client_evaluation') {
+                throw ValidationException::withMessages([
+                    'job_request_id' => ['A request can only be named when endorsing the applicant to a client.'],
+                ]);
+            }
+
+            if (! JobRequest::query()->open()->whereKey($data['job_request_id'])->exists()) {
+                throw ValidationException::withMessages([
+                    'job_request_id' => ['That request is not open, so nobody can be endorsed for it.'],
+                ]);
+            }
+        }
+
+        if ($data['to_status'] === 'archived') {
+            $this->authorize('archive', $applicant);
+        }
+
+        // Employment and separation statuses belong to their workflows.
         $this->lifecycle->assertManualTransitionAllowed($data['to_status']);
 
-        // Recorded before the transition, so it is already on the record when
-        // the status history row and its notification are written.
-        if (! empty($data['disposition_reason'])) {
-            $applicant->forceFill([
-                'disposition_reason' => $data['disposition_reason'],
-                'disposition_note' => $data['disposition_note'] ?? null,
-                'disposition_recorded_at' => now(),
-            ])->save();
-        }
+        /*
+         * The disposition travels with the move and is written in the same
+         * transaction, after the move has been validated. It used to be saved
+         * first, so a move the transition map refused still left a disposition
+         * on the record - "not suitable" against somebody whose status never
+         * changed. Now both land, or neither does.
+         */
+        $disposition = empty($data['disposition_reason']) ? [] : [
+            'disposition_reason' => $data['disposition_reason'],
+            'disposition_note' => $data['disposition_note'] ?? null,
+            'disposition_recorded_at' => now(),
+        ];
 
         $applicant = $this->lifecycle->transition(
             $applicant,
             $data['to_status'],
             $request->user(),
-            $data['reason'] ?? null
+            $data['reason'] ?? null,
+            $disposition,
+            ['job_request_id' => $data['job_request_id'] ?? null]
         );
 
         return ApiResponse::success([
             'applicant' => new ApplicantResource($applicant),
             'allowed_transitions' => $this->lifecycle->offeredNextStatuses($applicant->current_status),
+            'placement' => $this->placements->present($applicant),
         ], 'Status updated');
+    }
+
+    /**
+     * Correct the applicant's answer to their current placement (audit R-07).
+     *
+     * For a change of mind the applicant reports to the office after answering
+     * on the portal. The first answer stays the applicant's to give. A
+     * correction needs a reason and is kept beside the answer it replaces;
+     * nothing is overwritten.
+     */
+    public function placementDecision(Request $request, Applicant $applicant): JsonResponse
+    {
+        $this->authorize('changeStatus', $applicant);
+
+        $data = $request->validate([
+            'decision' => ['required', Rule::in(PlacementDecision::DECISIONS)],
+            'note' => ['nullable', 'string', 'max:255'],
+            'correction_reason' => ['required', 'string', 'max:255'],
+        ], [
+            'correction_reason.required' => 'Give the reason for correcting the answer on record.',
+        ]);
+
+        $this->placements->recordStaffDecision(
+            $applicant,
+            $request->user(),
+            $data['decision'],
+            $data['note'] ?? null,
+            $data['correction_reason'],
+        );
+
+        return ApiResponse::success(
+            $this->placements->present($applicant->fresh()),
+            'Answer corrected. The earlier answer stays on record.'
+        );
     }
 
     /**
@@ -283,30 +428,35 @@ class ApplicantController extends Controller
             'remarks' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $applicant->forceFill([
-            'identity_verified_at' => now(),
-            'identity_verified_by' => $request->user()->id,
-        ])->save();
+        // One transaction: the identity mark and the move into screening land
+        // together, so a failed move cannot leave a "verified" applicant who is
+        // still held at "applied".
+        $applicant = DB::transaction(function () use ($applicant, $request, $data) {
+            $applicant->forceFill([
+                'identity_verified_at' => now(),
+                'identity_verified_by' => $request->user()->id,
+            ])->save();
 
-        $this->audit->record(
-            action: 'update',
-            module: 'applicants',
-            recordType: Applicant::class,
-            recordId: $applicant->id,
-            newValues: [
-                'identity_verified' => true,
-                'verified_by' => $request->user()->full_name,
-                'remarks' => $data['remarks'] ?? null,
-            ],
-        );
+            $this->audit->record(
+                action: 'update',
+                module: 'applicants',
+                recordType: Applicant::class,
+                recordId: $applicant->id,
+                newValues: [
+                    'identity_verified' => true,
+                    'verified_by' => $request->user()->full_name,
+                    'remarks' => $data['remarks'] ?? null,
+                ],
+            );
 
-        // Now that a person has been seen, the record can enter screening.
-        $applicant = $this->lifecycle->transition(
-            $applicant->fresh(),
-            'initial_screening',
-            $request->user(),
-            'Identity confirmed at the office.'
-        );
+            // Now that a person has been seen, the record can enter screening.
+            return $this->lifecycle->transition(
+                $applicant->fresh(),
+                'initial_screening',
+                $request->user(),
+                'Identity confirmed at the office.'
+            );
+        });
 
         return ApiResponse::success(
             new ApplicantResource($applicant),
@@ -327,16 +477,20 @@ class ApplicantController extends Controller
                 'type' => 'status_change',
                 'occurred_at' => $h->changed_at?->toIso8601String(),
                 'title' => 'Status changed to '.ucwords(str_replace('_', ' ', $h->to_status)),
-                'detail' => $h->reason,
+                // Rows the old deployment code wrote by itself say so (R-11).
+                'detail' => $h->wasWrittenAutomaticallyAtDeployment()
+                    ? trim($h->reason.' '.ApplicationStatusHistory::AUTO_WRITTEN_NOTE)
+                    : $h->reason,
+                'recorded_automatically' => $h->wasWrittenAutomaticallyAtDeployment(),
                 'actor' => $h->changedBy?->full_name,
             ]);
 
         $trainings = $applicant->trainingEnrollments()->with('training')->get()
-            ->map(fn ($e) => [
+            ->map(fn (TrainingEnrollment $e) => [
                 'type' => 'training',
                 'occurred_at' => $e->training?->training_date?->toIso8601String(),
                 'title' => $e->training?->training_title,
-                'detail' => 'Attendance: '.$e->attendance_status.'; completion: '.$e->completion_status,
+                'detail' => $this->describeEnrolment($e),
                 'actor' => $e->training?->trainer_name,
             ]);
 
@@ -356,6 +510,22 @@ class ApplicantController extends Controller
             ->values();
 
         return ApiResponse::success($timeline);
+    }
+
+    /** One enrolment in words, saying only what was actually recorded. */
+    private function describeEnrolment(TrainingEnrollment $enrolment): string
+    {
+        if ($enrolment->training?->isCancelled()) {
+            return 'Session cancelled; nothing recorded for it counts towards training.';
+        }
+
+        $attendance = match ($enrolment->attendance_status) {
+            'present' => 'Attended',
+            'absent' => 'Absent',
+            default => 'Enrolled; attendance not recorded yet',
+        };
+
+        return $attendance.($enrolment->hasCompleted() ? '; completion recorded.' : '; not completed.');
     }
 
     /**

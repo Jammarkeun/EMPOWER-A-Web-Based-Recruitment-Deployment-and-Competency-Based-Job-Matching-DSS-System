@@ -56,8 +56,10 @@ class DocumentScanController extends Controller
         ]);
 
         $file = $request->file('file');
-        $this->uploads->assertSafe($file);
-        $path = 'ocr-scans/'.Str::uuid().'-'.basename($file->getClientOriginalName());
+        // The stored name is a random id plus the extension of the detected
+        // type; the uploader's file name never reaches the path.
+        $extension = $this->uploads->assertSafe($file);
+        $path = 'ocr-scans/'.Str::uuid().'.'.$extension;
         if (! Storage::disk('local')->putFileAs('ocr-scans', $file, basename($path))) {
             return ApiResponse::error('The scan could not be queued. Please try again.', 503);
         }

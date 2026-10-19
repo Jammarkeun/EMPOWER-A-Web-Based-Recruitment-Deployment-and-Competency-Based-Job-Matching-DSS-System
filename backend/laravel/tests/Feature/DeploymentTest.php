@@ -198,7 +198,8 @@ class DeploymentTest extends TestCase
         app(DeploymentService::class)->reassign($deployment, [
             'client_company_id' => $company->id,
             'client_department_id' => $warehouse->id,
-            'effective_date' => now()->addWeek()->toDateString(),
+            // Today: a reassignment is recorded once it has taken effect.
+            'effective_date' => now()->toDateString(),
             'change_type' => 'transfer',
         ], $hr);
 

@@ -71,7 +71,11 @@ class AuditService
                 'module' => $module,
                 'record_type' => $recordType,
                 'record_id' => $recordId,
-                'exception' => $e->getMessage(),
+                // A database error's message carries the bound values - the
+                // very personal data being audited - so only its code is kept.
+                'exception' => $e instanceof \Illuminate\Database\QueryException
+                    ? get_class($e).' SQLSTATE '.($e->errorInfo[0] ?? $e->getCode())
+                    : $e->getMessage(),
             ]);
 
             return null;
@@ -122,6 +126,12 @@ class AuditService
         return $this->record('update', $module, $recordType, $recordId, $previous, $changed);
     }
 
+    /**
+     * Masks credentials at any depth, and by name: any key containing
+     * "password", "token" or "secret" (a temporary_password, a reset_token).
+     * It used to check a fixed list at the top level only, so a credential
+     * nested inside a value - or named slightly differently - was stored.
+     */
     private function redact(?array $values): ?array
     {
         if (is_null($values)) {
@@ -129,8 +139,10 @@ class AuditService
         }
 
         foreach ($values as $key => $value) {
-            if (in_array(strtolower((string) $key), self::REDACTED, true)) {
+            if (in_array(strtolower((string) $key), self::REDACTED, true) || AuditTrailPresenter::isSensitive((string) $key)) {
                 $values[$key] = '[redacted]';
+            } elseif (is_array($value)) {
+                $values[$key] = $this->redact($value);
             }
         }
 

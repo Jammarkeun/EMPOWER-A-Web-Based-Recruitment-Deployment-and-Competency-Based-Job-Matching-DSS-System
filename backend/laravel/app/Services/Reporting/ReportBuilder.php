@@ -11,7 +11,9 @@ use App\Models\JobRequest;
 use App\Models\Resignation;
 use App\Models\Termination;
 use App\Models\Training;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 /**
@@ -41,11 +43,28 @@ class ReportBuilder
         'annual_summary' => 'Annual Summary',
     ];
 
+    /**
+     * How many rows a report will have, without building it (audit PERF-04).
+     *
+     * Asked before an export is produced, so a report big enough to be queued
+     * costs one COUNT query here instead of being built in full twice - once
+     * to learn its size and again by the queued job. Uses the very query the
+     * report is built from, so the count and the rows cannot disagree.
+     */
+    public function count(string $type, array $filters = []): int
+    {
+        $this->assertKnown($type);
+
+        if ($type === 'annual_summary') {
+            return 12; // one row per month
+        }
+
+        return $this->{Str::camel($type).'Query'}($filters)->count();
+    }
+
     public function build(string $type, array $filters = []): array
     {
-        if (! array_key_exists($type, self::TYPES)) {
-            throw new InvalidArgumentException("Unknown report type: {$type}");
-        }
+        $this->assertKnown($type);
 
         $method = 'build'.str_replace(' ', '', ucwords(str_replace('_', ' ', $type)));
 
@@ -59,19 +78,31 @@ class ReportBuilder
         ], $report);
     }
 
+    private function assertKnown(string $type): void
+    {
+        if (! array_key_exists($type, self::TYPES)) {
+            throw new InvalidArgumentException("Unknown report type: {$type}");
+        }
+    }
+
     // ------------------------------------------------------------- applicants
 
-    private function buildApplicants(array $filters): array
+    private function applicantsQuery(array $filters): Builder
     {
-        $rows = Applicant::query()
-            ->with(['educations', 'experiences'])
+        // No relations are loaded: every column below is on the applicant row.
+        return Applicant::query()
             ->when($filters['current_status'] ?? null, fn ($q, $v) => $q->where('current_status', $v))
             ->when($filters['folder_category'] ?? null, fn ($q, $v) => $q->where('folder_category', $v))
             ->when($filters['source_channel'] ?? null, fn ($q, $v) => $q->where('source_channel', $v))
             ->when($filters['position_title'] ?? null, fn ($q, $v) => $q->where('preferred_position', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '<=', $v))
-            ->orderByDesc('application_date')
+            ->orderByDesc('application_date');
+    }
+
+    private function buildApplicants(array $filters): array
+    {
+        $rows = $this->applicantsQuery($filters)
             ->get()
             ->map(fn (Applicant $a) => [
                 $a->applicant_code,
@@ -102,9 +133,9 @@ class ReportBuilder
 
     // -------------------------------------------------------------- employees
 
-    private function buildEmployees(array $filters): array
+    private function employeesQuery(array $filters): Builder
     {
-        $rows = Employee::query()
+        return Employee::query()
             ->with(['applicant', 'currentCompany', 'currentDepartment'])
             ->withCount('violations')
             ->when($filters['employment_status'] ?? null, fn ($q, $v) => $q->where('employment_status', $v))
@@ -114,7 +145,12 @@ class ReportBuilder
             // Hire date, which is the only date an employee record carries.
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('hire_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('hire_date', '<=', $v))
-            ->orderBy('employee_number')
+            ->orderBy('employee_number');
+    }
+
+    private function buildEmployees(array $filters): array
+    {
+        $rows = $this->employeesQuery($filters)
             ->get()
             ->map(fn (Employee $e) => [
                 $e->employee_number,
@@ -145,9 +181,9 @@ class ReportBuilder
 
     // ------------------------------------------------------------ deployments
 
-    private function buildDeployments(array $filters): array
+    private function deploymentsQuery(array $filters): Builder
     {
-        $rows = Deployment::query()
+        return Deployment::query()
             ->with(['employee.applicant', 'company', 'department'])
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('client_company_id', $v))
             ->when($filters['client_department_id'] ?? null, fn ($q, $v) => $q->where('client_department_id', $v))
@@ -155,7 +191,12 @@ class ReportBuilder
             ->when($filters['deployment_status'] ?? null, fn ($q, $v) => $q->where('deployment_status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '<=', $v))
-            ->orderByDesc('deployment_date')
+            ->orderByDesc('deployment_date');
+    }
+
+    private function buildDeployments(array $filters): array
+    {
+        $rows = $this->deploymentsQuery($filters)
             ->get()
             ->map(fn (Deployment $d) => [
                 $d->deployment_code,
@@ -185,15 +226,20 @@ class ReportBuilder
 
     // ------------------------------------------------------------- violations
 
-    private function buildViolations(array $filters): array
+    private function violationsQuery(array $filters): Builder
     {
-        $rows = EmployeeViolation::query()
+        return EmployeeViolation::query()
             ->with(['employee.applicant', 'employee.currentCompany', 'issuer'])
             ->when($filters['violation_type'] ?? null, fn ($q, $v) => $q->where('violation_type', $v))
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('violation_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('violation_date', '<=', $v))
-            ->orderByDesc('violation_date')
+            ->orderByDesc('violation_date');
+    }
+
+    private function buildViolations(array $filters): array
+    {
+        $rows = $this->violationsQuery($filters)
             ->get()
             ->map(fn (EmployeeViolation $v) => [
                 $v->violation_date?->format('d M Y') ?? '—',
@@ -222,12 +268,17 @@ class ReportBuilder
 
     // ---------------------------------------------------------------- clients
 
-    private function buildClients(array $filters): array
+    private function clientsQuery(array $filters): Builder
     {
-        $rows = ClientCompany::query()
+        return ClientCompany::query()
             ->withCount(['departments', 'jobRequests', 'employees'])
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
-            ->orderBy('company_name')
+            ->orderBy('company_name');
+    }
+
+    private function buildClients(array $filters): array
+    {
+        $rows = $this->clientsQuery($filters)
             ->get()
             ->map(fn (ClientCompany $c) => [
                 $c->company_code,
@@ -257,9 +308,9 @@ class ReportBuilder
 
     // ----------------------------------------------------------- job requests
 
-    private function buildJobRequests(array $filters): array
+    private function jobRequestsQuery(array $filters): Builder
     {
-        $rows = JobRequest::query()
+        return JobRequest::query()
             ->with(['company', 'department'])
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('client_company_id', $v))
             ->when($filters['client_department_id'] ?? null, fn ($q, $v) => $q->where('client_department_id', $v))
@@ -267,7 +318,12 @@ class ReportBuilder
             ->when($filters['request_status'] ?? null, fn ($q, $v) => $q->where('request_status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('date_requested', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('date_requested', '<=', $v))
-            ->orderByDesc('date_requested')
+            ->orderByDesc('date_requested');
+    }
+
+    private function buildJobRequests(array $filters): array
+    {
+        $rows = $this->jobRequestsQuery($filters)
             ->get()
             ->map(fn (JobRequest $r) => [
                 $r->request_code,
@@ -299,9 +355,9 @@ class ReportBuilder
 
     // --------------------------------------------------------------- training
 
-    private function buildTraining(array $filters): array
+    private function trainingQuery(array $filters): Builder
     {
-        $rows = Training::query()
+        return Training::query()
             ->withCount([
                 'enrollments',
                 'enrollments as attended_count' => fn ($q) => $q->where('attendance_status', 'present'),
@@ -310,7 +366,12 @@ class ReportBuilder
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '<=', $v))
-            ->orderByDesc('training_date')
+            ->orderByDesc('training_date');
+    }
+
+    private function buildTraining(array $filters): array
+    {
+        $rows = $this->trainingQuery($filters)
             ->get()
             ->map(fn (Training $t) => [
                 $t->training_code,
@@ -340,14 +401,19 @@ class ReportBuilder
 
     // ------------------------------------------------------------ separations
 
-    private function buildResignations(array $filters): array
+    private function resignationsQuery(array $filters): Builder
     {
-        $rows = Resignation::query()
+        return Resignation::query()
             ->with(['employee.applicant', 'employee.currentCompany'])
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('filing_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('filing_date', '<=', $v))
-            ->orderByDesc('filing_date')
+            ->orderByDesc('filing_date');
+    }
+
+    private function buildResignations(array $filters): array
+    {
+        $rows = $this->resignationsQuery($filters)
             ->get()
             ->map(fn (Resignation $r) => [
                 $r->employee?->employee_number ?? '—',
@@ -375,14 +441,19 @@ class ReportBuilder
         ];
     }
 
-    private function buildTerminations(array $filters): array
+    private function terminationsQuery(array $filters): Builder
     {
-        $rows = Termination::query()
+        return Termination::query()
             ->with(['employee.applicant', 'employee.currentCompany', 'approver'])
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('termination_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('termination_date', '<=', $v))
-            ->orderByDesc('termination_date')
+            ->orderByDesc('termination_date');
+    }
+
+    private function buildTerminations(array $filters): array
+    {
+        $rows = $this->terminationsQuery($filters)
             ->get()
             ->map(fn (Termination $t) => [
                 $t->employee?->employee_number ?? '—',

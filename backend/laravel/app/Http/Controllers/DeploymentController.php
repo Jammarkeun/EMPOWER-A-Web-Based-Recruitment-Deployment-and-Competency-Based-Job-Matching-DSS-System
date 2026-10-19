@@ -81,7 +81,7 @@ class DeploymentController extends Controller
     {
         $this->authorize('view', $deployment);
 
-        $deployment->load(['employee.applicant', 'company', 'department', 'jobRequest', 'history']);
+        $deployment->load(['employee.applicant', 'company', 'department', 'jobRequest', ...Deployment::HISTORY_RELATIONS]);
 
         return ApiResponse::success(new DeploymentResource($deployment));
     }
@@ -91,17 +91,23 @@ class DeploymentController extends Controller
         $this->authorize('reassign', $deployment);
 
         $data = $request->validate([
-            'client_company_id' => ['required', 'integer', 'exists:client_companies,id'],
+            // Optional, and must be the current client when sent: a move to
+            // another client is a new deployment (DeploymentService::reassign).
+            'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['required', 'integer', 'exists:client_departments,id'],
             'position_title' => ['nullable', 'string', 'max:150'],
             'supervisor_name' => ['nullable', 'string', 'max:190'],
-            'change_type' => ['required', Rule::in(['reassignment', 'transfer', 'return'])],
+            'change_type' => ['nullable', Rule::in(['reassignment', 'transfer', 'return'])],
             'effective_date' => ['required', 'date'],
-            'remarks' => ['nullable', 'string'],
+            // Why the worker was moved: the history should be able to answer it.
+            'remarks' => ['required', 'string', 'max:1000'],
+        ], [
+            'remarks.required' => 'Give the reason for the reassignment.',
         ]);
 
         $deployment = $this->deployments->reassign($deployment, $data, $request->user());
+        $deployment->load(Deployment::HISTORY_RELATIONS);
 
-        return ApiResponse::success(new DeploymentResource($deployment), 'Employee reassigned');
+        return ApiResponse::success(new DeploymentResource($deployment), 'Reassignment recorded.');
     }
 }

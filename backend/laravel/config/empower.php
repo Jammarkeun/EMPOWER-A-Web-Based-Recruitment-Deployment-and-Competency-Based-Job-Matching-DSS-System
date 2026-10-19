@@ -57,6 +57,11 @@ return [
         'active' => 'deployment',
         'resigned' => 'separation',
         'terminated' => 'separation',
+        // Set by enrolling the applicant in a session and recording their
+        // completion (audit R-06). Typed by hand they claimed training that no
+        // record showed had happened.
+        'training_scheduled' => 'training',
+        'training_completed' => 'training',
     ],
 
     /*
@@ -67,6 +72,51 @@ return [
         'resigned' => ['archived'],
         'terminated' => ['archived'],
         'archived' => [],
+    ],
+
+    /*
+    | Statuses reached only through "ready for deployment", which itself needs
+    | Folder 1 (see the transitions above).
+    |
+    | Derived from the map rather than a policy of its own: anybody in one of
+    | these had every required document verified at some point. If their folder
+    | is no longer Folder 1, a document has lapsed or been rejected since. That
+    | is shown as a warning beside the status and is never acted on by itself -
+    | whether the status should fall back is still an open question for CDE
+    | (audit Q4). Deployment checks the folder live either way.
+    */
+    'past_document_gate_statuses' => [
+        'ready_for_deployment',
+        'training_scheduled',
+        'training_completed',
+        'client_evaluation',
+        'approved',
+    ],
+
+    /*
+    | Manpower request statuses (audit R-16).
+    |
+    | Enforced by JobRequestLifecycleService for every change, by hand or by
+    | the system. "partially_fulfilled" and "fulfilled" describe the headcount,
+    | so they are only accepted when the numbers agree; deployments and
+    | headcount edits move between them automatically.
+    |
+    | Closing, cancelling and reopening each need a written reason. Moving out
+    | of "closed" or "cancelled" is reopening: the request lands on "open", or
+    | "partially_fulfilled" if workers are already deployed against it.
+    |
+    | Whether a CANCELLED request may be reopened at all has not been settled
+    | with CDE (audit Q6). It stays possible here because the system has always
+    | allowed it; removing 'open' from the cancelled row is the whole change if
+    | CDE decides otherwise.
+    */
+    'job_request_transitions' => [
+        'open' => ['in_progress', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'],
+        'in_progress' => ['open', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'],
+        'partially_fulfilled' => ['fulfilled', 'closed', 'cancelled'],
+        'fulfilled' => ['partially_fulfilled', 'closed'],
+        'closed' => ['open'],
+        'cancelled' => ['open'],
     ],
 
     /*
@@ -140,6 +190,17 @@ return [
         'max_height' => 7000,
         'storage_retries' => 3,
         'signed_url_ttl_minutes' => (int) env('SUPABASE_SIGNED_URL_TTL', 10),
+
+        /*
+         | Applicant profile pictures. Smaller than the document limit because
+         | a face on screen never needs a 10 MB scan, and images only: a profile
+         | picture is never a PDF. The link lives longer than a document link
+         | because it sits in the header for a whole working session; the
+         | screen asks for a fresh one if it expires anyway.
+         */
+        'profile_photo_max_kb' => 5120,
+        'profile_photo_min_px' => 64,
+        'profile_photo_url_ttl_minutes' => (int) env('PROFILE_PHOTO_URL_TTL', 60),
     ],
 
     'reports' => [
@@ -205,6 +266,18 @@ return [
     'require_training_before_deployment' => true,
 
     /*
+    | Client approval before deployment (audit R-11, question Q3).
+    |
+    | Whether CDE requires the client's approval to be recorded in EMPOWER
+    | before a worker is deployed has not been confirmed. Off keeps the
+    | behaviour the system has always had - a deployment can be recorded from
+    | "ready for deployment" - but the history now says so plainly instead of
+    | inventing an approval. On means a deployment needs the applicant to have
+    | been moved to "approved" by an officer first. Change it once CDE answers.
+    */
+    'require_client_approval_before_deployment' => false,
+
+    /*
     | Record retention.
     |
     | Every value here is an operational policy the agency gave us, not a legal
@@ -224,6 +297,22 @@ return [
         // which a decision becomes due, not the point at which it is too late.
         'legal_document_years' => 5,
     ],
+
+    /*
+    | Password recovery (audit FN-03, decided 2026-10-19).
+    |
+    | Office reset with a forced change works without any of this. The email
+    | reset link is a second route back in, and stays off unless it is switched
+    | on here AND the mailer is a real one (MAIL_MAILER other than "log" or
+    | "array"): a "sent" link that only reached the log file would put a live
+    | reset token in the log.
+    */
+    'password_reset' => [
+        'email_enabled' => (bool) env('PASSWORD_RESET_EMAIL', false),
+    ],
+
+    // Where the emailed reset link points: the address people open EMPOWER at.
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
 
     /*
     | Printed in the header of every exported report and shown to applicants in

@@ -1,89 +1,97 @@
 import * as React from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, Users, UserCheck, ChevronRight, X } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Plus, Users, UserCheck, ChevronRight, X, AlertTriangle } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
+import { useApplicantStatuses } from '@/hooks/useApplicantStatuses'
 import { useAuth } from '@/contexts/AuthContext'
 import { PageHeader } from '@/components/PageHeader'
+import PersonAvatar from '@/components/PersonAvatar'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { StatusBadge } from '@/components/ui/badge'
+import { Badge, StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
+import { Pagination } from '@/components/Pagination'
 import { formatDate } from '@/lib/utils'
 import NewApplicantDialog from '@/components/dialogs/NewApplicantDialog'
 
-const LIFECYCLE_STATUSES = [
-  'applied',
-  'initial_screening',
-  'incomplete_requirements',
-  'primary_requirements_complete',
-  'pending_final_requirements',
-  'ready_for_deployment',
-  'training_scheduled',
-  'training_completed',
-  'client_evaluation',
-  'approved',
-  'deployed',
-  'active',
-  'resigned',
-  'terminated',
-  'archived',
+/** Filters kept in the address bar, so a filtered list can be bookmarked or shared. */
+const FILTER_KEYS = [
+  'search',
+  'current_status',
+  'folder_category',
+  'client_company_id',
+  'preferred_position_id',
+  'awaiting_identity_check',
+  'documents_lapsed',
 ]
 
+/**
+ * The applicant list.
+ *
+ * Every filter is applied by the server, together with the search and the
+ * paging, so a filtered page never shows somebody the filters exclude. The
+ * checkboxes and the "bulk action" bar that used to sit here were removed
+ * (audit FN-01, decided 2026-10-19): no CDE procedure acts on applicants in
+ * batches, and the only button the bar ever had was Deselect.
+ */
 export default function Applicants() {
   const { can } = useAuth()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [dialogOpen, setDialogOpen] = React.useState(false)
 
-  const search = searchParams.get('search') ?? ''
-  const status = searchParams.get('current_status') ?? ''
-  const folder = searchParams.get('folder_category') ?? ''
-  const awaiting = searchParams.get('awaiting_identity_check') === '1'
-  // Set when arriving from a client's position: "who applied for this role".
-  const position = searchParams.get('preferred_position_id') ?? ''
+  const value = (key) => searchParams.get(key) ?? ''
+  const search = value('search')
+  const status = value('current_status')
+  const folder = value('folder_category')
+  const client = value('client_company_id')
+  const position = value('preferred_position_id')
+  const awaiting = value('awaiting_identity_check') === '1'
+  const lapsed = value('documents_lapsed') === '1'
   const page = Number(searchParams.get('page') ?? 1)
 
   const debouncedSearch = useDebounced(search)
+  const { statuses } = useApplicantStatuses()
+  const { data: clients } = useApi('/clients', { status: 'active', per_page: 100 }, { cacheKey: 'clients-active' })
+  const { data: positionData } = useApi('/positions', { client_company_id: client || undefined })
 
   const { data, meta, loading, error, refetch } = useApi('/applicants', {
     search: debouncedSearch || undefined,
     current_status: status || undefined,
     folder_category: folder || undefined,
-    awaiting_identity_check: awaiting ? 1 : undefined,
+    client_company_id: client || undefined,
     preferred_position_id: position || undefined,
+    awaiting_identity_check: awaiting ? 1 : undefined,
+    documents_lapsed: lapsed ? 1 : undefined,
     page,
     per_page: 20,
   })
 
-  const filtered = Boolean(search || status || folder || awaiting || position)
-  const [selectedIds, setSelectedIds] = React.useState([])
-  const allSelected = data?.length > 0 && selectedIds.length === data.length
+  const filtered = FILTER_KEYS.some((key) => searchParams.get(key))
 
-  function toggleSelectAll() {
-    if (allSelected) {
-      setSelectedIds([])
-    } else {
-      setSelectedIds(data.map((a) => a.id))
-    }
-  }
-
-  function toggleSelect(id) {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    )
-  }
-
-  function updateFilter(key, value) {
-    const next = new URLSearchParams(searchParams)
-    if (value) next.set(key, value)
-    else next.delete(key)
-    if (key !== 'page') next.delete('page')
-    setSearchParams(next)
+  function updateFilter(key, next) {
+    const params = new URLSearchParams(searchParams)
+    if (next) params.set(key, next)
+    else params.delete(key)
+    if (key !== 'page') params.delete('page')
+    // A position belongs to one client; choosing another client clears it.
+    if (key === 'client_company_id') params.delete('preferred_position_id')
+    setSearchParams(params)
   }
 
   function clearFilters() {
     setSearchParams(new URLSearchParams())
   }
+
+  // The whole row opens the record for a pointer; the name stays a real link
+  // for the keyboard and for opening in a new tab.
+  function openRow(event, applicant) {
+    if (event.target.closest('a, button')) return
+    navigate(`/applicants/${applicant.id}`)
+  }
+
+  const positionOptions = positionData?.positions ?? []
 
   return (
     <div className="space-y-4">
@@ -103,31 +111,51 @@ export default function Applicants() {
       <FilterToolbar
         search={search}
         onSearchChange={(val) => updateFilter('search', val)}
-        searchPlaceholder="Search by name, applicant code, or contact…"
+        searchPlaceholder="Search by name, code, position, contact or email…"
         filters={[
           {
             id: 'current_status',
-            label: 'All Statuses',
+            label: 'All statuses',
             value: status,
             onChange: (val) => updateFilter('current_status', val),
             options: [
-              { value: '', label: 'All Statuses' },
-              ...LIFECYCLE_STATUSES.map((val) => ({
-                value: val,
-                label: val.split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' '),
-              })),
+              { value: '', label: 'All statuses' },
+              ...statuses.map((s) => ({ value: s.value, label: s.label })),
             ],
           },
           {
             id: 'folder_category',
-            label: 'All Folders',
+            label: 'All folders',
             value: folder,
             onChange: (val) => updateFilter('folder_category', val),
             options: [
-              { value: '', label: 'All Folders' },
+              { value: '', label: 'All folders' },
               { value: 'folder_1', label: 'Folder 1 — Deployable' },
-              { value: 'folder_2', label: 'Folder 2 — Primary Complete' },
-              { value: 'folder_3', label: 'Folder 3 — Resume Only' },
+              { value: 'folder_2', label: 'Folder 2 — Primary complete' },
+              { value: 'folder_3', label: 'Folder 3 — Resume only' },
+            ],
+          },
+          {
+            id: 'client_company_id',
+            label: 'All clients',
+            value: client,
+            onChange: (val) => updateFilter('client_company_id', val),
+            options: [
+              { value: '', label: 'All clients' },
+              ...(clients ?? []).map((c) => ({ value: String(c.id), label: c.company_name })),
+            ],
+          },
+          {
+            id: 'preferred_position_id',
+            label: 'All positions',
+            value: position,
+            onChange: (val) => updateFilter('preferred_position_id', val),
+            options: [
+              { value: '', label: 'All positions' },
+              ...positionOptions.map((p) => ({
+                value: String(p.id),
+                label: client || !p.company ? p.position_title : `${p.position_title} — ${p.company}`,
+              })),
             ],
           },
         ]}
@@ -137,6 +165,12 @@ export default function Applicants() {
             label: 'Awaiting ID check',
             active: awaiting,
             onToggle: () => updateFilter('awaiting_identity_check', awaiting ? '' : '1'),
+          },
+          {
+            id: 'documents_lapsed',
+            label: 'Documents lapsed',
+            active: lapsed,
+            onToggle: () => updateFilter('documents_lapsed', lapsed ? '' : '1'),
           },
         ]}
         resultCount={meta?.total}
@@ -149,7 +183,9 @@ export default function Applicants() {
           <span>
             Showing applicants who applied for{' '}
             <span className="font-medium text-foreground">
-              {data?.[0]?.preferred_position ?? 'the selected position'}
+              {positionOptions.find((p) => String(p.id) === position)?.position_title ??
+                data?.[0]?.preferred_position ??
+                'the selected position'}
             </span>
           </span>
           <Button
@@ -159,32 +195,34 @@ export default function Applicants() {
             onClick={() => updateFilter('preferred_position_id', '')}
           >
             <X className="h-3 w-3" />
-            Show everyone
+            Show every position
           </Button>
         </div>
       )}
 
       {loading ? (
-        <Table>
+        // A loading placeholder, not table rows, so it sits in the table's
+        // panel rather than inside a <table>.
+        <div className="w-full rounded-panel bg-card p-3 sm:p-4">
           <SkeletonRows rows={8} columns={6} />
-        </Table>
+        </div>
       ) : error ? (
         <ErrorState message={error.message} onRetry={refetch} />
       ) : !data?.length ? (
         <EmptyState
           icon={awaiting ? UserCheck : Users}
           title={
-            awaiting
+            awaiting && !search
               ? 'Nobody is waiting for an identity check'
               : filtered
                 ? 'No applicants match these filters'
                 : 'No applicants recorded yet'
           }
           description={
-            awaiting
+            awaiting && !search
               ? 'Everyone who registered online has already been verified at the office.'
               : filtered
-                ? 'Try clearing a filter or searching for a different keyword.'
+                ? 'Try clearing a filter, or search for part of the name — every word you type must match.'
                 : 'Register an applicant when they visit the office to submit their documents.'
           }
           action={
@@ -192,6 +230,10 @@ export default function Applicants() {
               <Button size="sm" onClick={() => setDialogOpen(true)}>
                 <Plus className="h-4 w-4" />
                 Register Applicant
+              </Button>
+            ) : filtered ? (
+              <Button size="sm" variant="outline" onClick={clearFilters}>
+                Clear filters
               </Button>
             ) : null
           }
@@ -201,69 +243,62 @@ export default function Applicants() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-10">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={toggleSelectAll}
-                    className="h-4 w-4 rounded-control border-border text-brand focus:ring-brand"
-                    aria-label="Select all applicants"
-                  />
-                </TableHead>
                 <TableHead>Applicant & Code</TableHead>
                 <TableHead>Position Sought</TableHead>
                 <TableHead>Current Status</TableHead>
                 <TableHead>Folder Category</TableHead>
                 <TableHead>Application Date</TableHead>
-                <TableHead className="w-8"></TableHead>
+                <TableHead className="w-8">
+                  <span className="sr-only">Open</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data.map((applicant) => (
                 <TableRow
                   key={applicant.id}
-                  className={`group cursor-pointer ${selectedIds.includes(applicant.id) ? 'bg-muted/60' : ''}`}
+                  className="group cursor-pointer"
+                  onClick={(event) => openRow(event, applicant)}
                 >
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(applicant.id)}
-                      onChange={() => toggleSelect(applicant.id)}
-                      className="h-4 w-4 rounded-control border-border text-brand focus:ring-brand"
-                      aria-label={`Select ${applicant.full_name}`}
-                    />
-                  </TableCell>
-
-                  {/* Identity Block: Full Name + Applicant Code */}
+                  {/* Identity: full name and applicant code */}
                   <TableCell>
-                    <Link to={`/applicants/${applicant.id}`} className="block">
-                      <div className="flex items-center gap-1.5">
-                        <p className="font-semibold text-foreground group-hover:text-brand transition-colors">
-                          {applicant.full_name}
+                    <Link to={`/applicants/${applicant.id}`} className="flex items-center gap-3">
+                      <PersonAvatar src={applicant.photo_url} name={applicant.full_name} size="sm" />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <p className="font-semibold text-foreground transition-colors group-hover:text-brand">
+                            {applicant.full_name}
+                          </p>
+                          {applicant.awaiting_identity_check && (
+                            <span className="rounded-tag bg-status-warning-bg px-1.5 py-0.5 text-[10px] font-medium text-status-warning-text">
+                              Unverified
+                            </span>
+                          )}
+                        </div>
+                        {/* Never an invented identifier: a record without a code says so. */}
+                        <p className="font-mono text-xs tabular-nums text-muted-foreground">
+                          {applicant.applicant_code || 'No code'}
                         </p>
-                        {applicant.awaiting_identity_check && (
-                          <span className="text-[10px] font-medium bg-status-warning-bg text-status-warning-text px-1.5 py-0.5 rounded-tag">
-                            Unverified
-                          </span>
-                        )}
                       </div>
-                      <p className="font-mono text-xs text-muted-foreground tabular-nums">
-                        {applicant.applicant_code || `APP-${applicant.id}`}
-                      </p>
                     </Link>
                   </TableCell>
 
-                  {/* Position Sought */}
                   <TableCell className="text-sm font-medium text-foreground">
                     {applicant.preferred_position || 'General Application'}
                   </TableCell>
 
-                  {/* Status Badge */}
                   <TableCell>
-                    <StatusBadge status={applicant.current_status} />
+                    <div className="flex flex-col items-start gap-1">
+                      <StatusBadge status={applicant.current_status} label={applicant.status_label} />
+                      {applicant.documents_lapsed && (
+                        <Badge tone="warning" title="The status was reached with every document verified; the folder now says one has lapsed or been rejected.">
+                          <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                          Documents lapsed
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
 
-                  {/* Folder Category Tag */}
                   <TableCell>
                     <StatusBadge
                       status={applicant.folder_category}
@@ -271,16 +306,12 @@ export default function Applicants() {
                     />
                   </TableCell>
 
-                  {/* Application Date */}
-                  <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground tabular-nums">
+                  <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">
                     {formatDate(applicant.application_date)}
                   </TableCell>
 
-                  {/* Action Link */}
                   <TableCell className="text-right">
-                    <Link to={`/applicants/${applicant.id}`} className="text-muted-foreground group-hover:text-brand">
-                      <ChevronRight className="h-4 w-4" />
-                    </Link>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-brand" aria-hidden="true" />
                   </TableCell>
                 </TableRow>
               ))}
@@ -291,53 +322,7 @@ export default function Applicants() {
         </div>
       )}
 
-      {/* Floating Bulk Action Bar */}
-      {selectedIds.length > 0 && (
-        <div className="fixed bottom-6 right-6 z-40 flex items-center gap-3 rounded-panel border border-border bg-card p-3 shadow-md">
-          <span className="text-xs font-semibold text-foreground font-mono tabular-nums">
-            {selectedIds.length} applicant{selectedIds.length > 1 ? 's' : ''} selected
-          </span>
-          <div className="h-4 w-px bg-border" />
-          <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])} className="h-7 text-xs">
-            Deselect
-          </Button>
-        </div>
-      )}
-
       <NewApplicantDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreated={refetch} />
-    </div>
-  )
-}
-
-export function Pagination({ meta, onPage }) {
-  if (!meta || meta.last_page <= 1) return null
-
-  return (
-    <div className="flex items-center justify-between pt-2 text-xs text-muted-foreground font-mono tabular-nums">
-      <div>
-        Showing page <span className="font-semibold text-foreground">{meta.current_page}</span> of{' '}
-        <span className="font-semibold text-foreground">{meta.last_page}</span> ({meta.total} total)
-      </div>
-      <div className="flex items-center gap-1">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={meta.current_page <= 1}
-          onClick={() => onPage(meta.current_page - 1)}
-          className="h-8 text-xs font-sans"
-        >
-          Previous
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={meta.current_page >= meta.last_page}
-          onClick={() => onPage(meta.current_page + 1)}
-          className="h-8 text-xs font-sans"
-        >
-          Next
-        </Button>
-      </div>
     </div>
   )
 }

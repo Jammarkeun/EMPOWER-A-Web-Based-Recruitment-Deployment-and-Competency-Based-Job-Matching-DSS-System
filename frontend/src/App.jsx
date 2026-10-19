@@ -4,52 +4,75 @@ import { Loader2, ShieldAlert } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { homePathFor } from '@/lib/utils'
 import { NotificationsProvider } from '@/contexts/NotificationsContext'
-import AppLayout from '@/components/AppLayout'
 import { Button } from '@/components/ui/button'
 
+/*
+ * The two public entry points load with the app. Everything else loads when
+ * it is first opened (audit PERF-01): an applicant registering on a phone used
+ * to download the whole staff system, the coordinator workspace and Chart.js
+ * before the form appeared. The layouts are split too, so a portal user never
+ * downloads the staff shell and the other way round.
+ */
 import Landing from '@/pages/Landing'
 import Login from '@/pages/Login'
-import Register from '@/pages/Register'
-import Dashboard from '@/pages/Dashboard'
-import Applicants from '@/pages/Applicants'
-import ApplicantDetail from '@/pages/ApplicantDetail'
-import JobRequests from '@/pages/JobRequests'
-import JobRequestDetail from '@/pages/JobRequestDetail'
-import Clients from '@/pages/Clients'
-import ClientDetail from '@/pages/ClientDetail'
-import DepartmentDetail from '@/pages/DepartmentDetail'
-import Employees from '@/pages/Employees'
-import EmployeeDetail from '@/pages/EmployeeDetail'
-import Deployments from '@/pages/Deployments'
-import Trainings from '@/pages/Trainings'
-import Separations from '@/pages/Separations'
-import Archives from '@/pages/Archives'
-import AuditLogs from '@/pages/AuditLogs'
-import Reports from '@/pages/Reports'
-import Documents from '@/pages/Documents'
-import Attendance from '@/pages/Attendance'
-import ViolationReports from '@/pages/ViolationReports'
-import ViolationReportReview from '@/pages/ViolationReportReview'
-import CoordinatorDashboard from '@/pages/coordinator/CoordinatorDashboard'
-import CoordinatorCompany from '@/pages/coordinator/CoordinatorCompany'
-import CoordinatorEmployees from '@/pages/coordinator/CoordinatorEmployees'
-import CoordinatorEmployeeDetail from '@/pages/coordinator/CoordinatorEmployeeDetail'
-import CoordinatorDeployments from '@/pages/coordinator/CoordinatorDeployments'
-import CoordinatorReports from '@/pages/coordinator/CoordinatorReports'
-import CoordinatorReport from '@/pages/coordinator/CoordinatorReport'
-import CoordinatorRequests from '@/pages/coordinator/CoordinatorRequests'
-import Users from '@/pages/Users'
-import Settings from '@/pages/Settings'
 
-import PortalLayout from '@/pages/portal/PortalLayout'
-import PortalOverview from '@/pages/portal/PortalOverview'
-import PortalDocuments from '@/pages/portal/PortalDocuments'
-import PortalEmployment from '@/pages/portal/PortalEmployment'
-import PortalProfile from '@/pages/portal/PortalProfile'
-import PortalSettings from '@/pages/portal/PortalSettings'
+const AppLayout = React.lazy(() => import('@/components/AppLayout'))
+const Register = React.lazy(() => import('@/pages/Register'))
+const ForgotPassword = React.lazy(() => import('@/pages/ForgotPassword'))
+const ResetPassword = React.lazy(() => import('@/pages/ResetPassword'))
+const ChangePasswordRequired = React.lazy(() => import('@/pages/ChangePasswordRequired'))
+const Dashboard = React.lazy(() => import('@/pages/Dashboard'))
+const Applicants = React.lazy(() => import('@/pages/Applicants'))
+const ApplicantDetail = React.lazy(() => import('@/pages/ApplicantDetail'))
+const JobRequests = React.lazy(() => import('@/pages/JobRequests'))
+const JobRequestDetail = React.lazy(() => import('@/pages/JobRequestDetail'))
+const Clients = React.lazy(() => import('@/pages/Clients'))
+const ClientDetail = React.lazy(() => import('@/pages/ClientDetail'))
+const DepartmentDetail = React.lazy(() => import('@/pages/DepartmentDetail'))
+const Employees = React.lazy(() => import('@/pages/Employees'))
+const EmployeeDetail = React.lazy(() => import('@/pages/EmployeeDetail'))
+const Deployments = React.lazy(() => import('@/pages/Deployments'))
+const Trainings = React.lazy(() => import('@/pages/Trainings'))
+const TrainingDetail = React.lazy(() => import('@/pages/TrainingDetail'))
+const Separations = React.lazy(() => import('@/pages/Separations'))
+const Archives = React.lazy(() => import('@/pages/Archives'))
+const Retention = React.lazy(() => import('@/pages/Retention'))
+const AuditLogs = React.lazy(() => import('@/pages/AuditLogs'))
+const Reports = React.lazy(() => import('@/pages/Reports'))
+const Documents = React.lazy(() => import('@/pages/Documents'))
+const Attendance = React.lazy(() => import('@/pages/Attendance'))
+const ViolationReports = React.lazy(() => import('@/pages/ViolationReports'))
+const ViolationReportReview = React.lazy(() => import('@/pages/ViolationReportReview'))
+const CoordinatorDashboard = React.lazy(() => import('@/pages/coordinator/CoordinatorDashboard'))
+const CoordinatorCompany = React.lazy(() => import('@/pages/coordinator/CoordinatorCompany'))
+const CoordinatorEmployees = React.lazy(() => import('@/pages/coordinator/CoordinatorEmployees'))
+const CoordinatorEmployeeDetail = React.lazy(() => import('@/pages/coordinator/CoordinatorEmployeeDetail'))
+const CoordinatorDeployments = React.lazy(() => import('@/pages/coordinator/CoordinatorDeployments'))
+const CoordinatorReports = React.lazy(() => import('@/pages/coordinator/CoordinatorReports'))
+const CoordinatorReport = React.lazy(() => import('@/pages/coordinator/CoordinatorReport'))
+const CoordinatorRequests = React.lazy(() => import('@/pages/coordinator/CoordinatorRequests'))
+const Users = React.lazy(() => import('@/pages/Users'))
+const Settings = React.lazy(() => import('@/pages/Settings'))
+
+const PortalLayout = React.lazy(() => import('@/pages/portal/PortalLayout'))
+const PortalOverview = React.lazy(() => import('@/pages/portal/PortalOverview'))
+const PortalDocuments = React.lazy(() => import('@/pages/portal/PortalDocuments'))
+const PortalEmployment = React.lazy(() => import('@/pages/portal/PortalEmployment'))
+const PortalProfile = React.lazy(() => import('@/pages/portal/PortalProfile'))
+const PortalSettings = React.lazy(() => import('@/pages/portal/PortalSettings'))
+
+/** Shown while a layout or a public page is first downloaded. */
+function FullPageLoader() {
+  return (
+    <div className="flex min-h-screen items-center justify-center" role="status">
+      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+      <span className="sr-only">Loading…</span>
+    </div>
+  )
+}
 
 export default function App() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, user } = useAuth()
 
   return (
     /*
@@ -60,13 +83,29 @@ export default function App() {
      * regardless of how many badges are displayed. Disabled while signed out,
      * because an unauthenticated poll would be a 401 a minute.
      */
-    <NotificationsProvider enabled={isAuthenticated}>
+    <NotificationsProvider enabled={isAuthenticated && !user?.must_change_password}>
+    <React.Suspense fallback={<FullPageLoader />}>
     <Routes>
       {/* Public front door. Signed-in visitors are redirected onward by the
           Landing component itself, so a bookmark of "/" behaves sensibly for
           both staff and portal users. */}
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
+
+      {/* Getting back into an account: through the office, or by an emailed
+          link when the server can send one. */}
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
+
+      {/* The only page an account on an office-issued password can use. */}
+      <Route
+        path="/change-password"
+        element={
+          <RequireAuth>
+            <ChangePasswordRequired />
+          </RequireAuth>
+        }
+      />
 
       {/* Applicant self-registration. Public by necessity — the people who need
           it do not have accounts yet. The record it creates is held before
@@ -127,6 +166,7 @@ export default function App() {
         <Route path="/applicants/:id" element={<Guard permission="applicants.view"><ApplicantDetail /></Guard>} />
 
         <Route path="/trainings" element={<Guard permission="training.view"><Trainings /></Guard>} />
+        <Route path="/trainings/:id" element={<Guard permission="training.view"><TrainingDetail /></Guard>} />
 
         <Route path="/deployments" element={<Guard permission="deployment.view"><Deployments /></Guard>} />
         <Route path="/employees" element={<Guard permission="employees.view"><Employees /></Guard>} />
@@ -156,6 +196,7 @@ export default function App() {
         <Route path="/documents" element={<Guard permission="applicants.view"><Documents /></Guard>} />
 
         <Route path="/archives" element={<Guard permission="archives.view"><Archives /></Guard>} />
+        <Route path="/retention" element={<Guard permission="archives.view"><Retention /></Guard>} />
         <Route path="/audit-logs" element={<Guard permission="audit.view"><AuditLogs /></Guard>} />
         <Route path="/users" element={<Guard permission="users.view"><Users /></Guard>} />
 
@@ -167,6 +208,7 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
+    </React.Suspense>
     </NotificationsProvider>
   )
 }
@@ -176,7 +218,7 @@ export default function App() {
  * were headed so they land there after signing in rather than on the dashboard.
  */
 function RequireAuth({ children }) {
-  const { isAuthenticated, loading } = useAuth()
+  const { isAuthenticated, loading, user } = useAuth()
   const location = useLocation()
 
   if (loading) {
@@ -189,6 +231,11 @@ function RequireAuth({ children }) {
 
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  }
+
+  // The API refuses everything else for this account until it is done.
+  if (user?.must_change_password && location.pathname !== '/change-password') {
+    return <Navigate to="/change-password" replace />
   }
 
   return children

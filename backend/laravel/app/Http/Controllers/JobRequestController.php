@@ -15,6 +15,7 @@ use App\Models\JobRequest;
 use App\Models\JobRequestMatch;
 use App\Models\RequestCriteria;
 use App\Services\AuditService;
+use App\Services\JobRequestLifecycleService;
 use App\Services\Matching\CompetencyScoringService;
 use App\Services\ReferenceCodeService;
 use Illuminate\Http\JsonResponse;
@@ -28,6 +29,7 @@ class JobRequestController extends Controller
         private readonly ReferenceCodeService $codes,
         private readonly CompetencyScoringService $scoring,
         private readonly AuditService $audit,
+        private readonly JobRequestLifecycleService $requests,
     ) {
     }
 
@@ -178,7 +180,7 @@ class JobRequestController extends Controller
         $jobRequest->load(['company', 'department', 'criteria.criterion'])
             ->loadCount(['matches']);
 
-        return ApiResponse::success(new JobRequestResource($jobRequest));
+        return ApiResponse::success($this->presentWithHistory($jobRequest));
     }
 
     public function update(Request $request, JobRequest $jobRequest): JsonResponse
@@ -212,43 +214,66 @@ class JobRequestController extends Controller
         }
 
         $before = $jobRequest->only(array_keys($data));
-        $jobRequest->update($data);
+
+        DB::transaction(function () use ($jobRequest, $data, $before, $request) {
+            $jobRequest->update($data);
+
+            // A new headcount can fill a request, or reopen a filled one; the
+            // status follows the numbers rather than going stale beside them.
+            if (isset($data['workers_needed']) && (int) $data['workers_needed'] !== (int) ($before['workers_needed'] ?? 0)) {
+                $this->requests->syncToHeadcount(
+                    $jobRequest->fresh(),
+                    $request->user(),
+                    sprintf('Workers needed changed from %d to %d.', $before['workers_needed'], $data['workers_needed']),
+                    'headcount'
+                );
+            }
+        });
 
         $this->audit->recordUpdate('job_requests', JobRequest::class, $jobRequest->id, $before, $data);
 
         return ApiResponse::success(new JobRequestResource($jobRequest->fresh()), 'Manpower request updated');
     }
 
+    /**
+     * Change a request's status by hand (audit R-16).
+     *
+     * Only moves the transition map allows; closing, cancelling and reopening
+     * need a reason; every change is kept in the request's status history.
+     */
     public function changeStatus(Request $request, JobRequest $jobRequest): JsonResponse
     {
         $this->authorize('close', $jobRequest);
 
         $data = $request->validate([
-            'request_status' => ['required', Rule::in(['open', 'in_progress', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'])],
+            'request_status' => ['required', Rule::in(array_keys(config('empower.job_request_transitions')))],
             'reason' => ['nullable', 'string', 'max:255'],
         ]);
 
-        if ($data['request_status'] === 'fulfilled' && $jobRequest->workers_fulfilled < $jobRequest->workers_needed) {
-            return ApiResponse::error(sprintf(
-                'Only %d of %d positions are filled, so this request cannot be marked fulfilled. Use "closed" to end it early.',
-                $jobRequest->workers_fulfilled,
-                $jobRequest->workers_needed
-            ), 400);
-        }
+        $jobRequest = $this->requests->change($jobRequest, $data['request_status'], $request->user(), $data['reason'] ?? null);
 
-        $before = ['request_status' => $jobRequest->request_status];
-        $jobRequest->forceFill(['request_status' => $data['request_status']])->save();
+        return ApiResponse::success($this->presentWithHistory($jobRequest), 'Request status updated');
+    }
 
-        $this->audit->record(
-            'update',
-            'job_requests',
-            JobRequest::class,
-            $jobRequest->id,
-            $before,
-            ['request_status' => $data['request_status'], 'reason' => $data['reason'] ?? null]
-        );
+    /**
+     * The request, its status history, and the changes a person can make next.
+     */
+    private function presentWithHistory(JobRequest $jobRequest): array
+    {
+        $jobRequest->loadMissing(['company', 'department', 'statusHistory.changedBy']);
 
-        return ApiResponse::success(new JobRequestResource($jobRequest->fresh()), 'Request status updated');
+        return array_merge((new JobRequestResource($jobRequest))->resolve(), [
+            'status_history' => $jobRequest->statusHistory->map(fn ($h) => [
+                'id' => $h->id,
+                'from_status' => $h->from_status,
+                'to_status' => $h->to_status,
+                'reason' => $h->reason,
+                'source' => $h->source,
+                'changed_by' => $h->changedBy?->full_name,
+                'changed_at' => $h->changed_at?->toIso8601String(),
+            ])->values(),
+            'status_changes' => $this->requests->manualOptions($jobRequest),
+        ]);
     }
 
     // ------------------------------------------------------------------ criteria
@@ -511,6 +536,12 @@ class JobRequestController extends Controller
         }
 
         DB::transaction(function () use ($jobRequest, $data, $catalog, $request) {
+            // The lock an evaluation holds while it runs, so criteria are
+            // never replaced under a run in progress; the version tells every
+            // result scored before this save that it is out of date (audit
+            // S-02).
+            JobRequest::query()->whereKey($jobRequest->id)->lockForUpdate()->firstOrFail();
+
             $jobRequest->criteria()->delete();
 
             foreach ($data['criteria'] as $criterion) {
@@ -526,6 +557,8 @@ class JobRequestController extends Controller
                     'created_by' => $request->user()->id,
                 ]);
             }
+
+            JobRequest::query()->whereKey($jobRequest->id)->increment('criteria_version');
         });
 
         $this->audit->record(
@@ -554,7 +587,9 @@ class JobRequestController extends Controller
         $this->authorize('evaluate', $jobRequest);
 
         $options = $request->validate([
-            'candidate_scope' => ['nullable', 'string'],
+            // Only a status the pool can contain; anything else used to run an
+            // evaluation of nobody and report it as done.
+            'candidate_scope' => ['nullable', 'string', Rule::in(config('empower.evaluable_applicant_statuses'))],
             'limit' => ['nullable', 'integer', 'between:1,500'],
         ]);
 
@@ -564,14 +599,16 @@ class JobRequestController extends Controller
             'job_request_id' => $jobRequest->id,
             'evaluated_candidates' => count($scores),
             'qualified_candidates' => count(array_filter($scores, fn ($s) => $s->passedAllGates)),
-            'ranked' => MatchResource::collection($this->orderedMatches($jobRequest)),
+            // Re-read: criteria saved while this request waited for the lock
+            // would otherwise make the fresh results look out of date.
+            'ranked' => MatchResource::collection($this->orderedMatches($jobRequest->fresh())),
             'notice' => 'These are recommendations. Deployment requires explicit HR action.',
         ], 'Evaluation completed');
     }
 
     public function rankings(Request $request, JobRequest $jobRequest): JsonResponse
     {
-        $this->authorize('view', $jobRequest);
+        $this->authorize('viewRankings', $jobRequest);
 
         $filters = $request->validate([
             'only_qualified' => ['nullable', 'boolean'],

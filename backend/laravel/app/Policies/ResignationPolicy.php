@@ -14,7 +14,7 @@ class ResignationPolicy
 
     public function view(User $user, Resignation $resignation): bool
     {
-        return $user->can('separation.view')
-            || $user->employee_id === $resignation->employee_id;
+        // Staff only; an employee sees their own filing through the portal.
+        return $user->can('separation.view');
     }
 }

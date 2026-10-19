@@ -95,9 +95,53 @@ export function AuthProvider({ children }) {
 
   const hasRole = React.useCallback((role) => user?.roles?.includes(role) ?? false, [user])
 
+  /** Re-reads the signed-in profile from the server. */
+  const refreshUser = React.useCallback(async () => {
+    try {
+      const response = await get('/auth/me')
+      setUser(response.data)
+      return response.data
+    } catch {
+      return null
+    }
+  }, [])
+
+  /**
+   * Applies a change the server has just confirmed, such as a new profile
+   * picture, so every screen showing the user updates at once.
+   */
+  const mergeUser = React.useCallback((fields) => {
+    setUser((current) => (current ? { ...current, ...fields } : current))
+  }, [])
+
+  /*
+   * The profile picture link is signed and expires. When it fails to load, a
+   * fresh one is fetched - at most every five minutes, so a picture that is
+   * genuinely gone cannot set off a loop of requests. Until then the avatar
+   * shows initials.
+   */
+  const lastPhotoRenewal = React.useRef(0)
+  const renewPhoto = React.useCallback(() => {
+    if (Date.now() - lastPhotoRenewal.current < 5 * 60_000) return
+    lastPhotoRenewal.current = Date.now()
+    refreshUser()
+  }, [refreshUser])
+
   const value = React.useMemo(
-    () => ({ user, loading, login, register, logout, can, hasRole, isAuthenticated: !!user }),
-    [user, loading, login, register, logout, can, hasRole]
+    () => ({
+      user,
+      loading,
+      login,
+      register,
+      logout,
+      can,
+      hasRole,
+      refreshUser,
+      mergeUser,
+      renewPhoto,
+      isAuthenticated: !!user,
+    }),
+    [user, loading, login, register, logout, can, hasRole, refreshUser, mergeUser, renewPhoto]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

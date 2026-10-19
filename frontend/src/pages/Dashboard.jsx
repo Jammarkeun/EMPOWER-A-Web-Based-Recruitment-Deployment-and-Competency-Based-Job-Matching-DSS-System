@@ -9,16 +9,23 @@ import {
   CalendarClock,
   FileX2,
   AlertTriangle,
-  ArrowRight,
+  ArrowUpRight,
   CheckCircle2,
   FolderCheck,
+  Truck,
+  BarChart3,
+  TrendingUp,
+  Layers,
+  Flag,
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
+import { useAuth } from '@/contexts/AuthContext'
 import { PageHeader, StatTile, Bento } from '@/components/PageHeader'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card } from '@/components/ui/card'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { PanelTitle, InsetRow, RowIcon, ProgressTrack } from '@/components/ui/panel'
 import { TrendChart, CategoryBarChart, PipelineChart } from '@/components/charts'
 import { formatNumber, formatDate, formatDateTime, cn } from '@/lib/utils'
 
@@ -26,17 +33,14 @@ import { formatNumber, formatDate, formatDateTime, cn } from '@/lib/utils'
  * The dashboard.
  *
  * Laid out as a bento rather than a uniform grid, because the panels are not
- * equally important and a grid of identical cards says they are. Size carries
- * meaning here: the hiring-against-attrition trend is the widest thing on the
- * page because it is the one panel that answers "how are we doing"; the queue of
- * outstanding work is tall and sits beside it because it answers "what do I do
- * next"; everything else is reference the reader drops into afterwards.
- *
- * Reading order is deliberate too. Work waiting on a person comes before any
- * chart — someone opening this at nine in the morning wants the queue, not a
- * twelve-month line.
+ * equally important and a grid of identical cards says they are. The headline
+ * figures come first, then the three panels someone opening this at nine in the
+ * morning actually acts on - who is ready to place, which requests are due, and
+ * what is waiting on HR - and only then the charts, which are reference the
+ * reader drops into afterwards.
  */
 export default function Dashboard() {
+  const { user } = useAuth()
   const { data, loading, error, refetch, updatedAt } = useApi('/dashboard/summary')
   const [now, setNow] = React.useState(() => Date.now())
 
@@ -60,16 +64,19 @@ export default function Dashboard() {
     open_requests,
   } = data
 
+  const firstName = String(user?.full_name ?? '').trim().split(/\s+/)[0]
+
   return (
     <>
       <PageHeader
-        title="Dashboard"
-        description="Recruitment and deployment activity for CDE Manpower Services."
+        title={firstName ? `${greeting(now)}, ${firstName}` : 'Dashboard'}
+        description={
+          <span role="status">
+            {updatedAt && now - updatedAt > 300_000 ? 'Data may be stale. ' : ''}
+            Updated {formatDateTime(updatedAt)}
+          </span>
+        }
       />
-      <p className="mb-4 text-xs text-muted-foreground" role="status">
-        {updatedAt && now - updatedAt > 300_000 ? 'Data may be stale. ' : ''}
-        Updated {formatDateTime(updatedAt)}
-      </p>
 
       <Bento>
         {/* ---------------------------------------------------- headline row */}
@@ -77,19 +84,9 @@ export default function Dashboard() {
           <StatTile
             label="Active applicants"
             value={formatNumber(headline.active_applicants)}
-            hint={`${formatNumber(headline.total_applicants)} on record in total`}
+            hint={`${formatNumber(headline.total_applicants)} on record`}
             icon={Users}
             to="/applicants"
-          />
-        </Cell>
-        <Cell span="xl:col-span-3 sm:col-span-3">
-          <StatTile
-            label="Ready for deployment"
-            value={formatNumber(headline.ready_for_deployment)}
-            hint="All requirements verified"
-            icon={UserCheck}
-            tone="success"
-            to="/applicants?folder_category=folder_1"
           />
         </Cell>
         <Cell span="xl:col-span-3 sm:col-span-3">
@@ -111,11 +108,48 @@ export default function Dashboard() {
             to="/job-requests?only_open=1"
           />
         </Cell>
+        <Cell span="xl:col-span-3 sm:col-span-3">
+          <StatTile
+            label="Deployed this month"
+            value={formatNumber(headline.deployments_this_month)}
+            hint={`${formatNumber(headline.resignations_this_month)} resigned · ${formatNumber(headline.terminations_this_month)} terminated`}
+            icon={Truck}
+            tone={headline.terminations_this_month > 0 ? 'destructive' : 'default'}
+          />
+        </Cell>
 
-        {/* ------------------------------------------- the story, and the queue */}
-        <Cell span="xl:col-span-8 sm:col-span-6">
+        {/* ------------------------------- ready, due, and waiting on someone */}
+        <Cell span="xl:col-span-4 sm:col-span-6">
+          <div className="flex h-full flex-col gap-4">
+            <ReadyHighlight ready={headline.ready_for_deployment} active={headline.active_applicants} />
+            <Panel
+              title="Applicants by stage"
+              icon={Layers}
+              description="Where the current pipeline sits, earliest stage first."
+              className="flex-1"
+            >
+              {applicants_by_status?.length ? (
+                <PipelineChart data={applicants_by_status} />
+              ) : (
+                <EmptyState title="No applicants yet" />
+              )}
+            </Panel>
+          </div>
+        </Cell>
+
+        <Cell span="xl:col-span-4 sm:col-span-3">
+          <OpenRequests requests={open_requests} />
+        </Cell>
+
+        <Cell span="xl:col-span-4 sm:col-span-3">
+          <ActionQueue attention={attention} />
+        </Cell>
+
+        {/* ------------------------------------------------------ the story */}
+        <Cell span="xl:col-span-12 sm:col-span-6">
           <Panel
             title="Hiring and attrition"
+            icon={TrendingUp}
             description="Deployments read against resignations and terminations, so replacement hiring is distinguishable from real growth."
           >
             {monthly_trend?.length ? (
@@ -126,74 +160,9 @@ export default function Dashboard() {
           </Panel>
         </Cell>
 
-        <Cell span="xl:col-span-4 sm:col-span-6">
-          <ActionQueue attention={attention} />
-        </Cell>
-
-        {/* --------------------------------------------------- pipeline shape */}
-        <Cell span="xl:col-span-5 sm:col-span-6">
-          <Panel title="Applicants by stage" description="Where the current pipeline sits, earliest stage first.">
-            {applicants_by_status?.length ? (
-              <PipelineChart data={applicants_by_status} />
-            ) : (
-              <EmptyState title="No applicants yet" />
-            )}
-          </Panel>
-        </Cell>
-
-        <Cell span="xl:col-span-3 sm:col-span-3">
-          <Panel
-            title="Document folders"
-            description="Applicants by document completeness."
-            icon={FolderCheck}
-            action={
-              // The document library is a different question from these folders
-              // - papers by kind, rather than one applicant's completeness - so
-              // it is linked from here rather than folded into it.
-              <Button variant="ghost" size="sm" asChild>
-                <Link to="/documents">
-                  Browse documents <ArrowRight className="h-3.5 w-3.5" />
-                </Link>
-              </Button>
-            }
-          >
-            <div className="space-y-2.5">
-              {applicants_by_folder?.map((folder) => (
-                <div key={folder.folder} className="rounded-lg border bg-muted/30 p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium leading-tight">{folder.label}</p>
-                    <span className="text-lg font-semibold leading-none">{formatNumber(folder.count)}</span>
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{folder.description}</p>
-                </div>
-              ))}
-            </div>
-          </Panel>
-        </Cell>
-
-        {/* ------------------------------------------------------- this month */}
-        <Cell span="xl:col-span-4 sm:col-span-3">
-          <Panel title="This month" description="Movement since the first of the month.">
-            <dl className="grid grid-cols-2 gap-2.5">
-              <MonthStat label="Deployments" value={headline.deployments_this_month} tone="success" />
-              <MonthStat label="Resignations" value={headline.resignations_this_month} />
-              <MonthStat
-                label="Terminations"
-                value={headline.terminations_this_month}
-                tone={headline.terminations_this_month > 0 ? 'destructive' : 'default'}
-              />
-              <MonthStat label="Client companies" value={headline.client_companies} />
-            </dl>
-          </Panel>
-        </Cell>
-
         {/* ------------------------------------------------------ the details */}
         <Cell span="xl:col-span-7 sm:col-span-6">
-          <OpenRequests requests={open_requests} />
-        </Cell>
-
-        <Cell span="xl:col-span-5 sm:col-span-6">
-          <Panel title="Deployed workforce by client" description="Active placements per client company.">
+          <Panel title="Deployed workforce by client" icon={BarChart3} description="Active placements per client company.">
             {deployments_by_company?.length ? (
               <CategoryBarChart data={deployments_by_company} label="Employees" horizontal />
             ) : (
@@ -202,11 +171,36 @@ export default function Dashboard() {
           </Panel>
         </Cell>
 
-        <Cell span="xl:col-span-12 sm:col-span-6">
+        <Cell span="xl:col-span-5 sm:col-span-6">
           <Panel
-            title="Disciplinary records by type"
-            description="Violations logged across all deployed employees."
+            title="Document folders"
+            description="Applicants by document completeness."
+            icon={FolderCheck}
+            action={
+              // The document library is a different question from these folders
+              // - papers by kind, rather than one applicant's completeness - so
+              // it is linked from here rather than folded into it.
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/documents">Browse documents</Link>
+              </Button>
+            }
           >
+            <div className="space-y-2">
+              {applicants_by_folder?.map((folder) => (
+                <InsetRow key={folder.folder} className="items-start p-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium leading-tight">{folder.label}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{folder.description}</p>
+                  </div>
+                  <span className="text-2xl font-normal leading-none tabular-nums">{formatNumber(folder.count)}</span>
+                </InsetRow>
+              ))}
+            </div>
+          </Panel>
+        </Cell>
+
+        <Cell span="xl:col-span-12 sm:col-span-6">
+          <Panel title="Disciplinary records by type" icon={Flag} description="Violations logged across all deployed employees.">
             {violations_by_type?.length ? (
               <CategoryBarChart data={violations_by_type} label="Violations" />
             ) : (
@@ -218,9 +212,16 @@ export default function Dashboard() {
           </Panel>
         </Cell>
       </Bento>
-
     </>
   )
+}
+
+/** Morning, afternoon, or evening on this computer's clock. */
+function greeting(timestamp) {
+  const hour = new Date(timestamp).getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 18) return 'Good afternoon'
+  return 'Good evening'
 }
 
 /** Positions a panel in the bento grid. */
@@ -235,40 +236,52 @@ function Cell({ span, children }) {
  * what stops a bento from looking like cards that happened to land near each
  * other.
  */
-function Panel({ title, description, icon: Icon, action, children, className }) {
+function Panel({ title, description, icon, action, children, className }) {
   return (
-    <Card className={cn('flex h-full flex-col', className)}>
-      <CardHeader className="pb-3">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0">
-            <CardTitle className="flex items-center gap-2 text-base">
-              {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
-              {title}
-            </CardTitle>
-            {description && <CardDescription>{description}</CardDescription>}
-          </div>
-          {action}
-        </div>
-      </CardHeader>
-      <CardContent className="flex-1">{children}</CardContent>
+    <Card className={cn('flex h-full flex-col p-5 sm:p-6', className)}>
+      <PanelTitle icon={icon} title={title} description={description} action={action} />
+      <div className="mt-5 min-h-0 flex-1">{children}</div>
     </Card>
   )
 }
 
-function MonthStat({ label, value, tone = 'default' }) {
-  const tones = {
-    default: 'text-foreground',
-    success: 'text-success',
-    destructive: 'text-destructive',
-  }
+/**
+ * The one highlighted figure: applicants ready to place, out of everyone still
+ * active. Ready applicants are counted from the active pool, so the bar can
+ * never run past full.
+ */
+function ReadyHighlight({ ready, active }) {
+  const percent = active > 0 ? Math.min(100, (ready / active) * 100) : 0
 
   return (
-    <div className="rounded-lg border bg-muted/30 p-3">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className={cn('mt-0.5 text-xl font-semibold tracking-tight', tones[tone])}>
-        {formatNumber(value)}
-      </dd>
-    </div>
+    <Link
+      to="/applicants?folder_category=folder_1"
+      className="surface-highlight group block rounded-panel p-5 text-white transition-shadow hover:shadow-float sm:p-6"
+    >
+      <div className="flex items-center gap-2 text-sm text-white/90">
+        <UserCheck className="h-4 w-4" aria-hidden="true" />
+        Ready for deployment
+        <ArrowUpRight className="ml-auto h-4 w-4 opacity-70 transition-opacity group-hover:opacity-100" aria-hidden="true" />
+      </div>
+
+      <div className="mt-5 flex items-end justify-between gap-3">
+        <p className="text-[44px] font-normal leading-none tracking-tight">
+          {formatNumber(ready)}
+          <span className="ml-1 text-[28px] text-white/80">/ {formatNumber(active)}</span>
+        </p>
+        <p className="pb-1 text-right text-sm leading-tight text-white/90">
+          All requirements
+          <span className="block text-xs text-white/75">verified</span>
+        </p>
+      </div>
+
+      <ProgressTrack
+        tone="light"
+        value={percent}
+        className="mt-5 h-4"
+        label={`${formatNumber(ready)} of ${formatNumber(active)} active applicants are ready for deployment`}
+      />
+    </Link>
   )
 }
 
@@ -330,107 +343,97 @@ function ActionQueue({ attention }) {
     },
   ].filter((item) => item.value > 0)
 
-  if (items.length === 0) {
-    return (
-      <Card className="flex h-full flex-col border-success/30 bg-success/5">
-        <CardContent className="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-center">
-          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-success/15">
-            <CheckCircle2 className="h-6 w-6 text-success" />
+  return (
+    <Panel
+      title="Needs attention"
+      icon={AlertTriangle}
+      action={items.length > 0 ? <Badge tone="warning">{items.length}</Badge> : null}
+    >
+      {items.length === 0 ? (
+        <div className="flex h-full min-h-[14rem] flex-col items-center justify-center gap-2 rounded-row bg-inset px-6 py-10 text-center">
+          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-card">
+            <CheckCircle2 className="h-5 w-5 text-status-success-dot" />
           </span>
           <p className="text-sm font-medium">Nothing needs attention</p>
           <p className="max-w-[15rem] text-xs text-muted-foreground">
             No incomplete requirements, overdue requests, or unresolved cases.
           </p>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  return (
-    <Card className="flex h-full flex-col">
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center justify-between gap-2 text-base">
-          Needs attention
-          <Badge tone="warning">{items.length}</Badge>
-        </CardTitle>
-        <CardDescription>Items waiting on action from HR.</CardDescription>
-      </CardHeader>
-      <CardContent className="flex-1 space-y-2">
-        {items.map((item) => (
-          <Link
-            key={item.key}
-            to={item.to}
-            className="group flex items-center gap-3 rounded-lg border p-2.5 transition-colors hover:border-primary/40 hover:bg-accent/50"
-          >
-            <span
-              className={cn(
-                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                item.tone === 'destructive'
-                  ? 'bg-destructive/10 text-destructive'
-                  : 'bg-warning/15 text-warning'
-              )}
-            >
-              <item.icon className="h-4 w-4" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium leading-tight">{item.label}</p>
-              {item.hint && <p className="text-xs text-muted-foreground">{item.hint}</p>}
-            </div>
-            <span className="text-lg font-semibold tabular-nums">{formatNumber(item.value)}</span>
-          </Link>
-        ))}
-      </CardContent>
-    </Card>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => (
+            <InsetRow key={item.key} to={item.to}>
+              <RowIcon icon={item.icon} tone={item.tone} />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm leading-snug">{item.label}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{item.hint ?? 'Waiting on HR'}</p>
+              </div>
+              <span className="text-lg font-medium tabular-nums">{formatNumber(item.value)}</span>
+            </InsetRow>
+          ))}
+        </div>
+      )}
+    </Panel>
   )
 }
 
 function OpenRequests({ requests }) {
   return (
-    <Card className="flex h-full flex-col">
-      <CardHeader className="flex-row items-start justify-between space-y-0 pb-3">
-        <div className="space-y-1">
-          <CardTitle className="text-base">Open manpower requests</CardTitle>
-          <CardDescription>Ordered by deployment deadline.</CardDescription>
-        </div>
-        <Button variant="ghost" size="sm" asChild>
-          <Link to="/job-requests">
-            View all <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
+    <Panel
+      title="Open manpower requests"
+      icon={ClipboardList}
+      description="Ordered by deployment deadline."
+      action={
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/job-requests">View all</Link>
         </Button>
-      </CardHeader>
-      <CardContent className="flex-1">
-        {!requests?.length ? (
-          <EmptyState title="No open requests" description="All client requests are currently fulfilled or closed." />
-        ) : (
-          <ul className="divide-y">
-            {requests.map((request) => (
+      }
+    >
+      {!requests?.length ? (
+        <EmptyState title="No open requests" description="All client requests are currently fulfilled or closed." />
+      ) : (
+        <ul className="space-y-2">
+          {requests.map((request) => {
+            const percent = request.workers_needed > 0 ? (request.workers_fulfilled / request.workers_needed) * 100 : 0
+
+            return (
               <li key={request.id}>
-                <Link
-                  to={`/job-requests/${request.id}`}
-                  className="-mx-2 flex items-center justify-between gap-3 rounded-lg px-2 py-3 transition-colors hover:bg-accent/40"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{request.position_title}</p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {request.company} · {request.department}
+                <InsetRow to={`/job-requests/${request.id}`} className="block p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-muted-foreground">
+                      {request.deadline ? formatDate(request.deadline) : 'No deadline set'}
                     </p>
+                    <DeadlineBadge days={request.days_remaining} date={request.deadline} />
                   </div>
-                  <div className="flex shrink-0 items-center gap-3">
-                    <div className="text-right">
+
+                  <div className="mt-2.5 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-[15px] font-medium leading-tight">{request.position_title}</p>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {request.company} · {request.department}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
                       <p className="text-sm font-medium tabular-nums">
                         {request.workers_fulfilled}/{request.workers_needed}
                       </p>
                       <p className="text-xs text-muted-foreground">filled</p>
                     </div>
-                    <DeadlineBadge days={request.days_remaining} date={request.deadline} />
                   </div>
-                </Link>
+
+                  <ProgressTrack
+                    value={percent}
+                    tone={request.workers_fulfilled >= request.workers_needed ? 'success' : 'default'}
+                    className="mt-3 h-2"
+                    label={`${request.workers_fulfilled} of ${request.workers_needed} filled`}
+                  />
+                </InsetRow>
               </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+            )
+          })}
+        </ul>
+      )}
+    </Panel>
   )
 }
 

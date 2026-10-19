@@ -10,6 +10,9 @@ class Resignation extends Model
 {
     use HasFactory;
 
+    /** filed -> accepted -> completed, or withdrawn (SeparationService). */
+    public const STATUSES = ['filed', 'accepted', 'completed', 'withdrawn'];
+
     protected $fillable = [
         'employee_id',
         'resignation_letter_path',

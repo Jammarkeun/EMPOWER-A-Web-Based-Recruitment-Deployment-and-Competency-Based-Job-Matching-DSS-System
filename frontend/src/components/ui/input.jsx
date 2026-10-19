@@ -7,8 +7,8 @@ const Input = React.forwardRef(({ className, type, ...props }, ref) => (
     type={type}
     ref={ref}
     className={cn(
-      'flex h-9 w-full rounded-control border border-border bg-card px-3 py-1.5 text-sm transition-colors',
-      'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-brand focus-visible:ring-1 focus-visible:ring-brand',
+      'flex h-11 w-full rounded-control border border-transparent bg-inset px-4 py-2 text-sm transition-colors',
+      'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-brand focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-brand',
       'disabled:cursor-not-allowed disabled:opacity-50',
       'aria-[invalid=true]:border-destructive',
       className
@@ -47,7 +47,7 @@ const PasswordInput = React.forwardRef(({ className, visible, onVisibleChange, .
       <button
         type="button"
         onClick={toggle}
-        className="absolute right-0 top-0 flex h-9 w-10 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground"
+        className="absolute right-1 top-0 flex h-11 w-10 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
         aria-label={shown ? 'Hide password' : 'Show password'}
         aria-pressed={shown}
         tabIndex={-1}

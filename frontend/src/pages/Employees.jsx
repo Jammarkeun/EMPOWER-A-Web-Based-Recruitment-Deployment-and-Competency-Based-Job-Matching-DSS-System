@@ -3,12 +3,13 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { IdCard, AlertTriangle, ChevronRight } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { PageHeader } from '@/components/PageHeader'
+import PersonAvatar from '@/components/PersonAvatar'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 
 export default function Employees() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -69,9 +70,11 @@ export default function Employees() {
       />
 
       {loading ? (
-        <Table>
+        // A loading placeholder, not table rows, so it sits in the table's
+        // panel rather than inside a <table>.
+        <div className="w-full rounded-panel bg-card p-3 sm:p-4">
           <SkeletonRows rows={8} columns={5} />
-        </Table>
+        </div>
       ) : error ? (
         <ErrorState message={error.message} onRetry={refetch} />
       ) : !data?.length ? (
@@ -98,13 +101,16 @@ export default function Employees() {
                 <TableRow key={employee.id} className="group cursor-pointer">
                   {/* Identity Block: Name + Employee Number */}
                   <TableCell>
-                    <Link to={`/employees/${employee.id}`} className="block">
-                      <p className="font-semibold text-foreground group-hover:text-brand transition-colors">
-                        {employee.full_name}
-                      </p>
-                      <p className="font-mono text-xs text-muted-foreground tabular-nums">
-                        {employee.employee_number || `EMP-${employee.id}`}
-                      </p>
+                    <Link to={`/employees/${employee.id}`} className="flex items-center gap-3">
+                      <PersonAvatar src={employee.photo_url} name={employee.full_name} size="sm" />
+                      <div className="min-w-0">
+                        <p className="font-semibold text-foreground group-hover:text-brand transition-colors">
+                          {employee.full_name}
+                        </p>
+                        <p className="font-mono text-xs text-muted-foreground tabular-nums">
+                          {employee.employee_number || `EMP-${employee.id}`}
+                        </p>
+                      </div>
                     </Link>
                   </TableCell>
 

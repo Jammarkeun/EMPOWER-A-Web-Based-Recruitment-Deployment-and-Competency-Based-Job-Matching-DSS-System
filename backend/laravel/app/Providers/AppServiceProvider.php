@@ -79,8 +79,22 @@ class AppServiceProvider extends ServiceProvider
     {
         Gate::define('viewDashboard', fn (User $user) => $user->can('dashboard.view'));
         Gate::define('viewArchives', fn (User $user) => $user->can('archives.view'));
+        // The retention review list names applicants and their records; a
+        // decision on it is part of keeping the archive, hence archives.create.
+        Gate::define('viewRetentionReview', fn (User $user) => $user->can('archives.view') && $user->can('applicants.view'));
+        Gate::define('recordRetentionDecision', fn (User $user) => $user->can('archives.create'));
         Gate::define('viewAuditLogs', fn (User $user) => $user->can('audit.view'));
+        // Reading the user list is users.view; changing accounts needs the
+        // specific permission for that change. Only the administrator holds
+        // any of these, so nobody's access changes - but the permission matrix
+        // now means what it says.
         Gate::define('manageUsers', fn (User $user) => $user->can('users.view'));
+        Gate::define('createUsers', fn (User $user) => $user->can('users.create'));
+        Gate::define('updateUsers', fn (User $user) => $user->can('users.update'));
+        Gate::define('manageRoles', fn (User $user) => $user->can('users.manage_roles'));
+        // The document library: whose papers these are (applicants.view) and
+        // the documents themselves (requirements.view).
+        Gate::define('viewDocuments', fn (User $user) => $user->can('applicants.view') && $user->can('requirements.view'));
         Gate::define('viewReports', fn (User $user) => $user->can('reports.view'));
         Gate::define('exportReports', fn (User $user) => $user->can('reports.export'));
         // Reading settings is part of HR's daily work - knowing which documents

@@ -29,8 +29,29 @@ class DeploymentResource extends JsonResource
             'end_date' => $this->end_date?->toDateString(),
             'deployment_status' => $this->deployment_status,
             'remarks' => $this->remarks,
-            'history' => $this->whenLoaded('history'),
+            // Every move within the placement, newest first, in names. Read
+            // only from relations the caller loaded (Deployment::HISTORY_RELATIONS),
+            // never lazily.
+            'history' => $this->whenLoaded('history', fn () => $this->history->map(fn ($move) => [
+                'id' => $move->id,
+                'change_type' => $move->change_type,
+                'effective_date' => $move->effective_date?->toDateString(),
+                'from_company' => $this->loadedName($move, 'fromCompany', 'company_name'),
+                'from_department' => $this->loadedName($move, 'fromDepartment', 'department_name'),
+                'from_position_title' => $move->from_position_title,
+                'to_company' => $this->loadedName($move, 'toCompany', 'company_name'),
+                'to_department' => $this->loadedName($move, 'toDepartment', 'department_name'),
+                'to_position_title' => $move->to_position_title,
+                'reason' => $move->remarks,
+                'changed_by' => $this->loadedName($move, 'changedBy', 'full_name'),
+                'recorded_at' => $move->created_at?->toIso8601String(),
+            ])->values()),
             'created_at' => $this->created_at?->toIso8601String(),
         ];
+    }
+
+    private function loadedName($model, string $relation, string $attribute): ?string
+    {
+        return $model->relationLoaded($relation) ? $model->{$relation}?->{$attribute} : null;
     }
 }

@@ -97,7 +97,9 @@ class ApplicantQualificationController extends Controller
                 ApplicantCertification::create($row + ['applicant_id' => $applicant->id]);
             }
 
-            $applicant->forceFill(['profile_updated_at' => now()])->save();
+            // Rankings scored against the old qualifications are now out of
+            // date (audit S-02).
+            $applicant->markScoredProfileChanged();
         });
 
         $applicant->unsetRelations();

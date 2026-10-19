@@ -17,8 +17,8 @@ export function LoadingState({ label = 'Loading records…', className }) {
  */
 export function EmptyState({ title = 'No records found', description, action, icon: Icon = Inbox, className }) {
   return (
-    <div className={cn('flex flex-col items-center justify-center gap-3 px-6 py-14 text-center rounded-panel border border-dashed border-border bg-card/40', className)}>
-      <div className="rounded-control bg-muted/60 p-3 text-muted-foreground">
+    <div className={cn('flex flex-col items-center justify-center gap-3 px-6 py-14 text-center rounded-row bg-card [[data-surface=card]_&]:bg-inset', className)}>
+      <div className="rounded-full bg-inset p-3.5 text-muted-foreground [[data-surface=card]_&]:bg-card">
         <Icon className="h-6 w-6" />
       </div>
       <div className="space-y-1 max-w-sm">
@@ -32,8 +32,8 @@ export function EmptyState({ title = 'No records found', description, action, ic
 
 export function ErrorState({ message = 'An error occurred while loading data.', onRetry, className }) {
   return (
-    <div className={cn('flex flex-col items-center justify-center gap-3 px-6 py-12 text-center rounded-panel border border-status-danger-border bg-status-danger-bg/20', className)}>
-      <div className="rounded-control bg-status-danger-bg p-3 text-status-danger-text">
+    <div className={cn('flex flex-col items-center justify-center gap-3 px-6 py-12 text-center rounded-row bg-status-danger-bg/70', className)}>
+      <div className="rounded-full bg-card p-3.5 text-status-danger-dot">
         <AlertTriangle className="h-6 w-6" />
       </div>
       <div className="space-y-1 max-w-sm">
@@ -52,7 +52,7 @@ export function ErrorState({ message = 'An error occurred while loading data.', 
 export function Skeleton({ className, ...props }) {
   return (
     <div
-      className={cn('animate-pulse rounded-control bg-muted/70', className)}
+      className={cn('animate-pulse rounded-full bg-accent', className)}
       {...props}
     />
   )
@@ -74,7 +74,7 @@ export function SkeletonRows({ rows = 5, columns = 4 }) {
 
 export function CardSkeleton({ className }) {
   return (
-    <div className={cn('space-y-4 rounded-panel border border-border bg-card p-5 shadow-xs', className)}>
+    <div className={cn('space-y-4 rounded-panel bg-card p-6', className)}>
       <div className="flex items-center justify-between">
         <Skeleton className="h-5 w-1/3" />
         <Skeleton className="h-4 w-12" />
@@ -92,10 +92,10 @@ export function StatCardSkeleton({ count = 4 }) {
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="rounded-panel border border-border bg-card p-4 space-y-3 shadow-xs">
+        <div key={i} className="rounded-panel bg-card p-6 space-y-3">
           <div className="flex items-center justify-between">
             <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-8 w-8 rounded-control" />
+            <Skeleton className="h-8 w-8" />
           </div>
           <Skeleton className="h-7 w-16" />
           <Skeleton className="h-3 w-32" />

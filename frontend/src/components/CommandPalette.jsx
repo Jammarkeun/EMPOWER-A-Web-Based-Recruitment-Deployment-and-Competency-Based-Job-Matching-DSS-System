@@ -6,6 +6,10 @@ import { get } from '@/lib/api'
 import { useDebounced } from '@/hooks/useApi'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
+import PersonAvatar from '@/components/PersonAvatar'
+
+/** Result groups that are people, shown with their picture beside the name. */
+const PEOPLE = ['applicants', 'employees']
 
 /**
  * Search across every record type, opened with Ctrl+K.
@@ -132,8 +136,8 @@ export default function CommandPalette() {
             onClick={() => setOpen(false)}
           />
 
-          <div className="relative w-full max-w-xl overflow-hidden rounded-xl border bg-card shadow-2xl animate-fade-in">
-            <div className="flex items-center gap-3 border-b px-4">
+          <div className="relative w-full max-w-xl overflow-hidden rounded-modal border border-border/70 bg-card shadow-float animate-fade-in">
+            <div className="flex items-center gap-3 border-b px-5">
               {loading ? (
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
               ) : (
@@ -145,16 +149,16 @@ export default function CommandPalette() {
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Search applicants, employees, requests, clients…"
-                className="h-12 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                className="h-14 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 aria-label="Search"
                 autoComplete="off"
               />
-              <kbd className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:block">
+              <kbd className="hidden shrink-0 rounded-md bg-inset px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground sm:block">
                 ESC
               </kbd>
             </div>
 
-            <div className="max-h-[52vh] overflow-y-auto">
+            <div className="max-h-[52vh] overflow-y-auto p-2">
               {query.trim().length < 2 ? (
                 <p className="px-4 py-10 text-center text-sm text-muted-foreground">
                   Type at least two characters — a name, code, or phone number.
@@ -166,7 +170,7 @@ export default function CommandPalette() {
               ) : (
                 groups.map((group) => (
                   <div key={group.type}>
-                    <p className="px-4 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <p className="px-3 pb-1.5 pt-3 text-xs text-muted-foreground">
                       {group.label}
                     </p>
                     <ul>
@@ -182,10 +186,13 @@ export default function CommandPalette() {
                               onClick={() => openResult(result)}
                               onMouseEnter={() => setActiveIndex(index)}
                               className={cn(
-                                'flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors',
-                                active ? 'bg-accent' : 'hover:bg-accent/60'
+                                'flex w-full items-center gap-3 rounded-row px-3 py-2.5 text-left transition-colors',
+                                active ? 'bg-inset-selected' : 'hover:bg-inset'
                               )}
                             >
+                              {PEOPLE.includes(group.type) && (
+                                <PersonAvatar src={result.image} name={result.title} size="xs" />
+                              )}
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-medium">{result.title}</p>
                                 <p className="truncate text-xs text-muted-foreground">
@@ -203,7 +210,7 @@ export default function CommandPalette() {
               )}
             </div>
 
-            <div className="flex items-center gap-4 border-t bg-muted/40 px-4 py-2 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-4 border-t bg-inset px-5 py-2.5 text-[11px] text-muted-foreground">
               <span className="flex items-center gap-1">
                 <ArrowUp className="h-3 w-3" />
                 <ArrowDown className="h-3 w-3" />
@@ -237,14 +244,19 @@ function SearchTrigger({ onOpen }) {
   return (
     <button
       onClick={onOpen}
-      className="flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:w-52"
+      className="flex h-10 w-10 items-center justify-center gap-3 rounded-full bg-card text-sm text-muted-foreground transition-colors hover:text-foreground sm:h-11 sm:w-72 sm:justify-start sm:rounded-2xl sm:px-4 lg:w-[22rem]"
       aria-label="Search everything"
     >
-      <Search className="h-3.5 w-3.5" />
-      <span className="hidden sm:inline">Search…</span>
-      <kbd className="hidden rounded border bg-muted px-1.5 py-0.5 text-[10px] sm:block">
-        {isMac ? '⌘' : 'Ctrl'} K
-      </kbd>
+      <Search className="h-[18px] w-[18px] shrink-0" />
+      <span className="hidden sm:inline">Search</span>
+      <span className="ml-auto hidden items-center gap-1 sm:flex" aria-hidden="true">
+        <kbd className="flex h-6 min-w-6 items-center justify-center rounded-md bg-inset px-1.5 font-sans text-xs text-foreground/70">
+          {isMac ? '⌘' : 'Ctrl'}
+        </kbd>
+        <kbd className="flex h-6 min-w-6 items-center justify-center rounded-md bg-inset px-1.5 font-sans text-xs text-foreground/70">
+          K
+        </kbd>
+      </span>
     </button>
   )
 }

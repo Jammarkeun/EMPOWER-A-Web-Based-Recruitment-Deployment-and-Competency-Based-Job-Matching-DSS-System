@@ -22,15 +22,16 @@ const DialogContent = React.forwardRef(({ className, children, ...props }, ref) 
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      data-surface="card"
       className={cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4',
-        'max-h-[90vh] overflow-y-auto border border-border bg-card p-6 shadow-md rounded-modal animate-fade-in',
+        'max-h-[90vh] overflow-y-auto bg-card p-6 shadow-float rounded-modal animate-fade-in',
         className
       )}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-control p-1 opacity-70 transition-opacity hover:opacity-100 hover:bg-muted focus:outline-none focus:ring-1 focus:ring-brand">
+      <DialogPrimitive.Close className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-inset text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring">
         <X className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>
@@ -48,7 +49,7 @@ const DialogFooter = ({ className, ...props }) => (
 )
 
 const DialogTitle = React.forwardRef(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title ref={ref} className={cn('text-lg font-bold font-heading text-foreground tracking-tight', className)} {...props} />
+  <DialogPrimitive.Title ref={ref} className={cn('text-xl font-medium font-heading text-foreground', className)} {...props} />
 ))
 DialogTitle.displayName = DialogPrimitive.Title.displayName
 

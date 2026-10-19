@@ -43,6 +43,12 @@ const POINTS = [
   },
 ]
 
+function safeReturnPath(path) {
+  if (typeof path !== 'string' || !path.startsWith('/')) return null
+  if (path.startsWith('//') || path.includes('\\')) return null
+  return path
+}
+
 export default function Login() {
   const { login, isAuthenticated, loading, user } = useAuth()
   const navigate = useNavigate()
@@ -63,8 +69,12 @@ export default function Login() {
     )
   }
 
+  // Only a path inside this app is honoured as the place to return to; anything
+  // that could leave the site ("//host", "/\host", a full URL) is ignored.
+  const returnTo = safeReturnPath(location.state?.from)
+
   if (isAuthenticated) {
-    return <Navigate to={location.state?.from ?? destinationFor(user)} replace />
+    return <Navigate to={returnTo ?? destinationFor(user)} replace />
   }
 
   async function handleSubmit(event) {
@@ -77,7 +87,7 @@ export default function Login() {
       // login() returns the signed-in user, which is what decides the
       // destination — the context state has not updated yet at this point.
       const signedIn = await login(email, password)
-      navigate(location.state?.from ?? destinationFor(signedIn), { replace: true })
+      navigate(returnTo ?? destinationFor(signedIn), { replace: true })
       toast.success(`Welcome back, ${signedIn.full_name.split(' ')[0]}`, 'You are signed in.')
     } catch (error) {
       if (error.isValidation) {
@@ -132,6 +142,12 @@ export default function Login() {
               required
             />
           </Field>
+
+          <p className="-mt-2 text-right text-xs">
+            <Link to="/forgot-password" className="font-medium text-brand underline-offset-4 hover:underline">
+              Forgot your password?
+            </Link>
+          </p>
 
           {formError && (
             <div

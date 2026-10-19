@@ -12,9 +12,15 @@ class EmployeePolicy
         return $user->can('employees.view');
     }
 
+    /**
+     * The 201 file is staff work. An employee sees their own employment through
+     * the portal; the owner fallback this used to carry exposed the HR view -
+     * profile notes, draft terminations and who filed them, who reported each
+     * violation, and the evidence files.
+     */
     public function view(User $user, Employee $employee): bool
     {
-        return $user->can('employees.view') || $user->employee_id === $employee->id;
+        return $user->can('employees.view');
     }
 
     public function update(User $user, Employee $employee): bool
@@ -42,6 +48,23 @@ class EmployeePolicy
     public function manageAttendance(User $user, Employee $employee): bool
     {
         return $user->can('attendance.manage');
+    }
+
+    /**
+     * The disciplinary record: the person's file and the violations in it.
+     */
+    public function viewViolations(User $user, Employee $employee): bool
+    {
+        return $user->can('employees.view') && $user->can('violations.view');
+    }
+
+    /**
+     * Changing a recorded violation - its type, penalty, or resolution - is
+     * held separately from recording a new one.
+     */
+    public function updateViolation(User $user, Employee $employee): bool
+    {
+        return $user->can('violations.update');
     }
 
     public function recordViolation(User $user, Employee $employee): bool

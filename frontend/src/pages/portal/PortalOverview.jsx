@@ -19,6 +19,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { LoadingState, ErrorState } from '@/components/ui/states'
 import { cn, formatDate, formatDateTime } from '@/lib/utils'
+import { useAuth } from '@/contexts/AuthContext'
+import PersonAvatar from '@/components/PersonAvatar'
 
 const STAGES = [
   'Application received',
@@ -258,6 +260,9 @@ function PlacementDecisionCard({ position, company, onAnswered }) {
 
 export default function PortalOverview() {
   const { data, loading, error, refetch, setData } = useApi('/portal')
+  // The picture comes from the signed-in account, the same copy the header and
+  // Profile use, so a new picture shows here the moment it is saved.
+  const { user, renewPhoto } = useAuth()
 
   if (loading) return <LoadingState label="Loading your application…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
@@ -270,14 +275,9 @@ export default function PortalOverview() {
       {/* The greeting names the applicant from their own record, and the avatar
           beside it is the same identity the sidebar and header show. */}
       <div className="flex items-center gap-3">
-        <span
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground"
-          aria-hidden="true"
-        >
-          {person.initials}
-        </span>
+        <PersonAvatar src={user?.photo_url} name={person.full_name} size="md" onError={renewPhoto} />
         <div className="min-w-0">
-          <h1 className="truncate text-xl font-semibold tracking-tight">
+          <h1 className="truncate text-[26px] font-normal leading-tight tracking-[-0.01em] sm:text-[32px]">
             Hello, {person.first_name || person.full_name.split(' ')[0]}
           </h1>
           <p className="text-sm text-muted-foreground">
@@ -304,8 +304,10 @@ export default function PortalOverview() {
       */}
       {application.placement_decision_due && (
         <PlacementDecisionCard
-          position={application.position}
-          company={application.position_company}
+          // The placement this answer is for, when the office named the
+          // request on endorsing (R-05); otherwise what they applied for.
+          position={application.placement_position ?? application.position}
+          company={application.placement_company ?? application.position_company}
           onAnswered={(answer) =>
             setData((current) => ({
               ...current,
@@ -394,10 +396,16 @@ export default function PortalOverview() {
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Your progress</CardTitle>
           <CardDescription>
-            Stage {application.stage_number} of {application.total_stages}
+            {/* A resigned, terminated or archived record is closed, not at the last stage. */}
+            {application.record_closed
+              ? 'This record is closed.'
+              : `Stage ${application.stage_number} of ${application.total_stages}`}
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {application.record_closed ? (
+            <p className="text-sm text-muted-foreground">{application.explanation}</p>
+          ) : (
           <ol className="space-y-2.5">
             {STAGES.map((stage, index) => {
               const stageNumber = index + 1
@@ -427,6 +435,7 @@ export default function PortalOverview() {
               )
             })}
           </ol>
+          )}
         </CardContent>
       </Card>
 

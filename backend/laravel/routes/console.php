@@ -27,3 +27,11 @@ Schedule::command('empower:check-document-storage')
     ->weeklyOn(0, '02:00')
     ->timezone('Asia/Manila')
     ->withoutOverlapping();
+
+/*
+ * Expired password reset tokens are refused anyway; this only stops them
+ * piling up. Each is a hash, never the link itself.
+ */
+Schedule::command('auth:clear-resets')
+    ->dailyAt('03:00')
+    ->timezone('Asia/Manila');

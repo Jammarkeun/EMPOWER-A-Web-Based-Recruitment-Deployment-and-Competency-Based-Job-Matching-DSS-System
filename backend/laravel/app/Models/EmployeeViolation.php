@@ -14,6 +14,9 @@ class EmployeeViolation extends Model
     /** The kinds of offence the agency records. */
     public const TYPES = ['awol', 'absences', 'suspension', 'late', 'misconduct', 'policy_violation'];
 
+    /** Every status a violation can hold; recording and updating both read it. */
+    public const STATUSES = ['open', 'under_review', 'resolved', 'escalated'];
+
     protected $fillable = [
         'employee_id',
         'violation_report_id',

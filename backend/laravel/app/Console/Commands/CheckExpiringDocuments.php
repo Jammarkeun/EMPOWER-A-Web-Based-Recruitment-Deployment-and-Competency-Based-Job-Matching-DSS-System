@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\ApplicantRequirement;
 use App\Models\User;
 use App\Notifications\DocumentsExpiringSoon;
+use App\Services\FolderRecalculationService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -17,6 +18,11 @@ use Illuminate\Support\Facades\DB;
  * expired documents, so the applicant silently drops out of the deployable pool
  * with no explanation unless something says so out loud.
  *
+ * Each run ends by recalculating stored folders (audit R-17). The folder rule
+ * already ignored a lapsed document, but the folder kept on file only changed
+ * when somebody touched the applicant's own documents, so an applicant whose
+ * clearance lapsed stayed counted in Folder 1 indefinitely.
+ *
  * Scheduled daily. See routes/console.php.
  */
 class CheckExpiringDocuments extends Command
@@ -25,7 +31,7 @@ class CheckExpiringDocuments extends Command
 
     protected $description = 'Notify HR of verified documents that are expiring or have expired';
 
-    public function handle(): int
+    public function handle(FolderRecalculationService $recalculations): int
     {
         // Falls back to the configured window, which an administrator can change
         // from the settings screen, so the schedule does not have to be edited
@@ -49,7 +55,9 @@ class CheckExpiringDocuments extends Command
         if ($expiring === 0 && $expired === 0) {
             $this->info('No documents expiring or expired. Nothing to report.');
 
-            return self::SUCCESS;
+            // Still run: it costs little and repairs any folder left stale by
+            // something else, so the daily check doubles as a safety net.
+            return $this->recalculateFolders($recalculations, 0);
         }
 
         // Marking lapsed documents as expired keeps folder categorisation honest
@@ -95,6 +103,36 @@ class CheckExpiringDocuments extends Command
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+
+        return $this->recalculateFolders($recalculations, $reclassified);
+    }
+
+    /**
+     * Only folders are written; an applicant's lifecycle status is untouched.
+     * A failure is recorded on the run and fails the command, so the scheduler
+     * reports it instead of it passing unnoticed.
+     */
+    private function recalculateFolders(FolderRecalculationService $recalculations, int $lapsed): int
+    {
+        $run = $recalculations->run(
+            'document_expiry',
+            null,
+            $lapsed > 0
+                ? "Daily expiry check: {$lapsed} verified document(s) lapsed."
+                : 'Daily expiry check.',
+        );
+
+        if ($run->status !== 'completed') {
+            $this->error('Folder recalculation did not finish: '.$run->error);
+
+            return self::FAILURE;
+        }
+
+        $this->info(sprintf(
+            'Folders recalculated: %d checked, %d changed.',
+            $run->applicants_checked,
+            $run->applicants_changed,
+        ));
 
         return self::SUCCESS;
     }

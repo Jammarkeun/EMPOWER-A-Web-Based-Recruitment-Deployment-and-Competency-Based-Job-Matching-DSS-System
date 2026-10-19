@@ -11,7 +11,7 @@ import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatMinutes } from '@/components/AttendancePanel'
 import { cn, formatDate } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 
 function currentMonth() {
   const now = new Date()
@@ -134,7 +134,7 @@ export default function Attendance() {
       </div>
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={8} columns={7} />
         </div>
       ) : error ? (

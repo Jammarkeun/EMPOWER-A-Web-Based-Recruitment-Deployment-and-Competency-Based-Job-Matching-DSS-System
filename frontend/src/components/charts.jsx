@@ -26,6 +26,9 @@ ChartJS.register(
   Filler
 )
 
+// Canvas text does not inherit the page's font, so it is named here.
+ChartJS.defaults.font.family = "Figtree, ui-sans-serif, system-ui, sans-serif"
+
 /*
  * ---------------------------------------------------------------------------
  * Palette
