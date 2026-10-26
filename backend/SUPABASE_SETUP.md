@@ -25,6 +25,11 @@ to maintain. It also avoids putting the `service_role` key — which bypasses ev
 Row Level Security policy in the project — into application code paths that only
 need file access.
 
+**Do not put the `service_role` key in `.env` at all** (security audit V-04,
+October 2026). Nothing in EMPOWER reads it, so a copy of `.env` holding it would
+be a key to the whole database for no purpose. Create the bucket in the
+dashboard instead.
+
 ### Why the Session pooler, specifically
 
 Supabase exposes three connection modes. Only one is correct for Laravel:

@@ -315,6 +315,34 @@ return [
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
 
     /*
+    | Request limits on the endpoints anyone can reach without signing in, per
+    | network address. Each has its own counter (App\Providers\AppServiceProvider):
+    | they used to share one, so opening a few documents or testing the sign-up
+    | form locked everyone on the same address out of signing in for an hour.
+    |
+    | Everyone in one office usually shares an address, which is why these are
+    | not tighter. Wrong passwords have their own, stricter limit per account in
+    | AuthController (5 per 5 minutes), which these do not replace.
+    */
+    'rate_limits' => [
+        'login_per_minute' => (int) env('RATE_LIMIT_LOGIN_PER_MINUTE', 30),
+
+        // Only a sign-up that creates an account counts here, so correcting a
+        // mistake in the form costs nothing...
+        'registrations_per_hour' => (int) env('RATE_LIMIT_REGISTRATIONS_PER_HOUR', 10),
+        // ...while every submission counts here, so the form cannot be used to
+        // test thousands of email addresses (security audit V-03).
+        'registration_attempts_per_hour' => (int) env('RATE_LIMIT_REGISTRATION_ATTEMPTS_PER_HOUR', 30),
+
+        'reset_link_requests_per_hour' => (int) env('RATE_LIMIT_RESET_LINKS_PER_HOUR', 5),
+        'password_resets_per_hour' => (int) env('RATE_LIMIT_PASSWORD_RESETS_PER_HOUR', 10),
+
+        // Signed document and profile-photo links. Every avatar on a page is
+        // one request, so this is generous; the signature is the real control.
+        'document_files_per_minute' => (int) env('RATE_LIMIT_DOCUMENT_FILES_PER_MINUTE', 300),
+    ],
+
+    /*
     | Printed in the header of every exported report and shown to applicants in
     | the portal. Held here rather than hard-coded so the agency can correct its
     | own details without a code change.

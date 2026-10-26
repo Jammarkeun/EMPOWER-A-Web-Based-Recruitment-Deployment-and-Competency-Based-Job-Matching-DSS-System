@@ -35,3 +35,13 @@ Schedule::command('empower:check-document-storage')
 Schedule::command('auth:clear-resets')
     ->dailyAt('03:00')
     ->timezone('Asia/Manila');
+
+/*
+ * Sign-in tokens past their lifetime are refused anyway (and deleted when
+ * presented); this removes the ones nobody presents again - a browser simply
+ * closed. Kept a day past expiry, as Sanctum suggests. Tokens are stored as
+ * hashes, so nothing usable is held until then.
+ */
+Schedule::command('sanctum:prune-expired --hours=24')
+    ->dailyAt('03:15')
+    ->timezone('Asia/Manila');

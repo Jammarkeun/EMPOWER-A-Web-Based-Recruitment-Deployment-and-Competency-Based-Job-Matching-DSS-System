@@ -227,27 +227,17 @@ class RegistrationTest extends TestCase
             ->assertJsonValidationErrors('password');
     }
 
-    public function test_email_availability_can_be_checked_before_submitting(): void
-    {
-        $hr = $this->hrUser();
-
-        $this->postJson('/api/v1/register/check-email', ['email' => 'nobody@example.test'])
-            ->assertOk()
-            ->assertJsonPath('data.available', true);
-
-        $this->postJson('/api/v1/register/check-email', ['email' => $hr->email])
-            ->assertOk()
-            ->assertJsonPath('data.available', false);
-    }
-
     /**
      * Registration is an unauthenticated write, so volume has to be capped
-     * somewhere. Five an hour from one address is far more than a genuine
-     * applicant needs and far less than is useful to anyone else.
+     * somewhere: ten new accounts an hour from one address by default. The
+     * limit is lowered here only to keep the test short; RateLimitTest covers
+     * the defaults and why a corrected mistake does not count.
      */
     public function test_registration_is_rate_limited(): void
     {
-        for ($i = 0; $i < 5; $i++) {
+        config(['empower.rate_limits.registrations_per_hour' => 3]);
+
+        for ($i = 0; $i < 3; $i++) {
             $this->postJson('/api/v1/register', $this->payload([
                 'first_name' => 'Person'.$i,
                 'email' => "person{$i}@example.test",
@@ -255,8 +245,8 @@ class RegistrationTest extends TestCase
         }
 
         $this->postJson('/api/v1/register', $this->payload([
-            'first_name' => 'Person6',
-            'email' => 'person6@example.test',
+            'first_name' => 'Person4',
+            'email' => 'person4@example.test',
         ]))->assertStatus(429);
     }
 

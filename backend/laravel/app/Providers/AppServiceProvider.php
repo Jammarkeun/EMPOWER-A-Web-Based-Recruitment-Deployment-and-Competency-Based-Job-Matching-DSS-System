@@ -2,14 +2,20 @@
 
 namespace App\Providers;
 
+use App\Models\PersonalAccessToken;
 use App\Models\User;
+use App\Services\SessionLifetime;
 use App\Services\SettingsService;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Sanctum\Sanctum;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -69,7 +75,62 @@ class AppServiceProvider extends ServiceProvider
          */
         Carbon::serializeUsing(fn (CarbonInterface $date) => $date->toIso8601String());
 
+        /*
+         * Sign-in lifetime and idle limit (security audit V-02). Sanctum checks
+         * the lifetime itself; SessionLifetime adds the idle limit and removes a
+         * token refused for either reason. The token model keeps background
+         * polls from counting as activity.
+         */
+        Sanctum::usePersonalAccessTokenModel(PersonalAccessToken::class);
+        Sanctum::authenticateAccessTokensUsing(
+            fn (PersonalAccessToken $token, bool $isValid) => app(SessionLifetime::class)->allows($token, $isValid)
+        );
+
         $this->registerAbilities();
+        $this->registerRateLimits();
+    }
+
+    /**
+     * One named limit per public endpoint, each with its own counter.
+     *
+     * Plain `throttle:10,1` middleware keys every limit on the caller's address
+     * alone, so all of them shared one count: the signed document links (120 a
+     * minute), sign-in (10) and sign-up (5 an hour) added to the same number,
+     * and whichever opened the window set its length. A few documents and a
+     * test sign-up then refused every sign-in from that address for an hour.
+     * A named limit's counter is keyed by its name as well.
+     */
+    private function registerRateLimits(): void
+    {
+        // Read on every request rather than once here, so a changed value -
+        // in .env, or in a test - applies without restarting anything.
+        $limit = fn (string $name) => (int) config("empower.rate_limits.{$name}");
+
+        RateLimiter::for('login', fn (Request $request) => Limit::perMinute($limit('login_per_minute'))->by($request->ip()));
+
+        RateLimiter::for('registration', fn (Request $request) => [
+            Limit::perHour($limit('registrations_per_hour'))
+                ->by('created:'.$request->ip())
+                ->after(fn ($response) => $response->getStatusCode() === 201),
+            Limit::perHour($limit('registration_attempts_per_hour'))
+                ->by('attempts:'.$request->ip()),
+        ]);
+
+        RateLimiter::for('reset-link', fn (Request $request) => Limit::perHour($limit('reset_link_requests_per_hour'))->by($request->ip()));
+        RateLimiter::for('password-reset', fn (Request $request) => Limit::perHour($limit('password_resets_per_hour'))->by($request->ip()));
+        RateLimiter::for('document-files', fn (Request $request) => Limit::perMinute($limit('document_files_per_minute'))->by($request->ip()));
+
+        // Signed-in uploads and scans, per account. These shared one counter per
+        // account in the same way, so ten document uploads could hold back the
+        // readability check for an hour. The values are unchanged.
+        $account = fn (Request $request) => (string) ($request->user()?->getAuthIdentifier() ?? $request->ip());
+
+        RateLimiter::for('document-scan', fn (Request $request) => Limit::perMinute(20)->by($account($request)));
+        RateLimiter::for('violation-report', fn (Request $request) => Limit::perMinute(30)->by($account($request)));
+        RateLimiter::for('portal-upload', fn (Request $request) => Limit::perMinute(30)->by($account($request)));
+        // Each check is about forty seconds of the recognition service's CPU.
+        RateLimiter::for('readability-check', fn (Request $request) => Limit::perHour(10)->by($account($request)));
+        RateLimiter::for('profile-photo', fn (Request $request) => Limit::perMinute(20)->by($account($request)));
     }
 
     /**

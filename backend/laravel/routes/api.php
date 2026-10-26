@@ -47,7 +47,7 @@ Route::prefix('v1')->group(function () {
 
     // Login is throttled again inside the controller, keyed by email and IP
     // together, so this only caps raw request volume.
-    Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+    Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
 
     /*
      * Getting back into an account (audit FN-03, UX-09). Public, and answering
@@ -57,8 +57,8 @@ Route::prefix('v1')->group(function () {
      * password that has to be replaced at the first sign-in.
      */
     Route::get('auth/password-recovery', [PasswordResetController::class, 'options']);
-    Route::post('auth/forgot-password', [PasswordResetController::class, 'sendLink'])->middleware('throttle:5,60');
-    Route::post('auth/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:10,60');
+    Route::post('auth/forgot-password', [PasswordResetController::class, 'sendLink'])->middleware('throttle:reset-link');
+    Route::post('auth/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:password-reset');
 
     /*
     |------------------------------------------------------------------
@@ -70,9 +70,10 @@ Route::prefix('v1')->group(function () {
     | an HR officer confirms the person's identity in person, so an open
     | endpoint cannot inject anyone into the recruitment pipeline.
     |
-    | Rate limited tightly: registration is a write from an unauthenticated
-    | caller, and a handful an hour from one address is far more than a genuine
-    | applicant needs.
+    | Rate limited (the `registration` limit in AppServiceProvider): ten new
+    | accounts an hour from one address, and thirty submissions in all, so
+    | correcting a mistake in the form costs nothing but the form still cannot
+    | be hammered. Both are set in config/empower.php.
     */
     Route::get('register/requirements', [RegistrationController::class, 'requirements']);
     /*
@@ -83,10 +84,14 @@ Route::prefix('v1')->group(function () {
      * a title and the company hiring - and it is read-only.
      */
     Route::get('register/positions', [JobPositionController::class, 'open']);
-    Route::post('register/check-email', [RegistrationController::class, 'checkEmail'])
-        ->middleware('throttle:20,1');
+
+    // There is deliberately no "is this email taken?" lookup (security audit
+    // V-03). The sign-up form never used it, and twenty answers a minute about
+    // any address - staff accounts included - made it a directory of who has an
+    // account. A taken address is still reported when the form is submitted,
+    // within the thirty-submissions-an-hour limit below.
     Route::post('register', [RegistrationController::class, 'register'])
-        ->middleware('throttle:5,60');
+        ->middleware('throttle:registration');
 
     /*
      * One document from the private local disk, by signed link only.
@@ -99,7 +104,7 @@ Route::prefix('v1')->group(function () {
      */
     Route::get('document-files/{path}', DocumentFileController::class)
         ->where('path', '.*')
-        ->middleware(['signed:relative', 'throttle:120,1'])
+        ->middleware(['signed:relative', 'throttle:document-files'])
         ->name('documents.file');
 
     Route::middleware(['auth:sanctum', 'active', 'password.current'])->group(function () {
@@ -107,6 +112,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------------------- account
         Route::post('auth/logout', [AuthController::class, 'logout']);
         Route::get('auth/me', [AuthController::class, 'me']);
+        Route::get('auth/session', [AuthController::class, 'session']);
         Route::patch('auth/profile', [AuthController::class, 'updateProfile']);
         Route::post('auth/change-password', [AuthController::class, 'changePassword']);
 
@@ -208,7 +214,7 @@ Route::prefix('v1')->group(function () {
         // the values through the normal applicant endpoints.
         Route::get('document-scan/status', [DocumentScanController::class, 'status']);
         Route::post('document-scan', [DocumentScanController::class, 'scan'])
-            ->middleware('throttle:20,1');
+            ->middleware('throttle:document-scan');
         Route::get('document-scan/status/{scan}', [DocumentScanController::class, 'result']);
 
         // ---------------------------------------------------- document library
@@ -379,7 +385,7 @@ Route::prefix('v1')->group(function () {
 
         Route::get('violation-reports/options', [CoordinatorReportController::class, 'options']);
         Route::get('violation-reports', [CoordinatorReportController::class, 'index']);
-        Route::post('violation-reports', [CoordinatorReportController::class, 'store'])->middleware('throttle:30,1');
+        Route::post('violation-reports', [CoordinatorReportController::class, 'store'])->middleware('throttle:violation-report');
         Route::get('violation-reports/{report}', [CoordinatorReportController::class, 'show']);
         // POST rather than PUT so an evidence file can travel with the edit.
         Route::post('violation-reports/{report}', [CoordinatorReportController::class, 'update']);
@@ -407,21 +413,21 @@ Route::prefix('v1')->group(function () {
         // verification stays with HR against the physical original, so this
         // cannot make anybody deployable.
         Route::post('documents/{requirementType}/upload', [PortalController::class, 'uploadDocument'])
-            ->middleware('throttle:30,1');
+            ->middleware('throttle:portal-upload');
 
         // Reads a document without storing it, so the applicant can find out at
         // home that a photo is too blurred to use. Throttled hard: each call is
         // roughly forty seconds of CPU on the recognition service, which makes an
         // unthrottled endpoint a cheap way to wedge it.
         Route::post('documents/check-readable', [PortalController::class, 'checkReadable'])
-            ->middleware('throttle:10,60');
+            ->middleware('throttle:readability-check');
         Route::get('profile', [PortalController::class, 'profile']);
         Route::patch('profile', [PortalController::class, 'updateProfile']);
 
         // The applicant's own picture. No identifier in the URL: it is always
         // the signed-in applicant's, like everything else under /portal.
         Route::post('profile/photo', [PortalController::class, 'uploadPhoto'])
-            ->middleware('throttle:20,1');
+            ->middleware('throttle:profile-photo');
 
         // The applicant's own answer to an offer of work. Records what they
         // decided; it changes no status and cannot advance anybody - the client's

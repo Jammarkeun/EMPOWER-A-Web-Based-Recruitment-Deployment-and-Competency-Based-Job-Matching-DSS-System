@@ -249,16 +249,4 @@ class RegistrationController extends Controller
                 .'your application. Your reference number is '.$applicant->applicant_code.'.',
         ], 'Account created');
     }
-
-    /**
-     * Lets the sign-up form warn about a taken email before submission.
-     */
-    public function checkEmail(Request $request): JsonResponse
-    {
-        $data = $request->validate(['email' => ['required', 'email']]);
-
-        return ApiResponse::success([
-            'available' => ! User::where('email', $data['email'])->exists(),
-        ]);
-    }
 }

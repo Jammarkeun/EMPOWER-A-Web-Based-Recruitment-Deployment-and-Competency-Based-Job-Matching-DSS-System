@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useNavigate, useLocation, Navigate, Link } from 'react-router-dom'
-import { Loader2, FolderCheck, Scale, ScrollText } from 'lucide-react'
+import { Clock, Loader2, FolderCheck, Scale, ScrollText } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { Input, PasswordInput } from '@/components/ui/input'
 import { Field } from '@/components/ui/form'
 import AuthLayout, { AuthCard } from '@/components/AuthLayout'
 import { homePathFor } from '@/lib/utils'
+import { signOutNotice } from '@/lib/session'
 
 /**
  * Where a user belongs after signing in.
@@ -60,6 +61,12 @@ export default function Login() {
   const [errors, setErrors] = React.useState({})
   const [formError, setFormError] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
+
+  // Why the person is here, when they did not sign out themselves - a sign-in
+  // that went idle or reached its limit (audit V-02). Read once, then cleared,
+  // so it is not shown again on the next visit.
+  const [notice] = React.useState(signOutNotice.peek)
+  React.useEffect(() => signOutNotice.clear(), [])
 
   if (loading) {
     return (
@@ -123,6 +130,16 @@ export default function Login() {
     >
       <AuthCard>
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          {notice && (
+            <div
+              className="flex items-start gap-2 rounded-md border border-status-warning-border bg-status-warning-bg px-3 py-2 text-sm text-status-warning-text"
+              role="status"
+            >
+              <Clock className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{notice}</span>
+            </div>
+          )}
+
           <Field label="Email address" htmlFor="email" required error={errors.email?.[0]}>
             <Input
               type="email"

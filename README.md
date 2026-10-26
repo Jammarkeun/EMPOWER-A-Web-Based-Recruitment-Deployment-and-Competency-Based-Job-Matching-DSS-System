@@ -230,6 +230,16 @@ There are two ways back into an account:
    whether or not an account exists. Expired tokens are cleared daily by the
    scheduler (`auth:clear-resets`).
 
+**How long a sign-in lasts.** The server ends a sign-in 12 hours after it began
+(`SANCTUM_EXPIRATION=720`) or after an hour with no activity
+(`SANCTUM_IDLE_TIMEOUT=60`), whichever comes first. The screen warns two minutes
+before an idle sign-out, with a *Stay signed in* button, and five minutes before
+the 12 hours are up. Typing or clicking counts as activity; the unread-count poll
+does not. The sign-in page then says why the person was signed out. Both values
+are provisional until CDE says how long a shared office computer may stay signed
+in (client question 20.4); `0` turns a limit off. Tokens past their lifetime are
+pruned daily (`sanctum:prune-expired`).
+
 ## Handling personal data
 
 The system holds personal and sensitive personal information covered by the

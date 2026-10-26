@@ -23,6 +23,7 @@ class EnsurePasswordIsCurrent
     /** What an account that must choose a new password can still reach. */
     private const ALLOWED = [
         'api/v1/auth/me',
+        'api/v1/auth/session',
         'api/v1/auth/logout',
         'api/v1/auth/change-password',
     ];

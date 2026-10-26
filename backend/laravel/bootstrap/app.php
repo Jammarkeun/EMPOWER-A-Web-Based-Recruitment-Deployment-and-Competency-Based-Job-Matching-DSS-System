@@ -2,6 +2,7 @@
 
 use App\Exceptions\InvalidTransitionException;
 use App\Http\Responses\ApiResponse;
+use App\Services\SessionLifetime;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -90,10 +91,15 @@ return Application::configure(basePath: dirname(__DIR__))
                     $e->errors()
                 ),
 
-                $e instanceof AuthenticationException => ApiResponse::error(
-                    'Authentication required.',
-                    401
-                ),
+                /*
+                 * A sign-in that ran out says so, with a code the screen reads
+                 * to tell the person why they are back at the sign-in page. Any
+                 * other refusal stays the plain message: an unknown or revoked
+                 * token is told nothing about why.
+                 */
+                $e instanceof AuthenticationException => ($ended = $request->attributes->get(SessionLifetime::ENDED))
+                    ? ApiResponse::error(app(SessionLifetime::class)->message($ended), 401, code: $ended)
+                    : ApiResponse::error('Authentication required.', 401),
 
                 $e instanceof AuthorizationException => ApiResponse::error(
                     $e->getMessage() ?: 'You do not have permission to perform this action.',
@@ -114,10 +120,18 @@ return Application::configure(basePath: dirname(__DIR__))
                     409
                 ),
 
+                /*
+                 * Says how long to wait. "A moment" was the message even when
+                 * the wait was most of an hour, which reads as broken rather
+                 * than limited. Retry-After is passed on for any client that
+                 * reads it.
+                 */
                 $e instanceof TooManyRequestsHttpException => ApiResponse::error(
-                    'Too many attempts. Please wait a moment and try again.',
+                    ($wait = (int) ($e->getHeaders()['Retry-After'] ?? 0)) > 60
+                        ? sprintf('Too many attempts. Please try again in %d minutes.', (int) ceil($wait / 60))
+                        : sprintf('Too many attempts. Please try again in %d seconds.', max($wait, 1)),
                     429
-                ),
+                )->withHeaders(array_intersect_key($e->getHeaders(), array_flip(['Retry-After']))),
 
                 /*
                  * Symfony's HttpException already carries the correct status, and

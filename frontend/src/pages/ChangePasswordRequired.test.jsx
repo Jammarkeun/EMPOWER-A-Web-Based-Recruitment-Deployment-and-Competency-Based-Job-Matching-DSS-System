@@ -13,10 +13,18 @@ vi.mock('@/components/ui/toast', () => ({ useToast: () => toast.current }))
 const { default: ChangePasswordRequired } = await import('./ChangePasswordRequired')
 
 async function fill(current, password, confirmation) {
-  await userEvent.type(screen.getByLabelText(/temporary password/i), current)
-  await userEvent.type(screen.getByLabelText(/^new password/i), password)
-  await userEvent.type(screen.getByLabelText(/confirm new password/i), confirmation)
-  await userEvent.click(screen.getByRole('button', { name: /save my password/i }))
+  // Pasted rather than typed: what is under test is the mismatch check and the
+  // submission, not keystrokes, and seventy characters typed one at a time ran
+  // past the five-second test limit when the whole suite shared the CPU.
+  const user = userEvent.setup({ delay: null })
+  const enter = async (field, text) => {
+    await user.click(field)
+    await user.paste(text)
+  }
+  await enter(screen.getByLabelText(/temporary password/i), current)
+  await enter(screen.getByLabelText(/^new password/i), password)
+  await enter(screen.getByLabelText(/confirm new password/i), confirmation)
+  await user.click(screen.getByRole('button', { name: /save my password/i }))
 }
 
 describe('Forced password change', () => {

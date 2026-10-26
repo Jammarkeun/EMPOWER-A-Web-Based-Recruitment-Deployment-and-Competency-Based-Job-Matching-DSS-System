@@ -14,8 +14,17 @@
 - Pagination: page, per_page, sort_by, sort_dir.
 - An account still on an office-issued password (`must_change_password`) is
   answered **403** with `"code": "password_change_required"` by every
-  authenticated endpoint except `GET /auth/me`, `POST /auth/logout` and
-  `POST /auth/change-password`.
+  authenticated endpoint except `GET /auth/me`, `GET /auth/session`,
+  `POST /auth/logout` and `POST /auth/change-password`.
+- Sign-in limits *(added 2026-10-22, security audit V-02)*: a token stops
+  working **720 minutes after sign-in** (`SANCTUM_EXPIRATION`) or after
+  **60 minutes without a request of the account's own** (`SANCTUM_IDLE_TIMEOUT`).
+  Both values are provisional (client question 20.4); `0` turns a limit off. A
+  token refused for either reason is deleted and answered **401** with
+  `"code": "session_expired"` or `"code": "session_idle"`. Any other 401 carries
+  no code. Requests the client makes on its own (polls) send
+  `X-Empower-Background: 1`; they are answered normally but do not restart the
+  idle limit.
 - Standard Response Envelope:
 
 ```json
@@ -94,7 +103,15 @@ anything else.
 
 ### GET /auth/me
 - Public: No.
-- Response 200: Current user profile, roles, permissions, `must_change_password`.
+- Response 200: Current user profile, roles, permissions, `must_change_password`,
+  and `session` (as below). The login response's `user` carries `session` too.
+
+### GET /auth/session *(added 2026-10-22)*
+- Public: No. Allowed while `must_change_password` is true.
+- Counts as activity, so it is what "Stay signed in" calls; it cannot extend the
+  720-minute lifetime.
+- Response 200: `{ "data": { "idle_timeout_minutes": 60, "expires_at": "2026-10-22T20:00:00+08:00" } }`
+  (either is `null` when that limit is off).
 
 ### POST /auth/change-password *(updated 2026-10-19)*
 - Public: No. Allowed while `must_change_password` is true.
@@ -170,10 +187,10 @@ onto a client's shortlist. See `POST /applicants/{id}/verify-identity`.
 }
 ```
 
-### POST /register/check-email
-- Public: Yes. Throttled to 20 requests per minute.
-- Request: `{ "email": "ana@example.com" }`
-- Response 200: `{ "data": { "available": true } }`
+### ~~POST /register/check-email~~ *(removed 2026-10-22, security audit V-03)*
+- Answered whether any address - staff accounts included - had an account, 20
+  times a minute, and the sign-up form never used it. A taken address is still
+  reported by `POST /register` itself (5 requests per hour).
 
 ### POST /register
 - Public: Yes. Throttled to **5 requests per hour** per address, since this is an

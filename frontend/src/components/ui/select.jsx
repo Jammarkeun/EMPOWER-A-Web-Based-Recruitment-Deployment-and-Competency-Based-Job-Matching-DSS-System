@@ -118,6 +118,37 @@ const SelectSeparator = React.forwardRef(({ className, ...props }, ref) => (
 SelectSeparator.displayName = SelectPrimitive.Separator.displayName
 
 /**
+ * Reads native <option> and <optgroup> children into plain entries.
+ *
+ * Groups used to be dropped: only <option> elements sitting directly inside
+ * the Select were read, so a list grouped with <optgroup> - the sign-up form's
+ * positions, grouped by company - showed nothing but its "Select a position"
+ * line. A group comes back as { group, options }.
+ */
+function readOptions(children) {
+  const entries = []
+
+  React.Children.toArray(children).forEach((child) => {
+    if (!React.isValidElement(child)) return
+
+    if (child.type === 'option') {
+      entries.push({
+        value: child.props.value,
+        label: child.props.children,
+        disabled: child.props.disabled,
+      })
+    } else if (child.type === 'optgroup') {
+      entries.push({
+        group: child.props.label,
+        options: readOptions(child.props.children).filter((entry) => !entry.group),
+      })
+    }
+  })
+
+  return entries
+}
+
+/**
  * Universal Select component.
  * Supports both Radix composition subcomponents (Select, SelectTrigger, etc.)
  * AND direct properties (placeholder, options, value, onChange) for ease of use across legacy views.
@@ -162,24 +193,27 @@ const Select = React.forwardRef(
       }
     }
 
-    // Extract options from props or child <option> elements
-    let optionItems = options || []
-    if (!options && children) {
-      optionItems = React.Children.toArray(children)
-        .filter((child) => React.isValidElement(child) && child.type === 'option')
-        .map((child) => ({
-          value: child.props.value,
-          label: child.props.children,
-          disabled: child.props.disabled,
-        }))
-    }
+    // Extract options from props or child <option>/<optgroup> elements
+    const optionItems = options || (children ? readOptions(children) : [])
 
     const currentValue = value !== undefined && value !== null ? String(value) : ''
+
+    // Radix shows the placeholder whenever the value is empty, so an empty
+    // <option> ("Select a position", "Not specified") is what the box should
+    // say - not a generic "Select option..." that matches nothing in the list.
+    const emptyOption = optionItems.find((opt) => !opt.group && String(opt.value ?? '') === '')
+    const shownPlaceholder = placeholder || emptyOption?.label || 'Select option...'
+
+    const renderItem = (opt, idx) => (
+      <SelectItem key={opt.value ?? idx} value={String(opt.value)} disabled={opt.disabled}>
+        {opt.label ?? opt.value}
+      </SelectItem>
+    )
 
     return (
       <SelectRoot value={currentValue} onValueChange={handleValueChange} disabled={disabled}>
         <SelectTrigger ref={ref} className={className} id={id} name={name} {...props}>
-          <SelectValue placeholder={placeholder || 'Select option...'} />
+          <SelectValue placeholder={shownPlaceholder} />
         </SelectTrigger>
         <SelectContent>
           {placeholder && (
@@ -187,11 +221,16 @@ const Select = React.forwardRef(
               {placeholder}
             </SelectItem>
           )}
-          {optionItems.map((opt, idx) => (
-            <SelectItem key={opt.value ?? idx} value={String(opt.value)} disabled={opt.disabled}>
-              {opt.label ?? opt.value}
-            </SelectItem>
-          ))}
+          {optionItems.map((opt, idx) =>
+            opt.group !== undefined ? (
+              <SelectGroup key={`group-${opt.group}-${idx}`}>
+                <SelectLabel>{opt.group}</SelectLabel>
+                {opt.options.map(renderItem)}
+              </SelectGroup>
+            ) : (
+              renderItem(opt, idx)
+            )
+          )}
         </SelectContent>
       </SelectRoot>
     )

@@ -8,6 +8,7 @@ use App\Notifications\PasswordChanged;
 use App\Rules\PasswordPolicy;
 use App\Services\AuditService;
 use App\Services\ProfilePhotoService;
+use App\Services\SessionLifetime;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -16,8 +17,22 @@ use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    public function __construct(private readonly AuditService $audit)
-    {
+    /**
+     * A bcrypt hash of a random value nobody kept, checked when no account uses
+     * the email address typed in (security audit V-03).
+     *
+     * Without it an unknown address was refused at once, while a known one paid
+     * for a full password check first, so the time a failed sign-in took said
+     * whether the address was registered. Checking this instead makes both
+     * cases do the same work. Cost 12 to match BCRYPT_ROUNDS; regenerate it if
+     * that setting is ever changed.
+     */
+    private const STAND_IN_HASH = '$2y$12$1SsyiwP7pbWKCLaS5c0kwuKRiLagElzf6f3kT.NvH7V252v.ZO7..';
+
+    public function __construct(
+        private readonly AuditService $audit,
+        private readonly SessionLifetime $sessions,
+    ) {
     }
 
     public function login(Request $request): JsonResponse
@@ -43,7 +58,12 @@ class AuthController extends Controller
 
         $user = User::where('email', $credentials['email'])->first();
 
-        if (! $user || ! Hash::check($credentials['password'], $user->password)) {
+        // Always one full password check, against the stand-in when there is no
+        // account, so an unknown address takes as long to refuse as a wrong
+        // password does.
+        $passwordMatches = Hash::check($credentials['password'], $user?->password ?: self::STAND_IN_HASH);
+
+        if (! $user || ! $passwordMatches) {
             RateLimiter::hit($throttleKey, 300);
 
             $this->audit->record(
@@ -78,7 +98,11 @@ class AuthController extends Controller
         // Any previously issued token is discarded, so a login elsewhere ends
         // older sessions rather than accumulating live tokens indefinitely.
         $user->tokens()->delete();
-        $token = $user->createToken('empower-api')->plainTextToken;
+        $issued = $user->createToken('empower-api');
+        $token = $issued->plainTextToken;
+
+        // So the profile below can say when this new sign-in ends.
+        $user->withAccessToken($issued->accessToken);
 
         $user->forceFill(['last_login_at' => now()])->save();
 
@@ -119,6 +143,18 @@ class AuthController extends Controller
     public function me(Request $request): JsonResponse
     {
         return ApiResponse::success($this->profile($request->user()));
+    }
+
+    /**
+     * When this sign-in ends, for the warning shown before it does.
+     *
+     * Also what "Stay signed in" calls: like any request of the person's own,
+     * it counts as activity and restarts the idle limit. It cannot move the
+     * lifetime, which runs from signing in.
+     */
+    public function session(Request $request): JsonResponse
+    {
+        return ApiResponse::success($this->sessions->describe($request->user()->currentAccessToken()));
     }
 
     /**
@@ -278,6 +314,9 @@ class AuthController extends Controller
             // server never takes this back from the browser: every coordinator
             // request is scoped from the assignment again.
             'coordinator' => $user->isCoordinator() ? $this->coordinatorProfile($user) : null,
+            // The idle limit and the end of this sign-in, so the screen can warn
+            // before the server signs the person out.
+            'session' => $this->sessions->describe($user->currentAccessToken()),
         ];
     }
 

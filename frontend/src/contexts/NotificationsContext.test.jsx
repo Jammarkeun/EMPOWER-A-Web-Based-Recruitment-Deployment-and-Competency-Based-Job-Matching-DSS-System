@@ -29,7 +29,8 @@ describe('NotificationsProvider', () => {
     )
 
     expect(await screen.findByText('total 3, section 3')).toBeInTheDocument()
-    expect(api.get).toHaveBeenCalledWith('/notifications/unread-count')
+    // A poll, so it must not count as the person being active (audit V-02).
+    expect(api.get).toHaveBeenCalledWith('/notifications/unread-count', null, { background: true })
   })
 
   it('does not ask while the account cannot read notifications', async () => {

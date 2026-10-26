@@ -39,7 +39,9 @@ export function NotificationsProvider({ children, enabled = true }) {
     if (!enabled) return
 
     try {
-      const response = await get('/notifications/unread-count')
+      // Marked as background: the count is fetched every minute whether or
+      // not anybody is at the desk, so it must not keep a sign-in alive.
+      const response = await get('/notifications/unread-count', null, { background: true })
       setUnread(response.data.unread_count ?? 0)
       setByCategory(response.data.by_category ?? {})
     } catch {

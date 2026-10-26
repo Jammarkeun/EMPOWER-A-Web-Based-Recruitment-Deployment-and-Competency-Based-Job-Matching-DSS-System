@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { homePathFor } from '@/lib/utils'
 import { NotificationsProvider } from '@/contexts/NotificationsContext'
 import { Button } from '@/components/ui/button'
+import SessionTimeout from '@/components/SessionTimeout'
 
 /*
  * The two public entry points load with the app. Everything else loads when
@@ -84,6 +85,10 @@ export default function App() {
      * because an unauthenticated poll would be a 401 a minute.
      */
     <NotificationsProvider enabled={isAuthenticated && !user?.must_change_password}>
+    {/* Warns before a sign-in ends and signs out cleanly once it has. Here
+        rather than in a layout so it covers every signed-in page, the
+        change-password screen included. */}
+    {isAuthenticated && <SessionTimeout />}
     <React.Suspense fallback={<FullPageLoader />}>
     <Routes>
       {/* Public front door. Signed-in visitors are redirected onward by the

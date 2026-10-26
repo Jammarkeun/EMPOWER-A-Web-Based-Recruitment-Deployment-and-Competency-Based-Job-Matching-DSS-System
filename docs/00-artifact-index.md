@@ -23,6 +23,8 @@
 - docs/07-project-management/implementation-timeline.md
 - docs/07-project-management/client-responsibilities.md
 - docs/07-project-management/panel-recommendations-audit.md
+- docs/07-project-management/client-questions-part-2.md
+- docs/07-project-management/client-questions-part-3.md (open questions after the October 2026 build)
 
 8. Backend Executable Assets:
 - backend/database/migrations/2026_08_04_000000_create_empower_schema.php

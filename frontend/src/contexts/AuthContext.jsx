@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { get, post, tokenStore } from '@/lib/api'
+import { sessionActivity } from '@/lib/session'
 
 const AuthContext = React.createContext(null)
 
@@ -48,6 +49,9 @@ export function AuthProvider({ children }) {
   const login = React.useCallback(async (email, password) => {
     const response = await post('/auth/login', { email, password })
     tokenStore.set(response.data.token)
+    // The idle clock starts at signing in. The sign-in request itself carried
+    // no token, so the API client did not count it.
+    sessionActivity.touch()
     setUser(response.data.user)
     return response.data.user
   }, [])
@@ -63,6 +67,7 @@ export function AuthProvider({ children }) {
   const register = React.useCallback(async (payload) => {
     const response = await post('/register', payload)
     tokenStore.set(response.data.token)
+    sessionActivity.touch()
     setUser(response.data.user)
     return response.data
   }, [])
