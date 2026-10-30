@@ -47,6 +47,28 @@ return [
             'report' => false,
         ],
 
+        /*
+        | Applicant documents, evidence and photos on this machine.
+        |
+        | The local counterpart of the private Supabase bucket. Files live
+        | outside the web root (storage/app/private/documents), so the web
+        | server cannot hand them out. They are opened only through links
+        | signed for a few minutes by DocumentStorageService and served by
+        | DocumentFileController at /api/v1/document-files; an unsigned,
+        | altered or expired link is refused. This replaces the `public` disk,
+        | whose files anybody could open from /storage/... for ever.
+        |
+        | Not `serve => true`: Laravel's own file route sends a CSP `sandbox`
+        | header, under which Chrome will not display a PDF.
+        */
+        'documents' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/documents'),
+            'visibility' => 'private',
+            'throw' => true,
+            'report' => false,
+        ],
+
         's3' => [
             'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),

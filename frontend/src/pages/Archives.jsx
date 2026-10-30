@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows, VirtualizedList } from '@/components/ui/states'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { Pagination } from '@/components/Pagination'
 
 /**
  * Archived records stay searchable. Losing the ability to answer "did this
@@ -65,9 +65,10 @@ export default function Archives() {
             aria-label="Filter by record type"
             className="sm:w-52"
           >
+            {/* Only these two are archived today; a deployment is kept inside
+                its employee's snapshot, so a "Deployments" choice never matched. */}
             <option value="employee">Employees</option>
             <option value="applicant">Applicants</option>
-            <option value="deployment">Deployments</option>
           </Select>
         </CardContent>
       </Card>

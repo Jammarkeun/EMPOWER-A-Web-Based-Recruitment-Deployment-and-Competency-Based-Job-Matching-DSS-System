@@ -1,10 +1,18 @@
 {{--
-    One template renders every report.
+    One template renders every report, laid out like CDE's own Manpower
+    Requisition Form (received 29 October 2026): a ruled box with the logo on
+    the left, the agency name and address centred, the document's title in
+    bold capitals beneath; then "Label: value" lines on the left and a boxed
+    list on the right; then signature lines with the name over the line and
+    the agency beneath it.
+
+    The ruling is black, as on the paper form. EMPOWER's own navy stays where
+    it was - the logo and the table's heading row.
 
     DomPDF only supports a subset of CSS — no flexbox, no grid, no CSS variables
-    — so the layout is deliberately table and float based. Anything more modern
-    silently renders as an unstyled stack, which is why this file looks older
-    than the rest of the codebase.
+    — so the layout is deliberately table based. Anything more modern silently
+    renders as an unstyled stack, which is why this file looks older than the
+    rest of the codebase.
 --}}
 <!doctype html>
 <html lang="en">
@@ -12,55 +20,65 @@
     <meta charset="utf-8">
     <title>{{ $title }}</title>
     <style>
-        @page { margin: 26mm 14mm 20mm 14mm; }
+        /* The top margin holds the letterhead, which repeats on every page. */
+        @page { margin: 35mm 12mm 15mm 12mm; }
 
         body {
             font-family: DejaVu Sans, sans-serif;
             font-size: 8.5pt;
-            color: #1a2231;
+            color: #000;
             margin: 0;
         }
 
         /* Repeated on every page by DomPDF's fixed positioning, so a report
            running to twenty pages stays identifiable when printed and stapled. */
-        .page-header {
+        .letterhead {
             position: fixed;
-            top: -18mm; left: 0; right: 0;
-            height: 16mm;
-            border-bottom: 0.6pt solid #1b4b8f;
+            top: -29mm; left: 0; right: 0;
+            padding: 1.5mm 0;
+            border: 1.5pt solid #000;
         }
-
-        .agency { font-size: 13pt; font-weight: bold; color: #1b4b8f; letter-spacing: -0.2pt; }
-        .agency-sub { font-size: 7.5pt; color: #5a6b85; }
+        .letterhead table { width: 100%; border-collapse: collapse; }
+        .letterhead td { vertical-align: middle; text-align: center; padding: 0; }
+        .lh-agency { font-size: 12pt; }
+        .lh-address { font-size: 9pt; margin-top: 0.6mm; }
+        .lh-title { font-size: 11.5pt; font-weight: bold; letter-spacing: 0.5pt; margin-top: 2.5mm; }
 
         .page-footer {
             position: fixed;
-            bottom: -14mm; left: 0; right: 0;
-            height: 10mm;
-            font-size: 7pt;
-            color: #7b8ba3;
-            border-top: 0.4pt solid #d9e2f0;
-            padding-top: 3mm;
+            bottom: -10mm; left: 0; right: 0;
+            height: 8mm;
+            font-size: 6.8pt;
+            color: #333;
         }
-
         .page-number:after { content: counter(page); }
 
-        h1 { font-size: 14pt; margin: 0 0 1mm; color: #101b2d; }
-        .subtitle { font-size: 8.5pt; color: #5a6b85; margin: 0 0 4mm; }
-
-        .meta-bar {
+        /* The form's body: labelled lines on the left, a boxed list on the
+           right, divided by a heavy rule - CDE's "Reason of Request" column. */
+        table.form {
             width: 100%;
-            background: #f2f6fc;
-            border: 0.4pt solid #d9e2f0;
-            padding: 2.5mm 3mm;
+            border-collapse: collapse;
+            border: 1.5pt solid #000;
             margin-bottom: 4mm;
-            font-size: 7.5pt;
-            color: #47566e;
+            page-break-inside: avoid;
         }
-        .meta-bar td { padding: 0.4mm 0; }
-        .meta-label { color: #7b8ba3; width: 18mm; }
+        table.form td.left { width: 64%; border-right: 1.5pt solid #000; vertical-align: top; padding: 0; }
+        table.form td.right { vertical-align: top; padding: 2mm 5mm 2mm; }
 
-        table.data { width: 100%; border-collapse: collapse; }
+        table.lines { width: 100%; border-collapse: collapse; }
+        table.lines td { border-bottom: 0.6pt solid #000; padding: 1.3mm 3mm; font-size: 9pt; }
+        table.lines tr.last td { border-bottom: none; }
+        .label { white-space: nowrap; width: 1%; padding-right: 2mm; }
+
+        .box-title { text-align: center; font-weight: bold; font-size: 9.5pt; margin-bottom: 1.5mm; }
+        table.figures { width: 100%; border-collapse: collapse; }
+        table.figures td { padding: 1mm 0; font-size: 8.5pt; vertical-align: bottom; }
+        .figure-value {
+            text-align: right; font-weight: bold; white-space: nowrap;
+            border-bottom: 0.6pt solid #000; padding-left: 3mm;
+        }
+
+        table.data { width: 100%; border-collapse: collapse; border: 1pt solid #000; }
 
         table.data thead th {
             background: #1b4b8f;
@@ -71,72 +89,67 @@
             padding: 2mm 1.6mm;
             text-align: left;
             font-weight: bold;
+            border: 0.5pt solid #000;
         }
 
         table.data tbody td {
-            padding: 1.6mm;
-            border-bottom: 0.3pt solid #e4eaf4;
+            padding: 1.2mm 1.6mm;
+            border: 0.4pt solid #555;
             font-size: 7.8pt;
             vertical-align: top;
         }
 
         /* Zebra striping survives photocopying, which the agency does. */
-        table.data tbody tr:nth-child(even) td { background: #f7f9fc; }
-
-        .summary { margin-top: 6mm; page-break-inside: avoid; }
-        .summary-title {
-            font-size: 8pt; text-transform: uppercase; letter-spacing: 0.4pt;
-            color: #7b8ba3; margin-bottom: 2mm;
-        }
-        .summary-box {
-            border: 0.5pt solid #d9e2f0;
-            background: #f7f9fc;
-            padding: 3mm;
-        }
-        .summary-box td { padding: 1mm 3mm 1mm 0; font-size: 8.5pt; }
-        .summary-value { font-weight: bold; font-size: 11pt; color: #1b4b8f; }
+        table.data tbody tr:nth-child(even) td { background: #f2f4f8; }
 
         .empty {
-            padding: 12mm; text-align: center; color: #7b8ba3;
-            border: 0.5pt dashed #c9d5e8; font-size: 9pt;
+            padding: 12mm; text-align: center;
+            border: 1pt solid #000; font-size: 9pt;
         }
 
-        .signature { margin-top: 14mm; page-break-inside: avoid; }
-        .signature td { font-size: 8pt; padding-top: 10mm; }
-        .sig-line { border-top: 0.5pt solid #47566e; padding-top: 1mm; width: 60mm; }
-        .sig-role { color: #7b8ba3; font-size: 7pt; }
+        /* Signature lines as on CDE's form: the label, then the name printed
+           in capitals over the line, with the agency beneath. */
+        table.signature {
+            width: 100%;
+            border-collapse: collapse;
+            border: 1.5pt solid #000;
+            margin-top: 4mm;
+            page-break-inside: avoid;
+        }
+        td.sig-cell { padding: 9mm 4mm 3mm; vertical-align: bottom; font-size: 9pt; width: 33%; }
+        .sig-label { white-space: nowrap; padding-right: 2mm; }
+        .sig-name {
+            border-bottom: 0.75pt solid #000; text-align: center;
+            font-weight: bold; text-transform: uppercase; height: 4.5mm;
+        }
+        .sig-under { text-align: center; font-size: 7.5pt; padding-top: 0.6mm; }
     </style>
 </head>
 <body>
 
-<div class="page-header">
-    <table style="width:100%">
+@php($agency = config('empower.organisation.name'))
+@php($logo = public_path('logo/cde-manpower.png'))
+
+<div class="letterhead">
+    <table>
         <tr>
             {{--
-                The agency letterhead. These reports are printed and handed to
-                client companies, so the mark belongs at the top of the page the
-                same way it would on the agency's own stationery.
-
                 Guarded by file_exists: DomPDF raises on a missing image rather
                 than skipping it, and a missing logo must never be the reason a
                 report fails to generate.
             --}}
-            @php($logo = public_path('logo/cde-manpower-mark.png'))
-            @if (file_exists($logo))
-                <td style="width:16mm; vertical-align:middle;">
-                    <img src="{{ $logo }}" alt="" style="width:13mm; height:13mm;">
-                </td>
-            @endif
+            <td style="width:30mm;">
+                @if (file_exists($logo))
+                    <img src="{{ $logo }}" alt="" style="width:20mm; height:20mm;">
+                @endif
+            </td>
             <td>
-                <div class="agency">{{ strtoupper(config('empower.organisation.name')) }}</div>
-                <div class="agency-sub">
-                    {{ config('empower.organisation.address') }} &middot; Recruitment and Deployment Management
-                </div>
+                <div class="lh-agency">{{ $agency }}</div>
+                <div class="lh-address">{{ config('empower.organisation.address') }}</div>
+                <div class="lh-title">{{ mb_strtoupper($title) }}</div>
             </td>
-            <td style="text-align:right; font-size:7pt; color:#7b8ba3;">
-                EMPOWER System<br>
-                {{ $generated_at }}
-            </td>
+            {{-- Balances the logo so the lettering sits in the middle of the page. --}}
+            <td style="width:30mm;"></td>
         </tr>
     </table>
 </div>
@@ -144,24 +157,39 @@
 <div class="page-footer">
     <table style="width:100%">
         <tr>
-            <td>Generated from the EMPOWER system &middot; {{ $generated_at }}</td>
+            <td>Generated from EMPOWER &middot; {{ $generated_at }}</td>
             <td style="text-align:center;">Confidential — contains personal information protected under RA 10173</td>
             <td style="text-align:right;">Page <span class="page-number"></span></td>
         </tr>
     </table>
 </div>
 
-<h1>{{ $title }}</h1>
-<p class="subtitle">{{ $subtitle }}</p>
-
-<table class="meta-bar">
+<table class="form">
     <tr>
-        <td class="meta-label">Period</td>
-        <td>{{ $period }}</td>
-        <td class="meta-label">Records</td>
-        <td>{{ count($rows) }}</td>
-        <td class="meta-label">Prepared by</td>
-        <td>{{ $prepared_by }}</td>
+        <td class="left">
+            <table class="lines">
+                <tr><td class="label">Report:</td><td>{{ $subtitle }}</td></tr>
+                <tr><td class="label">Period:</td><td>{{ $period }}</td></tr>
+                <tr><td class="label">Number of Records:</td><td>{{ number_format(count($rows)) }}</td></tr>
+                <tr><td class="label">Date generated:</td><td>{{ $generated_at }}</td></tr>
+                <tr class="last"><td class="label">Prepared by:</td><td>{{ $prepared_by }}</td></tr>
+            </table>
+        </td>
+        <td class="right">
+            <div class="box-title">Summary</div>
+            @if (count($summary))
+                <table class="figures">
+                    @foreach ($summary as $item)
+                        <tr>
+                            <td>{{ $item['label'] }}</td>
+                            <td class="figure-value">{{ $item['value'] }}</td>
+                        </tr>
+                    @endforeach
+                </table>
+            @else
+                <div style="text-align:center;">&mdash;</div>
+            @endif
+        </td>
     </tr>
 </table>
 
@@ -189,38 +217,25 @@
             @endforeach
         </tbody>
     </table>
-
-    <div class="summary">
-        <div class="summary-title">Summary</div>
-        <table class="summary-box" style="width:100%">
-            <tr>
-                @foreach ($summary as $item)
-                    <td>
-                        <div style="color:#7b8ba3; font-size:7.5pt">{{ $item['label'] }}</div>
-                        <div class="summary-value">{{ $item['value'] }}</div>
-                    </td>
-                @endforeach
-            </tr>
-        </table>
-    </div>
 @endif
 
 {{-- The agency circulates printed reports internally and to clients, so the
-     signature block exists on the page rather than being added by hand. --}}
-<table class="signature" style="width:100%">
+     signature lines exist on the page rather than being added by hand. --}}
+<table class="signature">
     <tr>
-        <td>
-            <div class="sig-line">{{ $prepared_by }}</div>
-            <div class="sig-role">Prepared by</div>
-        </td>
-        <td>
-            <div class="sig-line">&nbsp;</div>
-            <div class="sig-role">Reviewed by</div>
-        </td>
-        <td>
-            <div class="sig-line">&nbsp;</div>
-            <div class="sig-role">Approved by</div>
-        </td>
+        @foreach (['Prepared by:' => $prepared_by, 'Reviewed by:' => null, 'Approved by:' => null] as $label => $name)
+            <td class="sig-cell">
+                <table style="width:100%; border-collapse:collapse;">
+                    <tr>
+                        <td class="sig-label" style="padding:0; width:1%;">{{ $label }}</td>
+                        <td style="padding:0;">
+                            <div class="sig-name">{{ $name }}</div>
+                            <div class="sig-under">{{ $agency }}</div>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        @endforeach
     </tr>
 </table>
 

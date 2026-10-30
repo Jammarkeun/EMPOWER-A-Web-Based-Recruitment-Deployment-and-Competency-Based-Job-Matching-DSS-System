@@ -72,9 +72,9 @@ The simplest way to understand the system is to follow one manpower request and
 one applicant from beginning to end.
 
 > client raises a request → applicant registers and is screened →
-> documents verified → folder derived → HR runs the evaluation →
-> ranked list, with reasons → HR shortlists and deploys →
-> applicant becomes an employee → separation → archive
+> documents verified → folder derived → training recorded →
+> HR runs the evaluation → ranked list, with reasons → HR endorses to the
+> client and deploys → applicant becomes an employee → separation → archive
 
 **A client raises a request.** Best Tiwi needs, say, ten production helpers by
 the end of the month. HR records the position, the number of workers, the
@@ -99,6 +99,13 @@ because the tests cost money and expire.
 **The folder is worked out automatically.** As each document is verified, the
 system recalculates which of the three folders the applicant belongs in. This is
 the first of two mechanisms worth pausing on.
+
+**Training comes before any client sees the applicant.** CDE trains every
+worker before endorsing them, often at the client's own site. HR schedules a
+session, enrols the applicants who are ready, marks who attended and records who
+completed. A recorded completion — not a status somebody typed — is what lets an
+applicant be endorsed, and the applicant's record shows each session and what
+was actually recorded for it.
 
 **HR runs the evaluation.** When the request needs filling, HR presses one
 button. Every applicant far enough along to be worth considering is scored
@@ -192,16 +199,22 @@ reasoning is written down.
 
 ## Where the project stands
 
-The system is built and running. It works against a live PostgreSQL database
-hosted on Supabase, with applicant documents held in private storage reachable
-only through links that expire within minutes. There are 97 automated tests
-covering the lifecycle rules, the scoring engine, the permission system, and the
-isolation of the applicant portal. The source is published on GitHub.
+The system is built and running. It works against MariaDB locally for demos and
+a PostgreSQL database hosted on Supabase for the defence, with applicant
+documents held in private storage reachable only through links that expire
+within minutes. About 460 automated backend tests cover the lifecycle rules,
+the scoring engine, the permission system, training, reassignment, retention
+review, password recovery and the isolation of the portal and coordinator
+workspaces; continuous integration runs them on SQLite, MariaDB and PostgreSQL.
+A further 48 frontend tests check how the main screens behave. The source is
+published on GitHub.
 
 We should be honest about one thing. A number of the business rules currently in
 the system are our own reasonable defaults rather than policies CDE has
 confirmed — the exact document list, how long each clearance stays valid, the
-weights on each criterion, how long records should be retained. We have prepared
+weights on each criterion. (Retention was confirmed only as estimates, so the
+system prompts a person to review a record rather than deleting anything.) We
+have prepared
 a checklist for the agency to confirm or correct each of them, and doing so is
 the next substantial piece of work. Every one of those answers turns an
 assumption in our code into a documented requirement we can cite.

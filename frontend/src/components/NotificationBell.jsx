@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Check, FileText, UserCheck, ClipboardCheck, Info } from 'lucide-react'
+import { Bell, Briefcase, Check, FileText, UserCheck, ClipboardCheck, GraduationCap, Info } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -10,7 +10,9 @@ import { useNotifications } from '@/contexts/NotificationsContext'
 const CATEGORY_ICONS = {
   requirements: FileText,
   application: ClipboardCheck,
+  training: GraduationCap,
   deployment: UserCheck,
+  employment: Briefcase,
   general: Info,
 }
 
@@ -125,11 +127,11 @@ export default function NotificationBell() {
         onClick={togglePanel}
         aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
         aria-expanded={open}
-        className="relative"
+        className="relative bg-card text-muted-foreground hover:bg-card hover:text-foreground"
       >
-        <Bell className="h-4 w-4" />
+        <Bell className="h-[18px] w-[18px]" />
         {unread > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold tabular-nums text-destructive-foreground">
+          <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-[11px] font-semibold tabular-nums text-destructive-foreground">
             {unread > 9 ? '9+' : unread}
           </span>
         )}
@@ -137,14 +139,14 @@ export default function NotificationBell() {
 
       {open && (
         <div
-          className="absolute right-0 z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border bg-card shadow-lg animate-fade-in"
+          className="absolute right-0 z-50 mt-3 w-[22rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-panel border border-border/70 bg-popover shadow-float animate-fade-in"
           role="dialog"
           aria-label="Notifications"
         >
-          <div className="flex items-center justify-between border-b px-4 py-2.5">
-            <p className="text-sm font-semibold">Notifications</p>
+          <div className="flex items-center justify-between border-b px-5 py-3.5">
+            <p className="text-[15px] font-medium">Notifications</p>
             {unread > 0 && (
-              <button onClick={markAllRead} className="text-xs text-primary hover:underline">
+              <button onClick={markAllRead} className="text-xs font-medium text-primary hover:underline">
                 Mark all read
               </button>
             )}
@@ -159,7 +161,7 @@ export default function NotificationBell() {
                 <p className="text-sm text-muted-foreground">Nothing to catch up on</p>
               </div>
             ) : (
-              <ul className="divide-y">
+              <ul className="space-y-1 p-2">
                 {items.map((item) => {
                   const Icon = CATEGORY_ICONS[item.category] ?? Info
                   return (
@@ -167,7 +169,7 @@ export default function NotificationBell() {
                       <button
                         onClick={() => handleOpenItem(item)}
                         className={cn(
-                          'flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/50',
+                          'flex w-full items-start gap-3 rounded-row px-3 py-3 text-left transition-colors hover:bg-inset',
                           !item.read_at && 'bg-primary/[0.04]'
                         )}
                       >

@@ -68,7 +68,7 @@ class ApplicantQualificationController extends Controller
             'certifications.*.certification_name' => ['required', 'string', 'max:150'],
             'certifications.*.issuer' => ['nullable', 'string', 'max:150'],
             'certifications.*.issued_at' => ['nullable', 'date'],
-            'certifications.*.expires_at' => ['nullable', 'date'],
+            'certifications.*.expires_at' => ['nullable', 'date', 'after_or_equal:certifications.*.issued_at'],
         ], [
             'skills.*.distinct' => 'This skill is listed twice.',
         ]);
@@ -97,7 +97,9 @@ class ApplicantQualificationController extends Controller
                 ApplicantCertification::create($row + ['applicant_id' => $applicant->id]);
             }
 
-            $applicant->forceFill(['profile_updated_at' => now()])->save();
+            // Rankings scored against the old qualifications are now out of
+            // date (audit S-02).
+            $applicant->markScoredProfileChanged();
         });
 
         $applicant->unsetRelations();

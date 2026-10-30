@@ -8,8 +8,9 @@ use Illuminate\Support\Facades\DB;
  * Generates the human-readable codes HR reads out over the phone, in the form
  * PREFIX-YEAR-SEQUENCE, for example APP-2026-00042.
  *
- * The sequence is derived inside a locking read so two staff registering
- * applicants at the same counter cannot be handed the same number.
+ * The sequence is derived while its series is locked, so two staff registering
+ * applicants at the same counter - or recording deployments at the same moment
+ * - cannot be handed the same number.
  */
 class ReferenceCodeService
 {
@@ -53,14 +54,31 @@ class ReferenceCodeService
         return $this->next('violation_reports', 'report_code', config('empower.code_prefixes.violation_report'));
     }
 
+    public function incidentReport(): string
+    {
+        return $this->next('incident_reports', 'report_code', config('empower.code_prefixes.incident_report'));
+    }
+
+    public function requisition(): string
+    {
+        return $this->next('manpower_requisitions', 'requisition_code', config('empower.code_prefixes.requisition'));
+    }
+
+    public function attendanceImport(): string
+    {
+        return $this->next('attendance_imports', 'import_code', config('empower.code_prefixes.attendance_import', 'DTR'));
+    }
+
     private function next(string $table, string $column, string $prefix): string
     {
         $year = now()->year;
         $pattern = "{$prefix}-{$year}-";
 
-        // lockForUpdate serialises concurrent generation for the same prefix and
-        // year, which is what stops two simultaneous registrations colliding on
-        // the unique index.
+        $this->lockSeries($pattern);
+
+        // Still a locking read: on MariaDB a plain read inside a transaction
+        // can return an older snapshot, which would miss the code issued by
+        // whoever held the series lock a moment ago.
         $latest = DB::table($table)
             ->where($column, 'like', $pattern.'%')
             ->orderByDesc($column)
@@ -72,5 +90,32 @@ class ReferenceCodeService
             : 1;
 
         return $pattern.str_pad((string) $sequence, 5, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Serialises generation within one series - one prefix, one year - for
+     * the rest of the caller's transaction (audit S-04).
+     *
+     * Locking the latest code issued, as this used to, holds on MariaDB but
+     * not on PostgreSQL: a transaction that waited for that row re-reads only
+     * the row it waited on and computes the same next number. When no code
+     * existed yet for the year there was no row to lock on either database.
+     * Two deployments recorded at the same moment then failed on a duplicate
+     * employee number. The series row always exists once created, so it can
+     * be locked the same way everywhere.
+     *
+     * Outside a transaction the lock lasts one statement, which is no worse
+     * than before; every caller that writes the code runs inside one.
+     */
+    private function lockSeries(string $scope): void
+    {
+        $locked = DB::table('reference_sequences')->where('scope', $scope)->lockForUpdate()->first();
+
+        if ($locked === null) {
+            // First code of a new series: create its row - harmlessly, if
+            // somebody else has just done the same - then lock it.
+            DB::table('reference_sequences')->insertOrIgnore(['scope' => $scope, 'created_at' => now()]);
+            DB::table('reference_sequences')->where('scope', $scope)->lockForUpdate()->first();
+        }
     }
 }

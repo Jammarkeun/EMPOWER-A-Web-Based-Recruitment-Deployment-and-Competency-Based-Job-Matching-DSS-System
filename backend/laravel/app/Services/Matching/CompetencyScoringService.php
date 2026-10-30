@@ -52,6 +52,20 @@ class CompetencyScoringService
      * whatever this client happens to require, and no fixed list could hold
      * them.
      */
+    /**
+     * Education levels and their order, lowest first.
+     *
+     * The single copy: the applicant's "highest attainment" reads it too, so
+     * the level shown on a record and the level the scorer compares can never
+     * be ranked differently (audit CQ-02).
+     *
+     * @return array<string, int>
+     */
+    public static function educationRanks(): array
+    {
+        return self::EDUCATION_RANK;
+    }
+
     public static function acceptedValues(string $criteriaCode): ?array
     {
         return match ($criteriaCode) {
@@ -126,49 +140,67 @@ class CompetencyScoringService
      */
     public function evaluate(JobRequest $jobRequest, User $actor, array $options = []): array
     {
-        $criteria = $jobRequest->criteria()->with('criterion')->get();
+        /*
+         * One evaluation of a request at a time, and never while its criteria
+         * are being saved (audit S-01, S-02). The request's row stays locked
+         * for the whole run, and saving criteria takes the same lock. Without
+         * it, two runs could interleave and leave ranks from both, and a save
+         * landing mid-run could leave results scored against the old criteria
+         * looking current.
+         */
+        return DB::transaction(function () use ($jobRequest, $actor, $options) {
+            $request = JobRequest::query()->whereKey($jobRequest->getKey())->lockForUpdate()->firstOrFail();
 
-        if ($criteria->isEmpty()) {
-            throw new RuntimeException('This request has no competency criteria configured yet.');
-        }
+            $criteria = $request->criteria()->with('criterion')->get();
 
-        if ($criteria->filter($this->isWeighted(...))->sum('weight_score') <= 0) {
-            throw new RuntimeException('At least one weighted criterion with a score above zero is required.');
-        }
+            if ($criteria->isEmpty()) {
+                throw new RuntimeException('This request has no competency criteria configured yet.');
+            }
 
-        $applicants = $this->candidatePool($jobRequest, $options);
+            if ($criteria->filter($this->isWeighted(...))->sum('weight_score') <= 0) {
+                throw new RuntimeException('At least one weighted criterion with a score above zero is required.');
+            }
 
-        $scores = $applicants->map(fn (Applicant $a) => $this->score($a, $criteria, $jobRequest))->all();
+            $wholePool = $this->isWholePool($options);
+            $applicants = $this->candidatePool($request, $options);
 
-        $this->rank($scores);
-        $this->persist($jobRequest, $scores, $actor, $this->isWholePool($options));
+            $scores = $applicants->map(fn (Applicant $a) => $this->score($a, $criteria, $request))->all();
 
-        $this->audit->record(
-            action: 'evaluate',
-            module: 'matching',
-            recordType: JobRequest::class,
-            recordId: $jobRequest->id,
-            newValues: [
-                'evaluated_candidates' => count($scores),
-                'qualified' => count(array_filter($scores, fn ($s) => $s->passedAllGates)),
-            ],
-        );
+            $this->persist($request, $scores, $actor, $wholePool);
 
-        return $scores;
+            $this->audit->record(
+                action: 'evaluate',
+                module: 'matching',
+                recordType: JobRequest::class,
+                recordId: $request->id,
+                newValues: [
+                    'evaluated_candidates' => count($scores),
+                    'qualified' => count(array_filter($scores, fn ($s) => $s->passedAllGates)),
+                    'whole_pool' => $wholePool,
+                    'candidate_scope' => $options['candidate_scope'] ?? null,
+                    'limit' => $options['limit'] ?? null,
+                ],
+            );
+
+            return $scores;
+        });
     }
 
     /**
-     * Applicants far enough along the lifecycle to be worth evaluating, and not
-     * already deployed against this same request.
+     * The applicants this run scores: the request's pool, optionally narrowed
+     * to one status or to the first N.
+     *
+     * The first N are taken in the agency's queue order - longest waiting
+     * first, then the earlier record - so running the same narrowed
+     * evaluation twice scores the same people (audit S-01). It used to be
+     * whichever rows the database happened to return first.
      */
     private function candidatePool(JobRequest $jobRequest, array $options): Collection
     {
-        $query = Applicant::query()
-            ->evaluable()
+        $query = $jobRequest->candidatePool()
             ->with(['educations', 'experiences', 'skills', 'certifications'])
-            ->whereDoesntHave('employee.deployments', function ($q) use ($jobRequest) {
-                $q->where('job_request_id', $jobRequest->id);
-            });
+            ->orderBy('application_date')
+            ->orderBy('id');
 
         if (! empty($options['candidate_scope'])) {
             $query->where('current_status', $options['candidate_scope']);
@@ -629,28 +661,30 @@ class CompetencyScoringService
     }
 
     /**
-     * Assign ranks. Ties break toward the earlier application date so that a
-     * candidate who has been waiting longer is not passed over, matching how the
-     * agency handles the physical queue.
+     * The order results are ranked in: everyone who clears every gate first,
+     * then by score, then whoever has been waiting longer - how the agency
+     * handles its physical queue - and finally the earlier record, so equal
+     * results always come out in the same order on every database (audit
+     * S-01). Ranks are never shared: a tie is broken, not repeated.
+     *
+     * @param  array{applicant_id: int, passed: bool, percentage: float, application_date: string}  $a
+     * @param  array{applicant_id: int, passed: bool, percentage: float, application_date: string}  $b
      */
-    private function rank(array &$scores): void
+    private static function rankOrder(array $a, array $b): int
     {
-        usort($scores, function (ApplicantScore $a, ApplicantScore $b) {
-            if ($a->passedAllGates !== $b->passedAllGates) {
-                return $a->passedAllGates ? -1 : 1;
-            }
-
-            $byScore = $b->percentage() <=> $a->percentage();
-            if ($byScore !== 0) {
-                return $byScore;
-            }
-
-            return $a->applicant->application_date <=> $b->applicant->application_date;
-        });
-
-        foreach ($scores as $index => $score) {
-            $score->rank = $index + 1;
+        if ($a['passed'] !== $b['passed']) {
+            return $a['passed'] ? -1 : 1;
         }
+
+        if ($a['percentage'] !== $b['percentage']) {
+            return $b['percentage'] <=> $a['percentage'];
+        }
+
+        if ($a['application_date'] !== $b['application_date']) {
+            return strcmp($a['application_date'], $b['application_date']);
+        }
+
+        return $a['applicant_id'] <=> $b['applicant_id'];
     }
 
     /**
@@ -662,56 +696,149 @@ class CompetencyScoringService
     }
 
     /**
-     * @param ApplicantScore[] $scores
+     * Saves the run and ranks every current result for the request together.
+     *
+     * A narrowed run - one status, or the first N - used to rank its slice
+     * 1, 2, 3 and write those ranks beside results from earlier runs that
+     * still held theirs, so a list could show two applicants at number 1
+     * (audit S-01). Now the run's scores and the results it did not touch are
+     * ordered as one list and every rank is assigned from it. Results carried
+     * over keep their scores; evaluationState() says the ranking is
+     * provisional until a run covers the whole pool.
+     *
+     * Runs inside evaluate()'s transaction, under the request's lock.
+     *
+     * @param  ApplicantScore[]  $scores
      */
-    private function persist(JobRequest $jobRequest, array $scores, User $actor, bool $wholePool = true): void
+    private function persist(JobRequest $jobRequest, array &$scores, User $actor, bool $wholePool): void
     {
-        DB::transaction(function () use ($jobRequest, $scores, $actor, $wholePool) {
-            /*
-             * Results for people no longer in the pool are not left ranked.
-             *
-             * Someone archived, deployed elsewhere, or moved back to
-             * incomplete documents since the last run used to keep their old
-             * row and their old rank, so the list could show two people at
-             * number 1 - one of them ranked against criteria that may since
-             * have changed. Their unshortlisted results are removed. A
-             * shortlisted result is kept, because the shortlist is a decision
-             * somebody made and its record should survive, but it loses its
-             * rank: it is history now, not a current recommendation.
-             *
-             * Only after a run over the whole pool; a run narrowed to one
-             * status has not looked at anyone else and cannot judge them.
-             */
-            if ($wholePool) {
-                $evaluated = array_map(fn (ApplicantScore $s) => $s->applicant->id, $scores);
+        $evaluatedAt = now();
+        $evaluated = array_map(fn (ApplicantScore $s) => $s->applicant->id, $scores);
 
-                $departed = JobRequestMatch::where('job_request_id', $jobRequest->id)
-                    ->when($evaluated !== [], fn ($q) => $q->whereNotIn('applicant_id', $evaluated));
+        // Numbered, so a result can always be told apart from one carried over
+        // from an earlier run - timestamps kept to the second cannot.
+        $run = (int) $jobRequest->evaluation_runs + 1;
+        JobRequest::query()->whereKey($jobRequest->id)->update(['evaluation_runs' => $run]);
+        $jobRequest->evaluation_runs = $run;
 
-                (clone $departed)->where('is_shortlisted', false)->delete();
-                (clone $departed)->where('is_shortlisted', true)->update(['rank_order' => null]);
+        /*
+         * Results for people no longer in the pool are not left ranked.
+         *
+         * Someone archived, deployed elsewhere, or moved back to incomplete
+         * documents since the last run used to keep their old row and their
+         * old rank. After a run over the whole pool their unshortlisted
+         * results are removed. A shortlisted result is kept, because the
+         * shortlist is a decision somebody made and its record should
+         * survive, but it loses its rank: it is history now, not a current
+         * recommendation.
+         *
+         * A narrowed run has not scored anyone else, so it removes nothing;
+         * but whether somebody is still in the pool is a plain fact, and a
+         * result whose applicant has left it loses its rank there too.
+         */
+        if ($wholePool) {
+            $departed = JobRequestMatch::where('job_request_id', $jobRequest->id)
+                ->when($evaluated !== [], fn ($q) => $q->whereNotIn('applicant_id', $evaluated));
+
+            (clone $departed)->where('is_shortlisted', false)->delete();
+            (clone $departed)->where('is_shortlisted', true)->update(['rank_order' => null]);
+
+            $carried = collect();
+        } else {
+            $untouched = JobRequestMatch::query()
+                ->join('applicants', 'applicants.id', '=', 'job_request_matches.applicant_id')
+                ->where('job_request_matches.job_request_id', $jobRequest->id)
+                ->whereNotNull('job_request_matches.rank_order')
+                ->when($evaluated !== [], fn ($q) => $q->whereNotIn('job_request_matches.applicant_id', $evaluated))
+                ->get([
+                    'job_request_matches.id',
+                    'job_request_matches.applicant_id',
+                    'job_request_matches.rank_order',
+                    'job_request_matches.hard_filter_pass',
+                    'job_request_matches.percentage_score',
+                    'applicants.application_date as queued_on',
+                ]);
+
+            $stillInPool = $untouched->isEmpty()
+                ? collect()
+                : $jobRequest->candidatePool()
+                    ->whereIn('applicants.id', $untouched->pluck('applicant_id'))
+                    ->pluck('applicants.id')
+                    ->map(fn ($id) => (int) $id);
+
+            [$carried, $departed] = $untouched->partition(
+                fn ($row) => $stillInPool->contains((int) $row->applicant_id)
+            );
+
+            if ($departed->isNotEmpty()) {
+                JobRequestMatch::whereIn('id', $departed->pluck('id'))->update(['rank_order' => null]);
             }
+        }
 
-            foreach ($scores as $score) {
-                JobRequestMatch::updateOrCreate(
-                    [
-                        'job_request_id' => $jobRequest->id,
-                        'applicant_id' => $score->applicant->id,
-                    ],
-                    [
-                        'raw_score' => round($score->rawScore, 2),
-                        'max_score' => round($score->maxScore, 2),
-                        'percentage_score' => $score->percentage(),
-                        'rank_order' => $score->rank,
-                        'recommendation_level' => $score->recommendationLevel(),
-                        'hard_filter_pass' => $score->passedAllGates,
-                        'breakdown_json' => $score->breakdown(),
-                        'evaluated_by' => $actor->id,
-                        'evaluated_at' => now(),
-                    ]
-                );
+        $entries = [];
+
+        foreach ($scores as $score) {
+            $entries[] = [
+                'applicant_id' => (int) $score->applicant->id,
+                'passed' => $score->passedAllGates,
+                'percentage' => $score->percentage(),
+                'application_date' => (string) $score->applicant->application_date?->toDateString(),
+            ];
+        }
+
+        foreach ($carried as $row) {
+            $entries[] = [
+                'applicant_id' => (int) $row->applicant_id,
+                'passed' => (bool) $row->hard_filter_pass,
+                'percentage' => round((float) $row->percentage_score, 2),
+                'application_date' => substr((string) $row->queued_on, 0, 10),
+            ];
+        }
+
+        usort($entries, self::rankOrder(...));
+
+        $ranks = [];
+        foreach ($entries as $index => $entry) {
+            $ranks[$entry['applicant_id']] = $index + 1;
+        }
+
+        foreach ($scores as $score) {
+            $score->rank = $ranks[(int) $score->applicant->id];
+
+            JobRequestMatch::updateOrCreate(
+                [
+                    'job_request_id' => $jobRequest->id,
+                    'applicant_id' => $score->applicant->id,
+                ],
+                [
+                    'raw_score' => round($score->rawScore, 2),
+                    'max_score' => round($score->maxScore, 2),
+                    'percentage_score' => $score->percentage(),
+                    'rank_order' => $score->rank,
+                    'recommendation_level' => $score->recommendationLevel(),
+                    'hard_filter_pass' => $score->passedAllGates,
+                    'breakdown_json' => $score->breakdown(),
+                    'evaluated_by' => $actor->id,
+                    'evaluated_at' => $evaluatedAt,
+                    // What this score was computed from, so a later change to
+                    // either shows it as out of date (audit S-02).
+                    'scored_profile_version' => (int) $score->applicant->profile_version,
+                    'scored_criteria_version' => (int) $jobRequest->criteria_version,
+                    'evaluation_run' => $run,
+                ]
+            );
+        }
+
+        // Carried-over results move only if the run reordered around them.
+        foreach ($carried as $row) {
+            $rank = $ranks[(int) $row->applicant_id];
+
+            if ((int) $row->rank_order !== $rank) {
+                JobRequestMatch::whereKey($row->id)->update(['rank_order' => $rank]);
             }
-        });
+        }
+
+        usort($scores, fn (ApplicantScore $a, ApplicantScore $b) => $a->rank <=> $b->rank);
     }
 
     private function isWeighted(RequestCriteria $rc): bool

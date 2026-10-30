@@ -8,10 +8,11 @@ import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Input } from '@/components/ui/input'
+import { Input, PhoneInput } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
+import { formProblems } from '@/lib/validation'
 import { Field, FormGrid } from '@/components/ui/form'
 import {
   Dialog,
@@ -21,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Pagination } from './Applicants'
+import { Pagination, useClampPage } from '@/components/Pagination'
 
 export default function Clients() {
   const { can } = useAuth()
@@ -45,6 +46,8 @@ export default function Clients() {
     if (key !== 'page') next.delete('page')
     setSearchParams(next)
   }
+
+  useClampPage(meta, (p) => updateFilter('page', String(p)))
 
   return (
     <>
@@ -84,10 +87,14 @@ export default function Clients() {
         ) : !data?.length ? (
           <EmptyState
             icon={Building2}
-            title="No client companies"
-            description="Add a client company before recording their manpower requests."
+            title={search ? 'No client companies match your search' : 'No client companies'}
+            description={
+              search
+                ? 'Search for part of the company name, its code, or the contact person.'
+                : 'Add a client company before recording their manpower requests.'
+            }
             action={
-              can('clients.create') ? (
+              can('clients.create') && !search ? (
                 <Button size="sm" onClick={() => setDialogOpen(true)}>
                   <Plus className="h-4 w-4" />
                   Add client
@@ -125,7 +132,7 @@ export default function Clients() {
                       )}
                     </TableCell>
                     <TableCell className="text-sm tabular-nums">{client.departments_count ?? 0}</TableCell>
-                    <TableCell className="text-sm tabular-nums">{client.employees_count ?? 0}</TableCell>
+                    <TableCell className="text-sm tabular-nums">{client.deployed_count ?? 0}</TableCell>
                     <TableCell>
                       <StatusBadge status={client.status} />
                     </TableCell>
@@ -144,7 +151,7 @@ export default function Clients() {
   )
 }
 
-function NewClientDialog({ open, onOpenChange, onCreated }) {
+export function NewClientDialog({ open, onOpenChange, onCreated }) {
   const [form, setForm] = React.useState({
     company_name: '',
     business_type: '',
@@ -173,7 +180,12 @@ function NewClientDialog({ open, onOpenChange, onCreated }) {
 
   async function handleSubmit(event) {
     event.preventDefault()
-    setErrors({})
+
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { phones: ['contact_number'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSubmitting(true)
 
     try {
@@ -226,7 +238,7 @@ function NewClientDialog({ open, onOpenChange, onCreated }) {
             </Field>
 
             <Field label="Contact number" htmlFor="contact_number" error={errors.contact_number?.[0]}>
-              <Input
+              <PhoneInput
                 value={form.contact_number}
                 onChange={(e) => setForm({ ...form, contact_number: e.target.value })}
               />

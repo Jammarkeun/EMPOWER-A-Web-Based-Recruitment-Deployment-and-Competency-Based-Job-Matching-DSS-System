@@ -23,6 +23,10 @@
 - docs/07-project-management/implementation-timeline.md
 - docs/07-project-management/client-responsibilities.md
 - docs/07-project-management/panel-recommendations-audit.md
+- docs/07-project-management/client-questions-part-2.md
+- docs/07-project-management/client-questions-part-3.md (open questions after the October 2026 build)
+- docs/07-project-management/cde-requirements-integration.md (26 October 2026 meeting: what was built, CDE's Manpower Requisition Form (29 October), decisions waiting on CDE)
+- docs/07-project-management/separation-portal-workflow.md (resignation requests and termination notices in the portal: workflow, our default rules, questions for CDE)
 
 8. Backend Executable Assets:
 - backend/database/migrations/2026_08_04_000000_create_empower_schema.php

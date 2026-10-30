@@ -8,7 +8,7 @@ import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
-import { Pagination } from '@/pages/Applicants'
+import { Pagination } from '@/components/Pagination'
 
 /**
  * Placements at the coordinator's client, as CDE recorded them.
@@ -47,7 +47,7 @@ export default function CoordinatorDeployments() {
       />
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={6} columns={6} />
         </div>
       ) : error ? (

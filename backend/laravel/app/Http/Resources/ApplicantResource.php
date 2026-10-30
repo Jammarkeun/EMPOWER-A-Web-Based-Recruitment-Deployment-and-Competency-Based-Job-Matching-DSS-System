@@ -2,6 +2,8 @@
 
 namespace App\Http\Resources;
 
+use App\Services\ProfilePhotoService;
+use App\Support\ApplicantStatuses;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -22,6 +24,10 @@ class ApplicantResource extends JsonResource
             'last_name' => $this->last_name,
             'suffix' => $this->suffix,
             'full_name' => $this->full_name,
+
+            // A signed link to the applicant's own picture, minted only inside
+            // responses the viewer was already allowed to receive.
+            'photo_url' => app(ProfilePhotoService::class)->url($this->profile_photo_path),
 
             'sex' => $this->sex,
             'birth_date' => $this->birth_date?->toDateString(),
@@ -54,9 +60,12 @@ class ApplicantResource extends JsonResource
             },
             'disposition_note' => $this->disposition_note,
 
-            'placement_response' => $this->placement_response,
-            'placement_responded_at' => $this->placement_responded_at?->toIso8601String(),
-            'placement_response_note' => $this->placement_response_note,
+            // The answer to the current endorsement (audit R-05, R-07), when the
+            // caller loaded it; the full history is in the `placement` block of
+            // the applicant view. The old applicant columns are no longer read.
+            'placement_response' => $this->currentPlacementDecision()?->decision,
+            'placement_responded_at' => $this->currentPlacementDecision()?->decided_at?->toIso8601String(),
+            'placement_response_note' => $this->currentPlacementDecision()?->note,
             'availability_date' => $this->availability_date?->toDateString(),
             'distance_km' => $this->distance_km,
             'communication_rating' => $this->communication_rating,
@@ -67,7 +76,21 @@ class ApplicantResource extends JsonResource
             'identity_verified_at' => $this->identity_verified_at?->toIso8601String(),
             'awaiting_identity_check' => $this->awaiting_identity_check,
             'current_status' => $this->current_status,
-            'status_label' => ucwords(str_replace('_', ' ', $this->current_status)),
+            'status_label' => ApplicantStatuses::label($this->current_status),
+            'stage' => ApplicantStatuses::stageOf((string) $this->current_status),
+            // The status says every document was verified; the folder says one
+            // has lapsed or been rejected since. Shown, never acted on (WF-06).
+            'documents_lapsed' => ApplicantStatuses::documentsLapsed((string) $this->current_status, $this->folder_category),
+            // Placed today, by the employment record, when the list asked for
+            // it (Applicant::scopeWithPlacement).
+            'placement' => $this->when(
+                array_key_exists('currently_deployed', $this->resource->getAttributes()),
+                fn () => ApplicantStatuses::placement(
+                    $this->current_status,
+                    (bool) $this->resource->getAttribute('currently_deployed'),
+                    $this->resource->getAttribute('deployed_company'),
+                )
+            ),
             'folder_category' => $this->folder_category,
             'folder_label' => config("empower.folders.{$this->folder_category}.label"),
             'remarks' => $this->remarks,
@@ -83,5 +106,20 @@ class ApplicantResource extends JsonResource
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * Read only from relations the caller eager-loaded, so a list of applicants
+     * never issues a query per row.
+     */
+    private function currentPlacementDecision(): ?\App\Models\PlacementDecision
+    {
+        if (! $this->resource->relationLoaded('openEndorsement') || ! $this->openEndorsement) {
+            return null;
+        }
+
+        return $this->openEndorsement->relationLoaded('currentDecision')
+            ? $this->openEndorsement->currentDecision
+            : null;
     }
 }

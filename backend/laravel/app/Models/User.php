@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
@@ -51,9 +53,12 @@ class User extends Authenticatable
         'is_active',
     ];
 
+    // The picture's storage key is never sent as it is: screens get a signed
+    // link to it, minted by ProfilePhotoService.
     protected $hidden = [
         'password',
         'remember_token',
+        'profile_photo_path',
     ];
 
     protected function casts(): array
@@ -62,6 +67,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'last_login_at' => 'datetime',
             'password' => 'hashed',
+            'must_change_password' => 'boolean',
             'is_active' => 'boolean',
             'notification_preferences' => 'array',
         ];
@@ -78,7 +84,9 @@ class User extends Authenticatable
     public const NOTIFICATION_CATEGORIES = [
         'application' => 'Application updates',
         'requirements' => 'Document reviews',
+        'training' => 'Training schedule',
         'deployment' => 'Placement and deployment',
+        'employment' => 'Employment and separation',
         'coordination' => 'Violation reports and coordination',
         'general' => 'Everything else',
     ];
@@ -128,6 +136,90 @@ class User extends Authenticatable
         return $this->belongsTo(Employee::class);
     }
 
+    /**
+     * The employment record behind a portal login, however it is reachable.
+     *
+     * A login made at registration is linked by `applicant_id` alone, and
+     * deployment creates the employee without rewriting it, so the account
+     * still says "applicant" while the person is employed. The applicant's
+     * own `employee` link is written by the deployment itself and is the one
+     * to follow. Every portal screen and the account profile ask this, so a
+     * deployed worker sees their employment whatever their login was made as.
+     */
+    public function portalEmployee(): ?Employee
+    {
+        if (! $this->isPortalAccount()) {
+            return null;
+        }
+
+        return $this->employee ?? $this->applicant?->employee;
+    }
+
+    /**
+     * Every record whose notifications this login reads (audit S-03, WF-13).
+     *
+     * A notification is addressed to the record its event concerns: a status
+     * change or a deployment to the applicant record, a password change to the
+     * login. A portal login reaches the person through `applicant_id`,
+     * `employee_id`, or both - employee logins have been linked to the employee
+     * record alone - so both links are followed. A staff login is never linked
+     * to a person's records and reads only its own.
+     *
+     * @return list<Model>
+     */
+    public function notifiableRecords(): array
+    {
+        if (! $this->isPortalAccount()) {
+            return [$this];
+        }
+
+        $applicant = $this->applicant ?? $this->employee?->applicant;
+        $employee = $this->employee ?? $applicant?->employee;
+
+        return array_values(array_filter([$this, $applicant, $employee]));
+    }
+
+    /**
+     * The portal login a person's record belongs to, if there is one.
+     *
+     * The reverse of notifiableRecords(), and resolved the same way: through
+     * either link. It is what decides whose notification preferences apply to
+     * a notification addressed to an applicant or employee record. It used to
+     * look only for `applicant_id`, so an employee login linked to the employee
+     * record alone had its muted categories ignored for everything addressed to
+     * the applicant record it came from.
+     */
+    public static function portalAccountFor(Model $record): ?self
+    {
+        [$applicantId, $employeeId] = match (true) {
+            $record instanceof Applicant => [
+                $record->getKey(),
+                Employee::query()->where('applicant_id', $record->getKey())->value('id'),
+            ],
+            $record instanceof Employee => [$record->applicant_id, $record->getKey()],
+            default => [null, null],
+        };
+
+        if ($applicantId === null && $employeeId === null) {
+            return null;
+        }
+
+        return static::query()
+            ->whereIn('user_type', self::PORTAL_TYPES)
+            ->where(fn (Builder $q) => $q
+                ->when($applicantId, fn (Builder $q) => $q->orWhere('applicant_id', $applicantId))
+                ->when($employeeId, fn (Builder $q) => $q->orWhere('employee_id', $employeeId)))
+            ->orderBy('id')
+            ->first();
+    }
+
+    public const PORTAL_TYPES = ['applicant', 'employee'];
+
+    public function isPortalAccount(): bool
+    {
+        return in_array($this->user_type, self::PORTAL_TYPES, true);
+    }
+
     public function isStaff(): bool
     {
         return in_array($this->user_type, ['admin', 'hr'], true);
@@ -146,7 +238,11 @@ class User extends Authenticatable
 
     public function coordinatorAssignments(): HasMany
     {
-        return $this->hasMany(CoordinatorAssignment::class, 'coordinator_user_id')->orderByDesc('assigned_at');
+        // The id breaks ties: a reassignment made within the same second as the
+        // previous one must still list newest first on every database engine.
+        return $this->hasMany(CoordinatorAssignment::class, 'coordinator_user_id')
+            ->orderByDesc('assigned_at')
+            ->orderByDesc('id');
     }
 
     /** The client this coordinator covers now, if any. */

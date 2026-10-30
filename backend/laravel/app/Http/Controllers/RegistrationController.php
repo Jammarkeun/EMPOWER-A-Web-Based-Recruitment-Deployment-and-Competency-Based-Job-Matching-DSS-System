@@ -9,6 +9,8 @@ use App\Models\RequirementType;
 use App\Models\User;
 use App\Notifications\ApplicantSelfRegistered;
 use App\Rules\PasswordPolicy;
+use App\Rules\PersonName;
+use App\Rules\PhilippineMobileNumber;
 use App\Services\AuditService;
 use App\Services\ReferenceCodeService;
 use Illuminate\Http\JsonResponse;
@@ -61,15 +63,17 @@ class RegistrationController extends Controller
 
     public function register(Request $request): JsonResponse
     {
+        PhilippineMobileNumber::normalizeRequest($request, 'contact_number');
+
         $data = $request->validate([
-            'first_name' => ['required', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['required', 'string', 'max:100'],
+            'first_name' => ['required', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['required', 'string', 'max:100', new PersonName()],
             'sex' => ['nullable', Rule::in(['male', 'female'])],
             // Below 15 is under the minimum working age set by RA 9231, so the
             // record should never be created at all.
             'birth_date' => ['required', 'date', 'before:'.now()->subYears(15)->toDateString()],
-            'contact_number' => ['required', 'string', 'max:40'],
+            'contact_number' => ['required', 'string', 'max:40', new PhilippineMobileNumber()],
             'present_address' => ['required', 'string', 'max:255'],
 
             /*
@@ -93,7 +97,7 @@ class RegistrationController extends Controller
                 Rule::exists('job_positions', 'id')->whereNull('deleted_at'),
             ],
 
-            'email' => ['required', 'email', 'max:190', 'unique:users,email'],
+            'email' => ['required', 'email:rfc,filter', 'max:190', 'unique:users,email'],
             'password' => ['required', 'string', 'confirmed', new PasswordPolicy()],
         ], [
             'birth_date.before' => 'You must be at least 15 years old to apply.',
@@ -248,17 +252,5 @@ class RegistrationController extends Controller
             'next_step' => 'Visit the CDE Manpower Services office with your documents to complete '
                 .'your application. Your reference number is '.$applicant->applicant_code.'.',
         ], 'Account created');
-    }
-
-    /**
-     * Lets the sign-up form warn about a taken email before submission.
-     */
-    public function checkEmail(Request $request): JsonResponse
-    {
-        $data = $request->validate(['email' => ['required', 'email']]);
-
-        return ApiResponse::success([
-            'available' => ! User::where('email', $data['email'])->exists(),
-        ]);
     }
 }

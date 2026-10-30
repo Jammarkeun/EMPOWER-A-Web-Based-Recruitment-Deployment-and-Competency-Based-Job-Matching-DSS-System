@@ -30,7 +30,10 @@ class DocumentReviewService
      */
     public function recordStaffView(ApplicantRequirement $requirement, User $staff): bool
     {
-        $isFirst = $requirement->markFirstViewedBy($staff);
+        // Only an officer's view starts a review. The routes that call this are
+        // already closed to portal accounts; this keeps the rule true even if a
+        // future caller is not.
+        $isFirst = $staff->isStaff() && $requirement->markFirstViewedBy($staff);
 
         // Audited every time, not only the first. The first view answers "has
         // review begun?"; the audit trail answers the separate and, for a file

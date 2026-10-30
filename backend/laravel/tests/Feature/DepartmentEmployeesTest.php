@@ -117,6 +117,7 @@ class DepartmentEmployeesTest extends TestCase
             'client_department_id' => $packaging->id,
             'change_type' => 'transfer',
             'effective_date' => now()->toDateString(),
+            'remarks' => 'Moved to packaging.',
         ])->assertOk();
 
         $this->assertCount(0, $this->getJson($url($chocolate))->json('data.employees'));

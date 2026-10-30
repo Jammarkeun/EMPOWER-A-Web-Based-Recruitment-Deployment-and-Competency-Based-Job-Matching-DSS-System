@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
-import { Users, Truck, Flag, ClipboardList, AlertTriangle, CornerUpLeft, Plus, FileEdit } from 'lucide-react'
+import { Users, Truck, Flag, ClipboardList, AlertTriangle, CornerUpLeft, Plus, FileEdit, Siren, FilePlus2 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
-import { PageHeader } from '@/components/PageHeader'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { PageHeader, StatTile } from '@/components/PageHeader'
+import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
+import { PanelTitle, InsetRow, RowIcon } from '@/components/ui/panel'
 import { formatDate } from '@/lib/utils'
 
 /**
@@ -36,134 +37,139 @@ export default function CoordinatorDashboard() {
           </>
         }
         actions={
-          <Button asChild>
-            <Link to="/coordinator/reports/new">
-              <Plus className="h-4 w-4" />
-              New violation report
-            </Link>
-          </Button>
+          <>
+            <Button asChild>
+              <Link to="/coordinator/reports/new">
+                <Plus className="h-4 w-4" />
+                New violation report
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link to="/coordinator/incidents/new">
+                <Siren className="h-4 w-4" />
+                New incident report
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link to="/coordinator/requisitions/new">
+                <FilePlus2 className="h-4 w-4" />
+                New requisition
+              </Link>
+            </Button>
+          </>
         }
       />
 
       {company.status !== 'active' && (
-        <div className="rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-2.5 text-sm">
+        <div className="rounded-row bg-status-warning-bg px-4 py-3 text-sm">
           This client is marked inactive by CDE. Its records remain available to you.
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <Tile icon={Users} label="Active employees" value={summary.active_employees} to="/coordinator/employees" />
-        <Tile icon={Truck} label="Current deployments" value={summary.current_deployments} to="/coordinator/deployments" />
-        <Tile
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <StatTile icon={Users} label="Active employees" value={summary.active_employees ?? 0} to="/coordinator/employees" />
+        <StatTile icon={Truck} label="Current deployments" value={summary.current_deployments ?? 0} to="/coordinator/deployments" />
+        <StatTile
           icon={ClipboardList}
           label="Open manpower requests"
-          value={summary.open_requests}
+          value={summary.open_requests ?? 0}
           hint={`${summary.positions_to_fill} workers still needed`}
           to="/coordinator/requests"
         />
-        <Tile icon={Flag} label="Reports awaiting HR" value={summary.reports_pending} to="/coordinator/reports?status=submitted" />
-        <Tile
+        <StatTile icon={Flag} label="Reports awaiting HR" value={summary.reports_pending ?? 0} to="/coordinator/reports?status=pending" />
+        <StatTile
           icon={CornerUpLeft}
           label="Returned to you"
-          value={summary.reports_returned}
-          tone={summary.reports_returned ? 'warning' : null}
-          to="/coordinator/reports?status=returned"
+          value={summary.reports_returned ?? 0}
+          tone={summary.reports_returned ? 'warning' : 'default'}
+          to="/coordinator/reports?status=returned&mine=1"
         />
-        <Tile icon={FileEdit} label="Your drafts" value={summary.reports_draft} to="/coordinator/reports?status=draft" />
+        <StatTile icon={FileEdit} label="Your drafts" value={summary.reports_draft ?? 0} to="/coordinator/reports?status=draft" />
+        <StatTile icon={Siren} label="Open incident reports" value={summary.incidents_open ?? 0} to="/coordinator/incidents?status=open" />
+        <StatTile
+          icon={FilePlus2}
+          label="Requisitions awaiting HR"
+          value={summary.requisitions_pending ?? 0}
+          hint={summary.requisitions_returned ? `${summary.requisitions_returned} returned to you` : undefined}
+          tone={summary.requisitions_returned ? 'warning' : 'default'}
+          to={summary.requisitions_returned ? '/coordinator/requisitions?status=returned&mine=1' : '/coordinator/requisitions?status=pending'}
+        />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Needs your attention</CardTitle>
-            <CardDescription>Reports HR sent back, and workers at the review threshold.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
+        <Card className="p-5 sm:p-6">
+          <PanelTitle
+            icon={AlertTriangle}
+            title="Needs your attention"
+            description="Reports HR sent back, and workers at the review threshold."
+          />
+          <div className="mt-5">
             {data.returned_reports.length === 0 && data.flagged_employees.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Nothing at the moment.</p>
+              <p className="rounded-row bg-inset px-4 py-6 text-center text-sm text-muted-foreground">Nothing at the moment.</p>
             ) : (
-              <ul className="divide-y">
+              <ul className="space-y-2">
                 {data.returned_reports.map((report) => (
-                  <li key={`r-${report.id}`} className="py-2.5">
-                    <Link to={`/coordinator/reports/${report.id}`} className="group block">
-                      <p className="flex items-center gap-2 text-sm font-medium group-hover:text-brand">
-                        <CornerUpLeft className="h-3.5 w-3.5 text-warning" />
-                        {report.report_code} · {report.employee_name}
-                      </p>
-                      {report.review_note && (
-                        <p className="mt-0.5 text-xs text-muted-foreground">HR: {report.review_note}</p>
-                      )}
-                    </Link>
+                  <li key={`r-${report.id}`}>
+                    <InsetRow to={`/coordinator/reports/${report.id}`} className="items-start">
+                      <RowIcon icon={CornerUpLeft} tone="warning" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium leading-snug">
+                          {report.report_code} · {report.employee_name}
+                        </p>
+                        {report.review_note && (
+                          <p className="mt-0.5 text-xs text-muted-foreground">HR: {report.review_note}</p>
+                        )}
+                      </div>
+                    </InsetRow>
                   </li>
                 ))}
                 {data.flagged_employees.map((employee) => (
-                  <li key={`e-${employee.id}`} className="py-2.5">
-                    <Link to={`/coordinator/employees/${employee.id}`} className="group block">
-                      <p className="flex items-center gap-2 text-sm font-medium group-hover:text-brand">
-                        <AlertTriangle className="h-3.5 w-3.5 text-warning" />
-                        {employee.full_name}
-                      </p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        {employee.active_violations} active violations, at the review threshold of {summary.threshold}.
-                        HR and the administrator decide what follows.
-                      </p>
-                    </Link>
+                  <li key={`e-${employee.id}`}>
+                    <InsetRow to={`/coordinator/employees/${employee.id}`} className="items-start">
+                      <RowIcon icon={AlertTriangle} tone="warning" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium leading-snug">{employee.full_name}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {employee.active_violations} active violations, at the review threshold of {summary.threshold}.
+                          HR and the administrator decide what follows.
+                        </p>
+                      </div>
+                    </InsetRow>
                   </li>
                 ))}
               </ul>
             )}
-          </CardContent>
+          </div>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Recent violations</CardTitle>
-            <CardDescription>Official records for workers at this client.</CardDescription>
-          </CardHeader>
-          <CardContent>
+        <Card className="p-5 sm:p-6">
+          <PanelTitle icon={Flag} title="Recent violations" description="Official records for workers at this client." />
+          <div className="mt-5">
             {data.recent_violations.length === 0 ? (
               <EmptyState icon={Flag} title="No violations on record" />
             ) : (
-              <ul className="divide-y">
+              <ul className="space-y-2">
                 {data.recent_violations.map((violation) => (
-                  <li key={violation.id} className="flex items-start justify-between gap-3 py-2.5">
-                    <div className="min-w-0">
-                      <Link
-                        to={`/coordinator/employees/${violation.employee.id}`}
-                        className="text-sm font-medium hover:text-brand"
-                      >
-                        {violation.employee.full_name}
-                      </Link>
-                      <p className="text-xs text-muted-foreground">
-                        {violation.type_label} · {formatDate(violation.violation_date)}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 gap-1.5">
-                      {!violation.is_active && <Badge tone="muted">No longer counting</Badge>}
-                      <StatusBadge status={violation.status} />
-                    </div>
+                  <li key={violation.id}>
+                    <InsetRow to={`/coordinator/employees/${violation.employee.id}`} className="items-start justify-between">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium leading-snug">{violation.employee.full_name}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {violation.type_label} · {formatDate(violation.violation_date)}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                        {!violation.is_active && <Badge tone="muted">No longer counting</Badge>}
+                        <StatusBadge status={violation.status} />
+                      </div>
+                    </InsetRow>
                   </li>
                 ))}
               </ul>
             )}
-          </CardContent>
+          </div>
         </Card>
       </div>
     </div>
-  )
-}
-
-function Tile({ icon: Icon, label, value, hint, tone, to }) {
-  return (
-    <Link to={to} className="rounded-xl border bg-card p-4 shadow-sm transition-colors hover:border-primary/30">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-      </div>
-      <p className={`mt-2 text-2xl font-semibold tracking-tight ${tone === 'warning' ? 'text-warning' : ''}`}>
-        {value ?? 0}
-      </p>
-      {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
-    </Link>
   )
 }

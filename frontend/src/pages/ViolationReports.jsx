@@ -7,7 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate, formatDateTime } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { Pagination, useClampPage } from '@/components/Pagination'
 import { ReportStatus } from './coordinator/CoordinatorEmployeeDetail'
 
 const STATUS_OPTIONS = [
@@ -49,6 +49,8 @@ export default function ViolationReports() {
     setSearchParams(next)
   }
 
+  useClampPage(meta, (p) => update('page', String(p)))
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -78,7 +80,7 @@ export default function ViolationReports() {
       />
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={5} columns={6} />
         </div>
       ) : error ? (
@@ -86,8 +88,18 @@ export default function ViolationReports() {
       ) : !data?.length ? (
         <EmptyState
           icon={Flag}
-          title={status === 'pending' ? 'Nothing waiting for review' : 'No reports'}
-          description="Reports appear here when a coordinator submits them."
+          title={
+            search || company
+              ? 'No reports match these filters'
+              : status === 'pending'
+                ? 'Nothing waiting for review'
+                : 'No reports'
+          }
+          description={
+            search || company
+              ? 'Try another client or status, or search for part of the name or report code.'
+              : 'Reports appear here when a coordinator submits them.'
+          }
         />
       ) : (
         <div className="space-y-3">

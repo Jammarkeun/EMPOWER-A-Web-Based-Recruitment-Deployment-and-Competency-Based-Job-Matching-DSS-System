@@ -7,10 +7,11 @@ import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Input } from '@/components/ui/input'
+import { Input, NameInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
+import { formProblems } from '@/lib/validation'
 import { Field, FormGrid } from '@/components/ui/form'
 import { EmptyState, ErrorState, SkeletonRows, LoadingState } from '@/components/ui/states'
 import {
@@ -22,19 +23,30 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
+import { Pagination, useClampPage } from '@/components/Pagination'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import { TemporaryPassword } from '@/components/TemporaryPassword'
 
 export default function Users() {
   const [search, setSearch] = React.useState('')
   const [userType, setUserType] = React.useState('')
+  const [page, setPage] = React.useState(1)
   const [createOpen, setCreateOpen] = React.useState(false)
   const debouncedSearch = useDebounced(search)
 
-  const { data, loading, error, refetch } = useApi('/users', {
+  // Paged like every other list. It used to ask for one page of fifty with
+  // no way to reach the next: sorted by account type, the applicant logins
+  // filled it and every HR and coordinator account fell off the end.
+  React.useEffect(() => setPage(1), [debouncedSearch, userType])
+
+  const { data, meta, loading, error, refetch } = useApi('/users', {
     search: debouncedSearch || undefined,
     user_type: userType || undefined,
+    page,
     per_page: 50,
   })
+
+  useClampPage(meta, setPage)
 
   return (
     <>
@@ -81,6 +93,11 @@ export default function Users() {
                 <option value="applicant">Applicant portal</option>
                 <option value="employee">Employee portal</option>
               </Select>
+              {meta?.total !== undefined && (
+                <span className="self-center whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+                  {meta.total} account{meta.total === 1 ? '' : 's'}
+                </span>
+              )}
             </CardContent>
           </Card>
 
@@ -92,6 +109,7 @@ export default function Users() {
             ) : !data?.length ? (
               <EmptyState icon={UserCog} title="No accounts match" />
             ) : (
+              <>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -110,6 +128,10 @@ export default function Users() {
                   ))}
                 </TableBody>
               </Table>
+              <div className="px-4 pb-3">
+                <Pagination meta={meta} onPage={setPage} />
+              </div>
+              </>
             )}
           </Card>
         </TabsContent>
@@ -151,7 +173,10 @@ function UserRow({ user, onChanged }) {
         <TableCell className="font-medium">{user.full_name}</TableCell>
         <TableCell className="text-sm text-muted-foreground">{user.email}</TableCell>
         <TableCell>
-          <Badge tone={user.user_type === 'admin' ? 'info' : 'muted'}>{humanise(user.user_type)}</Badge>
+          {/* A portal login is named by the portal it opens: one made at
+              registration still says "applicant" after deployment, and opens
+              onto the person's employment. */}
+          <Badge tone={user.user_type === 'admin' ? 'info' : 'muted'}>{humanise(user.portal_access ?? user.user_type)}</Badge>
           {/* A coordinator's client is their whole scope, so it is shown
               wherever the account is. */}
           {isCoordinator && (
@@ -365,7 +390,12 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
 
   async function handleSubmit(event) {
     event.preventDefault()
-    setErrors({})
+
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { names: ['first_name', 'last_name'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSubmitting(true)
 
     try {
@@ -399,10 +429,10 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <FormGrid>
             <Field label="First name" htmlFor="first_name" required error={errors.first_name?.[0]}>
-              <Input value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} autoFocus />
+              <NameInput value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} autoFocus />
             </Field>
             <Field label="Last name" htmlFor="last_name" required error={errors.last_name?.[0]}>
-              <Input value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+              <NameInput value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
             </Field>
           </FormGrid>
 
@@ -489,35 +519,30 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
   )
 }
 
+/**
+ * Issuing a temporary password (audit SEC-07, decided 2026-10-19).
+ *
+ * The administrator no longer types the new password, so the office never
+ * knows a working one: the system generates it and shows it here once, and
+ * the holder must replace it at their next sign-in before anything else.
+ */
 function ResetPasswordDialog({ open, onOpenChange, user }) {
-  const [password, setPassword] = React.useState('')
-  const [confirmation, setConfirmation] = React.useState('')
-  const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
+  const [issued, setIssued] = React.useState(null)
   const toast = useToast()
 
   React.useEffect(() => {
-    if (open) {
-      setPassword('')
-      setConfirmation('')
-      setErrors({})
-    }
+    if (open) setIssued(null)
   }, [open])
 
-  async function handleSubmit(event) {
-    event.preventDefault()
+  async function issue() {
     setSubmitting(true)
-
     try {
-      await post(`/users/${user.id}/reset-password`, {
-        password,
-        password_confirmation: confirmation,
-      })
-      toast.success('Password reset', 'They have been signed out everywhere.')
-      onOpenChange(false)
+      const response = await post(`/users/${user.id}/reset-password`)
+      setIssued(response.data)
+      toast.success('Temporary password issued', 'They have been signed out everywhere.')
     } catch (error) {
-      if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not reset password', error.message)
+      toast.error('Could not reset password', error.message)
     } finally {
       setSubmitting(false)
     }
@@ -529,29 +554,30 @@ function ResetPasswordDialog({ open, onOpenChange, user }) {
         <DialogHeader>
           <DialogTitle>Reset password for {user.full_name}</DialogTitle>
           <DialogDescription>
-            This signs them out of every device immediately. Give them the new password directly —
-            it is not emailed.
+            {issued
+              ? 'Shown once. Give it to them directly; it is not emailed.'
+              : 'Confirm who is asking before you do this. They are signed out of every device, and given a temporary password that only lets them choose their own.'}
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <Field label="New password" htmlFor="password" required error={errors.password?.[0]} hint="At least 10 characters">
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
-          </Field>
-          <Field label="Confirm password" htmlFor="password_confirmation" required>
-            <Input type="password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} />
-          </Field>
-
+        {issued ? (
+          <div className="space-y-4">
+            <TemporaryPassword email={user.email} password={issued.temporary_password} notice={issued.notice} />
+            <DialogFooter>
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
+            </DialogFooter>
+          </div>
+        ) : (
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={submitting}>
+            <Button onClick={issue} disabled={submitting}>
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Reset password
+              Issue temporary password
             </Button>
           </DialogFooter>
-        </form>
+        )}
       </DialogContent>
     </Dialog>
   )
@@ -637,127 +663,6 @@ function PermissionMatrix() {
         </Card>
       ))}
     </div>
-  )
-}
-
-/**
- * Creates a portal login for an applicant or employee.
- *
- * Exported so it can be opened from the applicant and employee detail screens,
- * where the person is already in context.
- */
-export function PortalAccessDialog({ open, onOpenChange, applicantId, employeeId, personName }) {
-  const [email, setEmail] = React.useState('')
-  const [errors, setErrors] = React.useState({})
-  const [submitting, setSubmitting] = React.useState(false)
-  const [created, setCreated] = React.useState(null)
-  const [copied, setCopied] = React.useState(false)
-  const toast = useToast()
-
-  React.useEffect(() => {
-    if (open) {
-      setEmail('')
-      setErrors({})
-      setCreated(null)
-      setCopied(false)
-    }
-  }, [open])
-
-  async function handleSubmit(event) {
-    event.preventDefault()
-    setSubmitting(true)
-
-    try {
-      const response = await post('/users/portal-access', {
-        applicant_id: applicantId,
-        employee_id: employeeId,
-        email,
-      })
-      setCreated(response.data)
-      toast.success('Portal access created', `${personName} can now sign in with ${email}.`)
-    } catch (error) {
-      if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not create portal access', error.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Portal access for {personName}</DialogTitle>
-          <DialogDescription>
-            Lets them check their own application status and documents, which removes most of the
-            phone calls asking for an update.
-          </DialogDescription>
-        </DialogHeader>
-
-        {created ? (
-          <div className="space-y-4">
-            <div className="rounded-md border border-success/40 bg-success/5 p-4">
-              <p className="text-sm font-medium">Account created</p>
-              <p className="mt-1 text-sm text-muted-foreground">{created.notice}</p>
-
-              <div className="mt-3 space-y-2">
-                <div>
-                  <p className="text-xs text-muted-foreground">Email</p>
-                  <p className="font-mono text-sm">{created.user.email}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Temporary password</p>
-                  <div className="flex items-center gap-2">
-                    <code className="rounded bg-muted px-2 py-1 font-mono text-sm">
-                      {created.temporary_password}
-                    </code>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        navigator.clipboard.writeText(created.temporary_password)
-                        setCopied(true)
-                        setTimeout(() => setCopied(false), 2000)
-                      }}
-                    >
-                      {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
-                      {copied ? 'Copied' : 'Copy'}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <DialogFooter>
-              <Button onClick={() => onOpenChange(false)}>Done</Button>
-            </DialogFooter>
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-            <Field
-              label="Email address"
-              htmlFor="portal_email"
-              required
-              error={errors.email?.[0]}
-              hint="They sign in with this address"
-            >
-              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
-            </Field>
-
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                Create access
-              </Button>
-            </DialogFooter>
-          </form>
-        )}
-      </DialogContent>
-    </Dialog>
   )
 }
 

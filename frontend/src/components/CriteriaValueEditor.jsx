@@ -55,7 +55,7 @@ function isDuplicate(values, candidate, exceptIndex = -1) {
   )
 }
 
-export default function CriteriaValueEditor({ accepts, options, value, onChange, label, hint, listMatch = 'any' }) {
+export default function CriteriaValueEditor({ accepts, options, value, onChange, label, hint, placeholder, listMatch = 'any' }) {
   if (accepts === 'choice') {
     return (
       <div className="space-y-1">
@@ -81,13 +81,13 @@ export default function CriteriaValueEditor({ accepts, options, value, onChange,
 
   const listHint =
     listMatch === 'graded'
-      ? 'Every item is required. An applicant earns the share they hold — 3 of 4 earns three quarters of the points.'
-      : 'Accepted alternatives. Holding any one of them satisfies this.'
+      ? 'Applicants need every item. When scored, holding some earns part of the points (3 of 4 earns 75%).'
+      : 'Any one of these is enough.'
 
-  return <ValueList value={value} onChange={onChange} label={label} hint={hint ?? listHint} />
+  return <ValueList value={value} onChange={onChange} label={label} hint={hint ?? listHint} placeholder={placeholder} />
 }
 
-function ValueList({ value, onChange, label, hint }) {
+function ValueList({ value, onChange, label, hint, placeholder }) {
   const values = parseValues(value)
 
   const [draft, setDraft] = React.useState('')
@@ -105,12 +105,12 @@ function ValueList({ value, onChange, label, hint }) {
     // Silently ignoring an empty submit would leave somebody pressing Add and
     // watching nothing happen, so it says what it wants instead.
     if (!candidate) {
-      setError('Type the requirement first.')
+      setError('Type an item before clicking Add.')
       return
     }
 
     if (candidate.includes(',')) {
-      setError('Add one at a time — a comma separates them in storage.')
+      setError('Add one item at a time. Commas are not allowed.')
       return
     }
 
@@ -128,7 +128,7 @@ function ValueList({ value, onChange, label, hint }) {
     const candidate = editingDraft.trim()
 
     if (!candidate) {
-      setError('A requirement cannot be blank. Remove it instead.')
+      setError('An item cannot be blank. To take it off the list, use its remove (×) button.')
       return
     }
 
@@ -174,7 +174,7 @@ function ValueList({ value, onChange, label, hint }) {
                   size="icon"
                   className="h-7 w-7"
                   onClick={() => saveEdit(index)}
-                  aria-label="Save"
+                  aria-label={`Save change to ${item}`}
                 >
                   <Check className="h-3.5 w-3.5" />
                 </Button>
@@ -229,10 +229,10 @@ function ValueList({ value, onChange, label, hint }) {
               add()
             }
           }}
-          placeholder="e.g. Machine Operation"
+          placeholder={placeholder ?? 'e.g. Machine Operation'}
           className={cn('h-8 text-xs', error && 'border-destructive')}
           aria-invalid={!!error}
-          aria-label={label ?? 'Add a requirement'}
+          aria-label={label ?? 'Add an item'}
         />
         <Button type="button" variant="outline" size="sm" className="h-8 shrink-0" onClick={add}>
           <Plus className="h-3.5 w-3.5" />
@@ -246,7 +246,7 @@ function ValueList({ value, onChange, label, hint }) {
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">
-          {hint ?? 'An applicant satisfies this by having any one of them.'}
+          {hint ?? 'Any one of these is enough.'}
         </p>
       )}
     </div>

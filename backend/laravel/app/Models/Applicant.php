@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Matching\CompetencyScoringService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -10,12 +11,16 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
 
 class Applicant extends Model
 {
     use HasFactory;
     use Notifiable;
     use SoftDeletes;
+
+    /** How an application reached the agency; "online" is self-registration. */
+    public const SOURCE_CHANNELS = ['walk_in', 'messenger', 'email', 'online'];
 
     protected $fillable = [
         'applicant_code',
@@ -63,6 +68,7 @@ class Applicant extends Model
             'self_registered_at' => 'datetime',
             'identity_verified_at' => 'datetime',
             'profile_updated_at' => 'datetime',
+            'profile_version' => 'integer',
             'height_cm' => 'decimal:2',
             'weight_kg' => 'decimal:2',
             'distance_km' => 'decimal:2',
@@ -88,6 +94,31 @@ class Applicant extends Model
     public function scopeAwaitingIdentityCheck(Builder $query): Builder
     {
         return $query->whereNotNull('self_registered_at')->whereNull('identity_verified_at');
+    }
+
+    /**
+     * Records that something the matching engine scores has changed, so every
+     * ranking scored against the earlier version shows as out of date (audit
+     * S-02).
+     *
+     * One atomic increment rather than a value computed here: two edits saved
+     * at the same moment must both count. Call it in the same transaction as
+     * the change itself.
+     */
+    public function markScoredProfileChanged(): void
+    {
+        static::withTrashed()->whereKey($this->getKey())->update([
+            'profile_updated_at' => now(),
+            'profile_version' => DB::raw('profile_version + 1'),
+        ]);
+
+        $stored = static::withTrashed()->whereKey($this->getKey())
+            ->first(['id', 'profile_updated_at', 'profile_version']);
+
+        $this->forceFill([
+            'profile_updated_at' => $stored?->profile_updated_at,
+            'profile_version' => $stored?->profile_version,
+        ])->syncOriginalAttributes(['profile_updated_at', 'profile_version']);
     }
 
     // ---------------------------------------------------------------- relations
@@ -149,6 +180,26 @@ class Applicant extends Model
         return $this->hasOne(Employee::class);
     }
 
+    /** Every time the applicant was put forward to a client, newest first. */
+    public function endorsements(): HasMany
+    {
+        return $this->hasMany(Endorsement::class)->orderByDesc('id');
+    }
+
+    /** The endorsement still in progress, if any. */
+    public function openEndorsement(): HasOne
+    {
+        return $this->hasOne(Endorsement::class)->ofMany(
+            ['id' => 'max'],
+            fn ($query) => $query->whereNull('ended_at')
+        );
+    }
+
+    public function placementDecisions(): HasMany
+    {
+        return $this->hasMany(PlacementDecision::class)->orderBy('id');
+    }
+
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
@@ -197,15 +248,8 @@ class Applicant extends Model
      */
     public function highestEducationLevel(): ?string
     {
-        $ranking = [
-            'elementary' => 1,
-            'high_school' => 2,
-            'senior_high_school' => 3,
-            'vocational' => 4,
-            'college_undergraduate' => 5,
-            'college_graduate' => 6,
-            'postgraduate' => 7,
-        ];
+        // The scorer's own ranking, so a record and its score agree (CQ-02).
+        $ranking = CompetencyScoringService::educationRanks();
 
         $levels = ($this->relationLoaded('educations') ? $this->educations : $this->educations()->get())
             ->pluck('education_level')
@@ -228,25 +272,97 @@ class Applicant extends Model
             return $query;
         }
 
-        $like = '%'.str_replace(['%', '_'], ['\%', '\_'], $term).'%';
+        /*
+         * Word by word (audit UX-06). The whole phrase used to be compared with
+         * each column on its own, so "Juan Cruz" - a first name and a last name
+         * - matched no single column and found nobody. Now every word has to
+         * appear somewhere in the record: "Juan Cruz" finds Juan Dela Cruz, and
+         * "Cruz 0917" narrows that to the one with that number. Capped at six
+         * words, which is more than any name or code needs. Each word is
+         * matched as typed, % and _ included (see TextSearch).
+         */
+        $words = array_slice(preg_split('/\s+/', trim($term), -1, PREG_SPLIT_NO_EMPTY), 0, 6);
 
-        // PostgreSQL's LIKE is case-sensitive, so searching "santos" would miss
-        // "Santos". ILIKE fixes that but does not exist in SQLite, which the
-        // test suite uses, hence the driver check.
-        $operator = $query->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
+        foreach ($words as $word) {
+            $query->where(function (Builder $q) use ($word) {
+                $q->whereContains('first_name', $word)
+                    ->orWhereContains('last_name', $word)
+                    ->orWhereContains('middle_name', $word)
+                    ->orWhereContains('applicant_code', $word)
+                    ->orWhereContains('contact_number', $word)
+                    ->orWhereContains('email', $word)
+                    ->orWhereContains('preferred_position', $word);
+            });
+        }
 
-        return $query->where(function (Builder $q) use ($like, $operator) {
-            $q->where('first_name', $operator, $like)
-                ->orWhere('last_name', $operator, $like)
-                ->orWhere('middle_name', $operator, $like)
-                ->orWhere('applicant_code', $operator, $like)
-                ->orWhere('contact_number', $operator, $like)
-                ->orWhere('email', $operator, $like);
-        });
+        return $query;
     }
 
     public function scopeEvaluable(Builder $query): Builder
     {
         return $query->whereIn('current_status', config('empower.evaluable_applicant_statuses'));
+    }
+
+    /**
+     * Applicants whose employment record shows them placed today.
+     *
+     * This, not the status column, is what "deployed" means in a filter.
+     * Deployment walks the applicant through "deployed" and on to "active" in
+     * the same transaction, so nobody ever rests at "deployed" - filtering the
+     * column for it always came back empty. A status can also disagree with the
+     * employment record (some were moved by hand before those statuses became
+     * workflow-owned), and the employment record is the one that says whether
+     * somebody is working. EXISTS rather than a join, so an applicant with
+     * several deployments is still one row.
+     */
+    public function scopeCurrentlyDeployed(Builder $query): Builder
+    {
+        return $query->whereHas('employee', fn (Builder $employee) => $employee->currentlyDeployed());
+    }
+
+    /** Everyone the scope above leaves out, never-employed and former workers included. */
+    public function scopeNotCurrentlyDeployed(Builder $query): Builder
+    {
+        return $query->whereDoesntHave('employee', fn (Builder $employee) => $employee->currentlyDeployed());
+    }
+
+    /**
+     * Applicants in any of the given statuses, with "deployed" read from the
+     * employment record as above and every other status from the column.
+     */
+    public function scopeInStatuses(Builder $query, array $statuses): Builder
+    {
+        $stored = array_values(array_diff($statuses, ['deployed']));
+        $deployed = in_array('deployed', $statuses, true);
+
+        return $query->where(function (Builder $either) use ($stored, $deployed) {
+            if ($stored !== []) {
+                $either->whereIn('current_status', $stored);
+            }
+
+            if ($deployed) {
+                $either->orWhere(fn (Builder $placed) => $placed->currentlyDeployed());
+            }
+        });
+    }
+
+    /**
+     * Adds `currently_deployed` and `deployed_company` to each row, so a list
+     * can show placement beside the status from the same rule the filter uses.
+     * Correlated subqueries rather than a join, so no applicant is repeated.
+     */
+    public function scopeWithPlacement(Builder $query): Builder
+    {
+        return $query
+            ->withExists(['employee as currently_deployed' => fn (Builder $employee) => $employee->currentlyDeployed()])
+            ->addSelect(['deployed_company' => ClientCompany::query()
+                ->select('client_companies.company_name')
+                ->join('deployments', 'deployments.client_company_id', '=', 'client_companies.id')
+                ->join('employees', 'employees.id', '=', 'deployments.employee_id')
+                ->whereColumn('employees.applicant_id', 'applicants.id')
+                ->where('employees.employment_status', 'active')
+                ->where('deployments.deployment_status', 'active')
+                ->limit(1),
+            ]);
     }
 }

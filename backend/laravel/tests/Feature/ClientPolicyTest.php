@@ -371,11 +371,10 @@ class ClientPolicyTest extends TestCase
         ])->assertNotFound();
 
         $this->assertSame(
-            ['active', 'resigned', 'terminated', 'archived'],
-            array_keys(config('empower.employee_transitions')) === ['active', 'resigned', 'terminated', 'archived']
-                ? ['active', 'resigned', 'terminated', 'archived']
-                : array_keys(config('empower.employee_transitions')),
+            ['active', 'resigned', 'terminated'],
+            array_keys(config('empower.employee_transitions')),
             'The employee lifecycle offers resignation and termination only.'
         );
+        $this->assertSame(['resigned', 'terminated'], config('empower.employee_transitions.active'));
     }
 }

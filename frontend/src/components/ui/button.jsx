@@ -3,8 +3,12 @@ import { Slot } from '@radix-ui/react-slot'
 import { cva } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
+/*
+ * Every button is a pill: brand blue for the one action that matters on a
+ * screen, white with a hairline for secondary actions, quiet for the rest.
+ */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-control text-sm font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0 active:scale-[0.99]',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0 active:scale-[0.99]',
   {
     variants: {
       variant: {
@@ -18,10 +22,10 @@ const buttonVariants = cva(
         success: 'bg-status-success-bg text-status-success-text border border-status-success-border hover:bg-status-success-bg/80',
       },
       size: {
-        default: 'h-9 px-4 py-2',
-        sm: 'h-8 px-3 text-xs',
-        lg: 'h-10 px-5 text-sm font-semibold',
-        icon: 'h-9 w-9',
+        default: 'h-11 px-5',
+        sm: 'h-9 px-4 text-xs',
+        lg: 'h-12 px-6 text-[15px]',
+        icon: 'h-10 w-10',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },

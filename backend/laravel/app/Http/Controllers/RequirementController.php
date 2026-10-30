@@ -38,13 +38,17 @@ class RequirementController extends Controller
 
     public function index(Applicant $applicant): JsonResponse
     {
-        $this->authorize('view', $applicant);
+        $this->authorize('viewRequirements', $applicant);
 
         $applicant->load([
             'requirements.requirementType',
             'requirements.verifier',
             'requirements.firstViewer',
+            'requirements.history.verifier',
+            'requirements.history.replacer',
         ]);
+        // Whether an expiry matters depends on whether they are deployed yet.
+        $applicant->requirements->each->setRelation('applicant', $applicant);
 
         return ApiResponse::success([
             'requirements' => ApplicantRequirementResource::collection($applicant->requirements),
@@ -176,7 +180,7 @@ class RequirementController extends Controller
         RequirementType $requirementType,
         DocumentReviewService $review,
     ): JsonResponse {
-        $this->authorize('view', $applicant);
+        $this->authorize('viewRequirements', $applicant);
 
         $requirement = ApplicantRequirement::where('applicant_id', $applicant->id)
             ->where('requirement_type_id', $requirementType->id)

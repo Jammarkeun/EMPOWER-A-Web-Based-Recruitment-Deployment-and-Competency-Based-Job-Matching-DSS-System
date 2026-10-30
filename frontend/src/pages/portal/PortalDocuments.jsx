@@ -30,6 +30,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn, formatDate } from '@/lib/utils'
+import { expiryBadge, isRenewalDue, portalExpiryDetail } from '@/lib/documentExpiry'
+import { DOCUMENT_ACCEPT, isReadable } from '@/lib/uploads'
 
 /**
  * How each state of a document is described to the person who sent it.
@@ -87,9 +89,13 @@ function metaFor(requirement) {
   return REVIEW_META[requirement.review_state] ?? REVIEW_META.not_uploaded
 }
 
-/** A verified document is closed to the applicant; everything else can be sent. */
+/**
+ * A verified document is closed to the applicant; everything else can be sent.
+ * The exception is a worker's annual medical or health card once its renewal
+ * is due - the server allows exactly that case and keeps the old version.
+ */
 function canSend(requirement) {
-  return requirement.status !== 'verified'
+  return requirement.status !== 'verified' || isRenewalDue(requirement)
 }
 
 const TONE_TEXT = {
@@ -176,7 +182,7 @@ export default function PortalDocuments() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">My documents</h1>
+        <h1 className="text-[26px] font-normal leading-tight tracking-[-0.01em] sm:text-[32px]">My documents</h1>
         <p className="text-sm text-muted-foreground">
           Send your documents ahead of time so the office can check them before you visit.
         </p>
@@ -264,6 +270,9 @@ export default function PortalDocuments() {
 function DocumentRow({ requirement, highlighted, opening, onOpen, onSend }) {
   const meta = metaFor(requirement)
   const Icon = meta.icon
+  // Once employed, whether a lapse matters depends on the document.
+  const expiry = expiryBadge(requirement, 'portal')
+  const expiryDetail = portalExpiryDetail(requirement, formatDate)
 
   return (
     <div
@@ -278,6 +287,8 @@ function DocumentRow({ requirement, highlighted, opening, onOpen, onSend }) {
         <p className="text-sm font-medium">{requirement.requirement_name}</p>
         {requirement.rejection_reason ? (
           <p className="text-xs text-destructive">{requirement.rejection_reason}</p>
+        ) : expiryDetail ? (
+          <p className="text-xs text-muted-foreground">{expiryDetail}</p>
         ) : (
           <p className="text-xs text-muted-foreground">
             {meta.detail}
@@ -288,7 +299,7 @@ function DocumentRow({ requirement, highlighted, opening, onOpen, onSend }) {
         )}
       </div>
 
-      <Badge tone={meta.tone}>{requirement.review_state_label}</Badge>
+      <Badge tone={expiry?.tone ?? meta.tone}>{expiry?.label ?? requirement.review_state_label}</Badge>
 
       {requirement.has_file && (
         <Button variant="ghost" size="sm" onClick={onOpen} disabled={opening}>
@@ -304,7 +315,7 @@ function DocumentRow({ requirement, highlighted, opening, onOpen, onSend }) {
       {canSend(requirement) && (
         <Button variant="outline" size="sm" onClick={onSend}>
           <Upload className="h-3.5 w-3.5" />
-          {requirement.has_file ? 'Replace' : 'Send'}
+          {isRenewalDue(requirement) ? 'Send renewal' : requirement.has_file ? 'Replace' : 'Send'}
         </Button>
       )}
     </div>
@@ -374,7 +385,7 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
     if (busy) return
 
     if (!file) {
-      setErrors({ file: ['Choose a photo or PDF of your document.'] })
+      setErrors({ file: ['Choose a photo, PDF or file of your document.'] })
       return
     }
 
@@ -420,22 +431,22 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
         <DialogHeader>
           <DialogTitle>Send {requirement.requirement_name}</DialogTitle>
           <DialogDescription>
-            A clear photo or a PDF. Our staff will check it against your original when you visit.
+            A clear photo, a PDF, or a Word file. Our staff will check it against your original when you visit.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <Field
-            label="Photo or PDF"
+            label="Document file"
             htmlFor="document_file"
             required
             error={errors.file?.[0]}
-            hint="Up to 10 MB. JPG, PNG, WEBP, or PDF."
+            hint="Up to 10 MB. A photo, a PDF, or a Word, Excel or PowerPoint file."
           >
             <Input
               id="document_file"
               type="file"
-              accept=".pdf,.jpg,.jpeg,.png,.webp"
+              accept={DOCUMENT_ACCEPT}
               disabled={busy}
               onChange={(e) => {
                 setFile(e.target.files?.[0] ?? null)
@@ -463,8 +474,9 @@ function SendDocumentDialog({ requirement, onOpenChange, onSent }) {
             </Field>
           )}
 
-          {/* Optional and clearly marked as slow, so the wait is a choice. */}
-          {file && (
+          {/* Optional and clearly marked as slow, so the wait is a choice.
+              Offered only for what the reader understands: photos and PDFs. */}
+          {file && isReadable(file) && (
             <div className="rounded-lg border bg-muted/30 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">

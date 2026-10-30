@@ -15,7 +15,9 @@ import { Field, FormGrid } from '@/components/ui/form'
 import { StatusBadge } from '@/components/ui/badge'
 import { LoadingState, ErrorState } from '@/components/ui/states'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import EmployeePicker from '@/components/EmployeePicker'
 import { formatDate, formatDateTime, todayISO } from '@/lib/utils'
+import { DOCUMENT_ACCEPT } from '@/lib/uploads'
 import { ReportStatus, OutOfScope } from './CoordinatorEmployeeDetail'
 
 /**
@@ -57,7 +59,6 @@ function ReportForm({ existing, onSaved }) {
   const [searchParams] = useSearchParams()
 
   const options = useApi('/coordinator/violation-reports/options', undefined, { cacheKey: 'coordinator-report-options' })
-  const employees = useApi('/coordinator/employees', { status: 'active', per_page: 100 })
 
   const [form, setForm] = React.useState(() => ({
     employee_id: String(existing?.employee?.id ?? searchParams.get('employee') ?? ''),
@@ -66,13 +67,26 @@ function ReportForm({ existing, onSaved }) {
     details: existing?.details ?? '',
     notes: existing?.notes ?? '',
   }))
+  // The chosen worker, for the picker's label and the locked department. The
+  // id in the form is what is sent; the server checks it against the client.
+  const [selected, setSelected] = React.useState(() =>
+    existing?.employee ? { ...existing.employee, department: existing.department_name } : null
+  )
   const [evidence, setEvidence] = React.useState(null)
   const [errors, setErrors] = React.useState({})
   const [saving, setSaving] = React.useState(null)
   const [confirmSubmit, setConfirmSubmit] = React.useState(false)
   const [confirmDiscard, setConfirmDiscard] = React.useState(false)
 
-  const selected = (employees.data ?? []).find((e) => String(e.id) === form.employee_id)
+  // Opened from an employee's page ("Report this employee"): show who it is.
+  React.useEffect(() => {
+    const preset = searchParams.get('employee')
+    if (existing || !preset) return
+    get(`/coordinator/employees/${preset}`)
+      .then((response) => setSelected(response.data.employee))
+      .catch(() => setForm((f) => ({ ...f, employee_id: '' })))
+  }, [existing, searchParams])
+
   const set = (key) => (event) => setForm((f) => ({ ...f, [key]: event.target.value }))
 
   async function save(submit) {
@@ -137,14 +151,22 @@ function ReportForm({ existing, onSaved }) {
       <Card>
         <CardContent className="space-y-4 pt-5">
           <FormGrid>
-            <Field label="Employee" htmlFor="employee_id" required error={errors.employee_id?.[0]}>
-              <Select value={form.employee_id} onChange={set('employee_id')} placeholder="Choose an employee">
-                {(employees.data ?? []).map((e) => (
-                  <option key={e.id} value={String(e.id)}>
-                    {e.full_name} · {e.employee_number}
-                  </option>
-                ))}
-              </Select>
+            <Field
+              label="Employee"
+              htmlFor="employee_id"
+              required
+              error={errors.employee_id?.[0]}
+              hint="Only active workers at your client are listed."
+            >
+              <EmployeePicker
+                value={form.employee_id}
+                selected={selected}
+                params={{ status: 'active' }}
+                onChange={(employee) => {
+                  setSelected(employee)
+                  setForm((f) => ({ ...f, employee_id: employee ? String(employee.id) : '' }))
+                }}
+              />
             </Field>
 
             <Field label="Violation" htmlFor="violation_type" required error={errors.violation_type?.[0]}>
@@ -173,9 +195,9 @@ function ReportForm({ existing, onSaved }) {
               label="Supporting evidence"
               htmlFor="evidence"
               error={errors.evidence?.[0]}
-              hint={existing?.evidence_name ? `Attached: ${existing.evidence_name}. Choosing a file replaces it.` : 'Optional. PDF or image, up to 10 MB.'}
+              hint={existing?.evidence_name ? `Attached: ${existing.evidence_name}. Choosing a file replaces it.` : 'Optional. PDF, photo or Office document, up to 10 MB.'}
             >
-              <Input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" onChange={(e) => setEvidence(e.target.files?.[0] ?? null)} />
+              <Input type="file" accept={DOCUMENT_ACCEPT}onChange={(e) => setEvidence(e.target.files?.[0] ?? null)} />
             </Field>
           </FormGrid>
 

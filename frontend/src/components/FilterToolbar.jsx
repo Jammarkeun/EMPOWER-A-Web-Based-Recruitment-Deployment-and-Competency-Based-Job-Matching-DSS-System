@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Search, X, SlidersHorizontal } from 'lucide-react'
+import { Search, X, SlidersHorizontal, ChevronDown } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -28,25 +28,26 @@ export function FilterToolbar({
   }, [search, filters, viewToggles])
 
   return (
-    <div className={cn('space-y-2 pb-3', className)}>
+    <div className={cn('space-y-2 pb-1', className)}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/* Search & Dropdown Filters Group */}
         <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[280px]">
           {/* Search Input */}
           {onSearchChange && (
-            <div className="relative w-full max-w-xs sm:w-72">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <div className="relative w-full max-w-xs sm:w-80">
+              <Search className="absolute left-4 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search ?? ''}
                 onChange={(e) => onSearchChange(e.target.value)}
                 placeholder={searchPlaceholder}
-                className="pl-9 pr-8 h-9 text-sm"
+                aria-label={searchPlaceholder ?? 'Search'}
+                className="h-11 rounded-2xl bg-card pl-11 pr-9 text-sm"
               />
               {search && search.length > 0 && (
                 <button
                   type="button"
                   onClick={() => onSearchChange('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   aria-label="Clear search"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -55,35 +56,40 @@ export function FilterToolbar({
             </div>
           )}
 
-          {/* Dropdown Filters — rendered as native selects for simplicity */}
+          {/* Dropdown Filters — native selects, drawn as white pills */}
           {filters.map((filter) => (
-            <select
-              key={filter.id || filter.label}
-              value={filter.value ?? ''}
-              onChange={(e) => filter.onChange && filter.onChange(e.target.value)}
-              aria-label={filter.label}
-              className="h-9 rounded-control border border-border bg-card px-3 text-xs text-foreground transition-colors focus:border-brand focus:ring-1 focus:ring-brand focus:outline-none sm:w-44"
-            >
-              {filter.options.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+            <div key={filter.id || filter.label} className="relative">
+              <select
+                value={filter.value ?? ''}
+                onChange={(e) => filter.onChange && filter.onChange(e.target.value)}
+                aria-label={filter.label}
+                className="h-11 w-full appearance-none rounded-full bg-card pl-4 pr-10 text-sm text-foreground transition-colors focus:outline-none focus:ring-1 focus:ring-brand sm:w-48"
+              >
+                {filter.options.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+            </div>
           ))}
 
           {/* View Toggles (Segmented Controls) */}
           {viewToggles.length > 0 && (
-            <div className="flex items-center rounded-control border border-border bg-muted/30 p-0.5 text-xs font-medium">
+            <div className="flex h-11 items-center rounded-full bg-card p-1 text-sm">
               {viewToggles.map((toggle) => (
                 <button
                   key={toggle.id || toggle.label}
                   type="button"
                   onClick={toggle.onToggle}
                   className={cn(
-                    'px-2.5 py-1 rounded-[4px] transition-colors',
+                    'h-full rounded-full px-4 transition-colors',
                     toggle.active
-                      ? 'bg-card text-foreground shadow-xs font-semibold'
+                      ? 'bg-inset-selected font-medium text-foreground'
                       : 'text-muted-foreground hover:text-foreground'
                   )}
                 >
@@ -96,8 +102,8 @@ export function FilterToolbar({
 
         {/* Right side: Result Count */}
         {resultCount !== undefined && (
-          <div className="text-xs font-medium text-muted-foreground whitespace-nowrap tabular-nums">
-            <span className="font-semibold text-foreground">{resultCount}</span> {resultLabel}
+          <div className="whitespace-nowrap text-sm text-muted-foreground tabular-nums">
+            <span className="font-medium text-foreground">{resultCount}</span> {resultLabel}
           </div>
         )}
       </div>

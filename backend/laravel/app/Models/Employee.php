@@ -189,4 +189,15 @@ class Employee extends Model
     {
         return $query->where('employment_status', 'active');
     }
+
+    /**
+     * Employed and placed today: an active employee with an active deployment.
+     *
+     * Deployment sets both and separation ends both, so they move together;
+     * asking for both keeps a half-ended record out of a "deployed" list.
+     */
+    public function scopeCurrentlyDeployed(Builder $query): Builder
+    {
+        return $query->active()->whereHas('deployments', fn (Builder $deployment) => $deployment->active());
+    }
 }

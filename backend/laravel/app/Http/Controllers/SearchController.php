@@ -7,6 +7,7 @@ use App\Models\Applicant;
 use App\Models\ClientCompany;
 use App\Models\Employee;
 use App\Models\JobRequest;
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -81,6 +82,7 @@ class SearchController extends Controller
                 ])),
                 'badge' => str_replace('folder_', 'Folder ', (string) $a->folder_category),
                 'url' => "/applicants/{$a->id}",
+                'image' => app(ProfilePhotoService::class)->url($a->profile_photo_path),
             ]);
 
         return ['type' => 'applicants', 'label' => 'Applicants', 'results' => $results->all()];
@@ -88,12 +90,10 @@ class SearchController extends Controller
 
     private function employees(string $term): array
     {
-        $operator = $this->likeOperator();
-
         $results = Employee::query()
             ->with(['applicant', 'currentCompany'])
             ->where(fn ($q) => $q
-                ->where('employee_number', $operator, "%{$term}%")
+                ->whereContains('employee_number', $term)
                 ->orWhereHas('applicant', fn ($a) => $a->search($term)))
             ->limit(self::PER_TYPE_LIMIT)
             ->get()
@@ -107,6 +107,7 @@ class SearchController extends Controller
                 ])),
                 'badge' => ucfirst((string) $e->employment_status),
                 'url' => "/employees/{$e->id}",
+                'image' => app(ProfilePhotoService::class)->url($e->applicant?->profile_photo_path),
             ]);
 
         return ['type' => 'employees', 'label' => 'Employees', 'results' => $results->all()];
@@ -114,13 +115,11 @@ class SearchController extends Controller
 
     private function jobRequests(string $term): array
     {
-        $operator = $this->likeOperator();
-
         $results = JobRequest::query()
             ->with(['company', 'department'])
             ->where(fn ($q) => $q
-                ->where('request_code', $operator, "%{$term}%")
-                ->orWhere('position_title', $operator, "%{$term}%"))
+                ->whereContains('request_code', $term)
+                ->orWhereContains('position_title', $term))
             ->orderByDesc('date_requested')
             ->limit(self::PER_TYPE_LIMIT)
             ->get()
@@ -141,13 +140,11 @@ class SearchController extends Controller
 
     private function clients(string $term): array
     {
-        $operator = $this->likeOperator();
-
         $results = ClientCompany::query()
             ->where(fn ($q) => $q
-                ->where('company_name', $operator, "%{$term}%")
-                ->orWhere('company_code', $operator, "%{$term}%")
-                ->orWhere('contact_person', $operator, "%{$term}%"))
+                ->whereContains('company_name', $term)
+                ->orWhereContains('company_code', $term)
+                ->orWhereContains('contact_person', $term))
             ->orderBy('company_name')
             ->limit(self::PER_TYPE_LIMIT)
             ->get()
@@ -160,17 +157,5 @@ class SearchController extends Controller
             ]);
 
         return ['type' => 'clients', 'label' => 'Client companies', 'results' => $results->all()];
-    }
-
-    /**
-     * PostgreSQL's LIKE is case-sensitive, so searching "santos" would miss
-     * "Santos". ILIKE fixes that but does not exist in SQLite, which the test
-     * suite uses.
-     */
-    private function likeOperator(): string
-    {
-        return \Illuminate\Support\Facades\DB::connection()->getDriverName() === 'pgsql'
-            ? 'ilike'
-            : 'like';
     }
 }

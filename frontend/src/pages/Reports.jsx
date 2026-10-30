@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { FileText, Download, Loader2, FileSpreadsheet, Printer, BarChart3 } from 'lucide-react'
+import { FileText, Download, Loader2, FileSpreadsheet, Printer, BarChart3, AlertTriangle } from 'lucide-react'
 import { api, get, getCached, post } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
@@ -11,24 +11,14 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field } from '@/components/ui/form'
 import { EmptyState, LoadingState } from '@/components/ui/states'
-import { cn } from '@/lib/utils'
+import { CdeLetterhead, SignatureLine } from '@/components/CdeDocument'
+import { cn, humanise } from '@/lib/utils'
 
-/** Options for the filters a report can declare. */
-const FILTER_OPTIONS = {
-  current_status: [
-    'applied', 'initial_screening', 'incomplete_requirements', 'primary_requirements_complete',
-    'pending_final_requirements', 'ready_for_deployment', 'training_scheduled', 'training_completed',
-    'client_evaluation', 'approved', 'deployed', 'active', 'resigned', 'terminated', 'archived',
-  ],
-  employment_status: ['active', 'resigned', 'terminated', 'archived'],
-  folder_category: ['folder_1', 'folder_2', 'folder_3'],
-  request_status: ['open', 'in_progress', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'],
-  deployment_status: ['active', 'completed', 'transferred', 'ended'],
-  violation_type: ['awol', 'absences', 'suspension', 'late', 'misconduct', 'policy_violation'],
-  source_channel: ['walk_in', 'messenger', 'email'],
-  status: ['active', 'inactive', 'open', 'under_review', 'resolved', 'escalated', 'scheduled', 'completed', 'cancelled', 'filed', 'finalized', 'for_review'],
-}
-
+/*
+ * The values each choice filter accepts come with the report catalogue
+ * (GET /reports, `options`), per report, from the vocabulary that owns them.
+ * They used to be listed here, with one "status" list shared by every report.
+ */
 const FILTER_LABELS = {
   date_from: 'From date',
   date_to: 'To date',
@@ -47,7 +37,7 @@ const FILTER_LABELS = {
 }
 
 export default function Reports() {
-  const { can } = useAuth()
+  const { can, user } = useAuth()
   const toast = useToast()
 
   const [catalogue, setCatalogue] = React.useState([])
@@ -57,6 +47,10 @@ export default function Reports() {
   const [departments, setDepartments] = React.useState([])
   const [positions, setPositions] = React.useState([])
   const [preview, setPreview] = React.useState(null)
+  // The filters the preview on screen was built from. An export always uses
+  // the filters in the form, so once they differ the screen says so rather
+  // than showing - and printing - one report while the file holds another.
+  const [previewFilters, setPreviewFilters] = React.useState(null)
   const [loading, setLoading] = React.useState(false)
   const [exporting, setExporting] = React.useState(null)
 
@@ -114,16 +108,20 @@ export default function Reports() {
     setPreview(null)
   }, [selected?.key])
 
+  const previewStale = Boolean(preview) && previewFilters !== filterKey(filters)
+
   async function runPreview() {
     if (!selected) return
 
     setLoading(true)
     try {
+      const applied = cleanFilters(filters)
       const response = await post('/reports/preview', {
         report_type: selected.key,
-        filters: cleanFilters(filters),
+        filters: applied,
       })
       setPreview(response.data)
+      setPreviewFilters(filterKey(filters))
 
       /*
        * The count is the point of this message, not the fact that it ran — the
@@ -190,7 +188,11 @@ export default function Reports() {
           }
         }
 
-        throw new Error('The report is taking longer than expected. Check Reports again shortly.')
+        // Said plainly: nothing downloads by itself later, so the officer has
+        // to come back to it.
+        throw new Error(
+          'The report is still being prepared on the server and will not download by itself. Export it again in a few minutes, or narrow the filters.'
+        )
       }
 
       const disposition = response.headers['content-disposition'] ?? ''
@@ -218,6 +220,7 @@ export default function Reports() {
 
   return (
     <>
+      <div className="no-print">
       <PageHeader
         title="Reports"
         description="Generate, print, and export records for management and client review."
@@ -262,6 +265,7 @@ export default function Reports() {
                     key={key}
                     name={key}
                     value={filters[key] ?? ''}
+                    options={selected.options?.[key] ?? []}
                     clients={clients}
                     departments={departments}
                     positions={positions}
@@ -307,13 +311,23 @@ export default function Reports() {
               </>
             )}
 
-            {preview && (
+            {preview && !previewStale && (
               <Button variant="ghost" onClick={() => window.print()}>
                 <Printer className="h-4 w-4" />
                 Print
               </Button>
             )}
           </div>
+
+          {previewStale && (
+            <div role="status" className="no-print flex flex-wrap items-center gap-2 rounded-panel bg-status-warning-bg px-4 py-3 text-sm text-status-warning-text">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span className="flex-1">
+                The filters have changed since this report was generated. Generate it again to see the matching records;
+                an export always uses the filters above.
+              </span>
+            </div>
+          )}
 
           {preview ? <ReportPreview preview={preview} /> : (
             <Card>
@@ -326,7 +340,132 @@ export default function Reports() {
           )}
         </div>
       </div>
+      </div>
+
+      {preview && !previewStale && <ReportPrintSheet preview={preview} preparedBy={user?.full_name} />}
     </>
+  )
+}
+
+/**
+ * The previewed report on paper, laid out like the PDF export and CDE's own
+ * Manpower Requisition Form: the letterhead in a ruled box, the report's
+ * details as "Label: value" lines beside a boxed summary, the table, then
+ * signature lines.
+ *
+ * Hidden on screen. The outer table's head repeats the letterhead on every
+ * printed page, as the PDF does. The preview holds at most 100 rows, and the
+ * printout says so rather than passing for the whole report.
+ */
+function ReportPrintSheet({ preview, preparedBy }) {
+  const letterhead = preview.letterhead ?? {}
+  const details = [
+    ['Report', preview.subtitle],
+    ['Period', preview.period],
+    ['Number of Records', preview.total_rows],
+    ['Date generated', preview.generated_at],
+    ['Prepared by', preparedBy],
+  ]
+
+  return (
+    <div
+      data-testid="report-print-sheet"
+      className="hidden bg-white text-[10pt] text-black [-webkit-print-color-adjust:exact] [print-color-adjust:exact] print:block"
+    >
+      <style>{'@page { size: A4 landscape; margin: 10mm; }'}</style>
+      <table className="w-full border-collapse">
+        <thead>
+          <tr>
+            <td className="pb-3">
+              <CdeLetterhead
+                title={preview.title}
+                agency={letterhead.agency}
+                address={letterhead.address}
+                className="border-2 border-black"
+              />
+            </td>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <div className="mb-3 grid grid-cols-[2fr_1fr] border-2 border-black">
+                <dl className="border-r-2 border-black">
+                  {details.map(([label, value], index) => (
+                    <div
+                      key={label}
+                      className={cn('flex gap-3 px-3 py-1.5', index < details.length - 1 && 'border-b border-black')}
+                    >
+                      <dt className="w-40 shrink-0">{label}:</dt>
+                      <dd>{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="px-4 py-2">
+                  <p className="mb-2 text-center font-bold">Summary</p>
+                  <ul className="space-y-1.5">
+                    {(preview.summary ?? []).map((item) => (
+                      <li key={item.label} className="flex items-end justify-between gap-3">
+                        <span>{item.label}</span>
+                        <span className="border-b border-black pl-3 font-bold">{item.value}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {preview.rows.length === 0 ? (
+                <p className="border border-black p-8 text-center">No records match the selected filters.</p>
+              ) : (
+                <table className="w-full border-collapse border border-black text-[8pt]">
+                  <thead>
+                    <tr>
+                      {preview.columns.map((column) => (
+                        <th
+                          key={column}
+                          className="border border-black bg-[#1b4b8f] px-1.5 py-1.5 text-left font-bold uppercase text-white"
+                        >
+                          {column}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((row, index) => (
+                      <tr key={index} className="break-inside-avoid even:bg-[#f2f4f8]">
+                        {row.map((cell, cellIndex) => (
+                          <td key={cellIndex} className="border border-neutral-600 px-1.5 py-1 align-top">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {preview.truncated && (
+                <p className="mt-1.5 text-[8pt] font-semibold">
+                  This printout shows the first {preview.rows.length} of {preview.total_rows} records. Export it as a PDF
+                  for the complete report.
+                </p>
+              )}
+
+              <div className="mt-4 grid break-inside-avoid grid-cols-3 gap-4 border-2 border-black px-4 pb-3 pt-10">
+                <SignatureLine label="Prepared by:" name={preparedBy} note={letterhead.agency} />
+                <SignatureLine label="Reviewed by:" note={letterhead.agency} />
+                <SignatureLine label="Approved by:" note={letterhead.agency} />
+              </div>
+
+              <p className="mt-2 text-[8pt]">
+                Generated from EMPOWER · {preview.generated_at} · Confidential — contains personal information protected
+                under RA 10173
+              </p>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -392,7 +531,7 @@ function ReportPreview({ preview }) {
   )
 }
 
-function FilterInput({ name, value, onChange, clients, departments, positions, companySelected }) {
+function FilterInput({ name, value, options = [], onChange, clients, departments, positions, companySelected }) {
   const label = FILTER_LABELS[name] ?? name
 
   if (name === 'date_from' || name === 'date_to') {
@@ -479,19 +618,22 @@ function FilterInput({ name, value, onChange, clients, departments, positions, c
     )
   }
 
-  const options = FILTER_OPTIONS[name] ?? []
-
   return (
     <Field label={label} htmlFor={name}>
       <Select id={name} value={value} onChange={(e) => onChange(e.target.value)} placeholder="All">
         {options.map((option) => (
           <option key={option} value={option}>
-            {option.split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')}
+            {humanise(option)}
           </option>
         ))}
       </Select>
     </Field>
   )
+}
+
+/** The filters as a comparable value, whatever order they were set in. */
+function filterKey(filters) {
+  return JSON.stringify(Object.entries(cleanFilters(filters)).sort(([a], [b]) => a.localeCompare(b)))
 }
 
 /** Strips blank filters so the server sees "no filter" rather than an empty string. */

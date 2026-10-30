@@ -10,11 +10,13 @@ use App\Models\CoordinatorAssignment;
 use App\Models\Deployment;
 use App\Models\Employee;
 use App\Models\EmployeeViolation;
+use App\Models\IncidentReport;
 use App\Models\JobRequest;
+use App\Models\ManpowerRequisition;
 use App\Models\ViolationReport;
 use App\Services\AttendanceService;
 use App\Services\AuditService;
-use Carbon\CarbonImmutable;
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -86,6 +88,11 @@ class CoordinatorController extends Controller
                 'reports_pending' => (clone $reports)->whereIn('status', ViolationReport::PENDING_REVIEW)->count(),
                 'reports_returned' => (clone $reports)->where('status', 'returned')
                     ->where('reported_by', $request->user()->id)->count(),
+                'incidents_open' => IncidentReport::forCompany($companyId)->whereIn('status', IncidentReport::OPEN)->count(),
+                'requisitions_pending' => ManpowerRequisition::forCompany($companyId)
+                    ->whereIn('status', ManpowerRequisition::PENDING_REVIEW)->count(),
+                'requisitions_returned' => ManpowerRequisition::forCompany($companyId)->where('status', 'returned')
+                    ->where('requested_by', $request->user()->id)->count(),
                 'open_requests' => (clone $openRequests)->count(),
                 'positions_to_fill' => (int) (clone $openRequests)
                     ->selectRaw('COALESCE(SUM(workers_needed - workers_fulfilled), 0) AS total')
@@ -197,14 +204,23 @@ class CoordinatorController extends Controller
             ->when(($filters['status'] ?? null) === 'former', fn ($q) => $q->where('employment_status', '!=', 'active'))
             ->when($filters['client_department_id'] ?? null, fn ($q, $v) => $q->where('current_department_id', $v))
             ->when($filters['search'] ?? null, function ($q, $v) {
-                $operator = $q->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-                $q->where(fn ($sub) => $sub->where('employee_number', $operator, "%{$v}%")
-                    ->orWhereHas('applicant', fn ($a) => $a->where(fn ($n) => $n
-                        ->where('first_name', $operator, "%{$v}%")
-                        ->orWhere('last_name', $operator, "%{$v}%"))));
+                // Word by word, as on HR's lists: "Juan Cruz" is a first and
+                // a last name, and compared whole with each column it found
+                // nobody. Names and the employee number only - the contact
+                // details HR can search by are not the coordinator's to probe.
+                $words = array_slice(preg_split('/\s+/', trim($v), -1, PREG_SPLIT_NO_EMPTY), 0, 6);
+
+                foreach ($words as $word) {
+                    $q->where(fn ($sub) => $sub->whereContains('employee_number', $word)
+                        ->orWhereHas('applicant', fn ($a) => $a->where(fn ($n) => $n
+                            ->whereContains('first_name', $word)
+                            ->orWhereContains('middle_name', $word)
+                            ->orWhereContains('last_name', $word))));
+                }
             })
             ->orderByRaw("CASE WHEN employment_status = 'active' THEN 0 ELSE 1 END")
             ->orderBy('employee_number')
+            ->orderBy('id')
             ->paginate($filters['per_page'] ?? 25);
 
         return ApiResponse::paginated(
@@ -242,12 +258,13 @@ class CoordinatorController extends Controller
             ->latest()
             ->get();
 
-        // This month's attendance, read-only. HR encodes the DTR; the
-        // coordinator only sees how it compares with the schedule.
+        // This month's attendance, read-only and summary only. HR brings in
+        // the DTR and reviews what it flags; the coordinator sees how it
+        // compares with the schedule, never HR's review notes. A day with no
+        // DTR on file is counted as awaiting the DTR, not as an absence.
         [$from, $to] = $attendance->period(null, null);
-        $schedules = $employee->schedules()->get();
-        $comparison = $attendance->compare($employee, $from, $to, $schedules);
-        $schedule = $attendance->scheduleOn($schedules, CarbonImmutable::today());
+        $comparison = $attendance->compare($employee, $from, $to);
+        $schedule = $attendance->currentSchedule($employee);
 
         $this->audit->record('view', 'coordination', Employee::class, $employee->id, null, [
             'employee_number' => $employee->employee_number,
@@ -294,6 +311,7 @@ class CoordinatorController extends Controller
             ->when(($filters['status'] ?? 'active') === 'active', fn ($q) => $q->where('deployment_status', 'active'))
             ->when(($filters['status'] ?? null) === 'ended', fn ($q) => $q->where('deployment_status', '!=', 'active'))
             ->orderByDesc('deployment_date')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 25);
 
         return ApiResponse::paginated(
@@ -327,6 +345,7 @@ class CoordinatorController extends Controller
             ->where('client_company_id', $this->companyId($request))
             ->when($filters['only_open'] ?? false, fn ($q) => $q->open())
             ->orderByDesc('date_requested')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 25);
 
         return ApiResponse::paginated(
@@ -369,6 +388,9 @@ class CoordinatorController extends Controller
         return [
             'id' => $e->id,
             'full_name' => $e->full_name,
+            // Only ever reached for a worker at the coordinator's own client:
+            // every caller checks the assignment scope before presenting.
+            'photo_url' => app(ProfilePhotoService::class)->url($e->applicant?->profile_photo_path),
             'employee_number' => $e->employee_number,
             'biometric_number' => $e->biometric_number,
             'position' => $e->current_position_title,

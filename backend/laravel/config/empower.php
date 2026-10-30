@@ -57,16 +57,71 @@ return [
         'active' => 'deployment',
         'resigned' => 'separation',
         'terminated' => 'separation',
+        // Set by enrolling the applicant in a session and recording their
+        // completion (audit R-06). Typed by hand they claimed training that no
+        // record showed had happened.
+        'training_scheduled' => 'training',
+        'training_completed' => 'training',
     ],
 
     /*
     | Employee status transitions, applied after an applicant becomes an employee.
+    |
+    | Both separations are final. There used to be an "archived" status after
+    | them, but nothing ever moved an employee into it: archiving a former
+    | employee writes a snapshot to the archives table and leaves the status
+    | as resigned or terminated. Removed 2026-10-30, so filters and reports no
+    | longer offer a status no record can have.
     */
     'employee_transitions' => [
         'active' => ['resigned', 'terminated'],
-        'resigned' => ['archived'],
-        'terminated' => ['archived'],
-        'archived' => [],
+        'resigned' => [],
+        'terminated' => [],
+    ],
+
+    /*
+    | Statuses reached only through "ready for deployment", which itself needs
+    | Folder 1 (see the transitions above).
+    |
+    | Derived from the map rather than a policy of its own: anybody in one of
+    | these had every required document verified at some point. If their folder
+    | is no longer Folder 1, a document has lapsed or been rejected since. That
+    | is shown as a warning beside the status and is never acted on by itself -
+    | whether the status should fall back is still an open question for CDE
+    | (audit Q4). Deployment checks the folder live either way.
+    */
+    'past_document_gate_statuses' => [
+        'ready_for_deployment',
+        'training_scheduled',
+        'training_completed',
+        'client_evaluation',
+        'approved',
+    ],
+
+    /*
+    | Manpower request statuses (audit R-16).
+    |
+    | Enforced by JobRequestLifecycleService for every change, by hand or by
+    | the system. "partially_fulfilled" and "fulfilled" describe the headcount,
+    | so they are only accepted when the numbers agree; deployments and
+    | headcount edits move between them automatically.
+    |
+    | Closing, cancelling and reopening each need a written reason. Moving out
+    | of "closed" or "cancelled" is reopening: the request lands on "open", or
+    | "partially_fulfilled" if workers are already deployed against it.
+    |
+    | Whether a CANCELLED request may be reopened at all has not been settled
+    | with CDE (audit Q6). It stays possible here because the system has always
+    | allowed it; removing 'open' from the cancelled row is the whole change if
+    | CDE decides otherwise.
+    */
+    'job_request_transitions' => [
+        'open' => ['in_progress', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'],
+        'in_progress' => ['open', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'],
+        'partially_fulfilled' => ['fulfilled', 'closed', 'cancelled'],
+        'fulfilled' => ['partially_fulfilled', 'closed'],
+        'closed' => ['open'],
+        'cancelled' => ['open'],
     ],
 
     /*
@@ -123,9 +178,9 @@ return [
     ],
 
     /*
-    | Document upload policy. Applied in addition to the MIME sniffing that
-    | Laravel's file validation performs, so an executable renamed to .pdf is
-    | still rejected.
+    | Document upload limits. Which file types are accepted is decided from
+    | each file's content by App\Services\DocumentUploadPolicy, so an
+    | executable renamed to .pdf is still rejected.
     */
     'uploads' => [
         /*
@@ -135,11 +190,21 @@ return [
         'disk' => env('DOCUMENT_DISK', 'supabase'),
 
         'max_size_kb' => 10240,
-        'allowed_mimes' => ['pdf', 'jpg', 'jpeg', 'png', 'webp'],
         'max_width' => 7000,
         'max_height' => 7000,
         'storage_retries' => 3,
         'signed_url_ttl_minutes' => (int) env('SUPABASE_SIGNED_URL_TTL', 10),
+
+        /*
+         | Applicant profile pictures. Smaller than the document limit because
+         | a face on screen never needs a 10 MB scan, and images only: a profile
+         | picture is never a PDF. The link lives longer than a document link
+         | because it sits in the header for a whole working session; the
+         | screen asks for a fresh one if it expires anyway.
+         */
+        'profile_photo_max_kb' => 5120,
+        'profile_photo_min_px' => 64,
+        'profile_photo_url_ttl_minutes' => (int) env('PROFILE_PHOTO_URL_TTL', 60),
     ],
 
     'reports' => [
@@ -174,8 +239,26 @@ return [
         'active_window_months' => 12,
 
         // Offences within that window at which the employee is flagged for an
-        // administrator to review. Currently the fourth, per CDE.
+        // administrator to review. The fourth, per CDE's earlier validation.
+        // On 26 October 2026 CDE said a new memo extends this to the seventh
+        // offence and that AWOL counts; the memo (the "sanction board") has
+        // not been received, so the value is unchanged until it is. An
+        // administrator changes it in Settings - no code change needed. See
+        // docs/07-project-management/cde-requirements-integration.md.
         'termination_threshold' => 4,
+    ],
+
+    /*
+    | Resignation notice.
+    |
+    | CDE's interview: "ayon sa batas, meron tayong 30 days render bago tayo
+    | officially matanggal sa trabaho". Guidance only. The portal tells the
+    | employee, and shows HR how much notice a request gives, but nothing is
+    | refused for being shorter: a waived or shortened notice is HR's to agree
+    | and is recorded as rendering days on the resignation.
+    */
+    'separation' => [
+        'notice_days' => 30,
     ],
 
     /*
@@ -190,6 +273,12 @@ return [
     */
     'attendance' => [
         'late_grace_minutes' => 0,
+
+        // A DTR file imported at once. The client's biometric export has not
+        // been seen, so these are generous bounds, not a format: a month for
+        // 164 workers is about 5,000 rows.
+        'import_max_rows' => 10000,
+        'import_max_kb' => 5120,
     ],
 
     /*
@@ -203,6 +292,18 @@ return [
     | client's stated process.
     */
     'require_training_before_deployment' => true,
+
+    /*
+    | Client approval before deployment (audit R-11, question Q3).
+    |
+    | Whether CDE requires the client's approval to be recorded in EMPOWER
+    | before a worker is deployed has not been confirmed. Off keeps the
+    | behaviour the system has always had - a deployment can be recorded from
+    | "ready for deployment" - but the history now says so plainly instead of
+    | inventing an approval. On means a deployment needs the applicant to have
+    | been moved to "approved" by an officer first. Change it once CDE answers.
+    */
+    'require_client_approval_before_deployment' => false,
 
     /*
     | Record retention.
@@ -226,13 +327,60 @@ return [
     ],
 
     /*
+    | Password recovery (audit FN-03, decided 2026-10-19).
+    |
+    | Office reset with a forced change works without any of this. The email
+    | reset link is a second route back in, and stays off unless it is switched
+    | on here AND the mailer is a real one (MAIL_MAILER other than "log" or
+    | "array"): a "sent" link that only reached the log file would put a live
+    | reset token in the log.
+    */
+    'password_reset' => [
+        'email_enabled' => (bool) env('PASSWORD_RESET_EMAIL', false),
+    ],
+
+    // Where the emailed reset link points: the address people open EMPOWER at.
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
+
+    /*
+    | Request limits on the endpoints anyone can reach without signing in, per
+    | network address. Each has its own counter (App\Providers\AppServiceProvider):
+    | they used to share one, so opening a few documents or testing the sign-up
+    | form locked everyone on the same address out of signing in for an hour.
+    |
+    | Everyone in one office usually shares an address, which is why these are
+    | not tighter. Wrong passwords have their own, stricter limit per account in
+    | AuthController (5 per 5 minutes), which these do not replace.
+    */
+    'rate_limits' => [
+        'login_per_minute' => (int) env('RATE_LIMIT_LOGIN_PER_MINUTE', 30),
+
+        // Only a sign-up that creates an account counts here, so correcting a
+        // mistake in the form costs nothing...
+        'registrations_per_hour' => (int) env('RATE_LIMIT_REGISTRATIONS_PER_HOUR', 10),
+        // ...while every submission counts here, so the form cannot be used to
+        // test thousands of email addresses (security audit V-03).
+        'registration_attempts_per_hour' => (int) env('RATE_LIMIT_REGISTRATION_ATTEMPTS_PER_HOUR', 30),
+
+        'reset_link_requests_per_hour' => (int) env('RATE_LIMIT_RESET_LINKS_PER_HOUR', 5),
+        'password_resets_per_hour' => (int) env('RATE_LIMIT_PASSWORD_RESETS_PER_HOUR', 10),
+
+        // Signed document and profile-photo links. Every avatar on a page is
+        // one request, so this is generous; the signature is the real control.
+        'document_files_per_minute' => (int) env('RATE_LIMIT_DOCUMENT_FILES_PER_MINUTE', 300),
+    ],
+
+    /*
     | Printed in the header of every exported report and shown to applicants in
     | the portal. Held here rather than hard-coded so the agency can correct its
     | own details without a code change.
+    |
+    | The defaults are the letterhead on CDE's own Manpower Requisition Form
+    | (received 29 October 2026), which every report now copies.
     */
     'organisation' => [
         'name' => 'CDE Manpower Services',
-        'address' => 'Sta. Cruz, Laguna',
+        'address' => 'Sitio Bigayan, Brgy. Calios, Santa Cruz, Laguna',
         'contact' => null,
     ],
 
@@ -249,5 +397,53 @@ return [
         'client' => 'CLI',
         'position' => 'POS',
         'violation_report' => 'VR',
+        'incident_report' => 'IR',
+        'requisition' => 'MRF',
+        'attendance_import' => 'DTR',
+    ],
+
+    /*
+    | The manpower requisition form a coordinator fills in.
+    |
+    | CDE's own Manpower Requisition Form, received 29 October 2026 as a photo
+    | of a filled-in copy. The screen keeps its labels and order: Date
+    | requested, Date Needed, Total Manpower Needed, Required Qualification(s),
+    | Other Remarks, Reason of Request, Requested by, Acknowledged by.
+    |
+    | `version` is stamped on each requisition. Requisitions filed before this
+    | form arrived carry "provisional-2026-10" and are shown as written on the
+    | temporary default form, with the fields that form had.
+    */
+    'requisition_form' => [
+        'version' => 'cde-2026-10',
+        'title' => 'Manpower Requisition Form',
+
+        // "Reason of Request", in the form's order and wording. One is ticked.
+        'reasons' => [
+            'new_position' => 'New Position',
+            'replacement' => 'Replacement',
+            'additional_manpower' => 'Additional Manpower',
+            'reliever_manpower' => 'Reliever Manpower',
+            'others' => 'Others',
+        ],
+
+        // Labels for what the temporary default form (provisional-2026-10)
+        // recorded. Read-only: nothing new is written with these.
+        'temporary_form' => [
+            'version' => 'provisional-2026-10',
+            'notice' => 'Temporary Default Form — Pending Official CDE Form',
+            'gender_requirements' => [
+                'any' => 'Any',
+                'male' => 'Male',
+                'female' => 'Female',
+                'as_specified' => 'Other / as specified by the client',
+            ],
+            'employment_types' => [
+                'regular' => 'Regular',
+                'contractual' => 'Contractual',
+                'project_based' => 'Project-based',
+                'other' => 'Other',
+            ],
+        ],
     ],
 ];

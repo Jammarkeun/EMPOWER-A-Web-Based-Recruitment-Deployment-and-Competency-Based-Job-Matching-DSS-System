@@ -18,6 +18,18 @@ class TrainingEnrollment extends Model
         'remarks',
     ];
 
+    /*
+     * Who marked attendance and who recorded completion are set by the training
+     * workflow itself, never from request input, so they are not fillable.
+     */
+    protected function casts(): array
+    {
+        return [
+            'attendance_recorded_at' => 'datetime',
+            'completion_recorded_at' => 'datetime',
+        ];
+    }
+
     public function training(): BelongsTo
     {
         return $this->belongsTo(Training::class);
@@ -28,8 +40,24 @@ class TrainingEnrollment extends Model
         return $this->belongsTo(Applicant::class);
     }
 
+    public function attendanceRecorder(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'attendance_recorded_by');
+    }
+
+    public function completionRecorder(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'completion_recorded_by');
+    }
+
     public function hasCompleted(): bool
     {
         return $this->completion_status === 'completed';
+    }
+
+    /** Nothing has been recorded against this enrolment yet. */
+    public function isUntouched(): bool
+    {
+        return $this->attendance_status === 'pending' && $this->completion_status !== 'completed';
     }
 }

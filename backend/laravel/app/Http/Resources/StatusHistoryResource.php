@@ -23,6 +23,11 @@ class StatusHistoryResource extends JsonResource
                 : null,
             'to_label' => ucwords(str_replace('_', ' ', $this->to_status)),
             'reason' => $this->reason,
+            // Rows the old deployment code wrote by itself (audit R-11).
+            'recorded_automatically' => $this->resource->wasWrittenAutomaticallyAtDeployment(),
+            'note' => $this->resource->wasWrittenAutomaticallyAtDeployment()
+                ? \App\Models\ApplicationStatusHistory::AUTO_WRITTEN_NOTE
+                : null,
             'changed_at' => $this->changed_at?->toIso8601String(),
             'changed_by' => $this->whenLoaded('changedBy', fn () => $this->changedBy?->full_name),
         ];

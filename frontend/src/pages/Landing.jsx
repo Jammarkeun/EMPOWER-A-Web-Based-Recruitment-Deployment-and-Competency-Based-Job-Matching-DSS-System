@@ -18,6 +18,8 @@ import { Button } from '@/components/ui/button'
 import ThemeToggle from '@/components/ThemeToggle'
 import { LogoMark } from '@/components/Logo'
 import { cn } from '@/lib/utils'
+import { DEFAULT_BANDS, LANDING_EXAMPLE, scoreExample } from '@/lib/matchingExample'
+import landingBackground from '@/assets/landing-background.jpg'
 
 /**
  * The front door.
@@ -163,7 +165,21 @@ function SiteHeader() {
 
 function Hero() {
   return (
-    <section id="top" className="radial-fade border-b scroll-mt-20">
+    <section id="top" className="relative isolate overflow-hidden border-b scroll-mt-20">
+      {/* Decorative, so hidden from screen readers. The wash over it keeps the
+          headline and cards readable in both themes, and fades into the page
+          at the bottom so the hero does not end on a hard edge. */}
+      <img
+        src={landingBackground}
+        alt=""
+        aria-hidden="true"
+        className="absolute inset-0 -z-20 h-full w-full object-cover object-center"
+      />
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 -z-10 bg-gradient-to-b from-background/55 via-background/45 to-background/90 dark:from-background/80 dark:via-background/70 dark:to-background/95"
+      />
+
       <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
         <div className="mx-auto max-w-3xl text-center">
           <p className="mb-4 inline-flex items-center gap-1.5 rounded-full border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
@@ -447,34 +463,52 @@ function DecisionSupport() {
             </p>
           </div>
 
-          {/* A worked example beats a description. These are the real figures the
-              engine produces for a production helper posting. */}
-          <div className="rounded-xl border bg-card p-5 shadow-sm">
-            <div className="mb-4 flex items-baseline justify-between gap-3 border-b pb-3">
-              <div>
-                <p className="text-sm font-medium">Maria Cristina Santos</p>
-                <p className="text-xs text-muted-foreground">Production Helper</p>
-              </div>
-              <div className="text-right">
-                <p className="text-2xl font-semibold tabular-nums">85%</p>
-                <p className="text-xs text-success">Highly recommended</p>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <ScoreRow label="Educational attainment" score={15} weight={15} note="College graduate against a required high school" />
-              <ScoreRow label="Relevant experience" score={10} weight={20} note="18 months against a range of 0 to 36 months" />
-              <ScoreRow label="Certifications" score={10} weight={10} note="Holds Food Safety NC II" />
-              <ScoreRow label="Distance from worksite" score={4.6} weight={5} note="3.4 km against a range of 0 to 40 km" />
-            </div>
-
-            <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-              Every line is shown to the HR officer before any decision is recorded.
-            </p>
-          </div>
+          {/* A worked example beats a description. Computed from its own rows
+              with the engine's rules (lib/matchingExample.js), so the total and
+              the band always agree with the lines shown. */}
+          <MatchingExample />
         </div>
       </div>
     </section>
+  )
+}
+
+/** The worked example, with every figure computed rather than typed. */
+export function MatchingExample({ example = LANDING_EXAMPLE }) {
+  const result = scoreExample(example.criteria)
+
+  return (
+    <div className="rounded-xl border bg-card p-5 shadow-sm">
+      <div className="mb-4 flex items-baseline justify-between gap-3 border-b pb-3">
+        <div>
+          <p className="text-sm font-medium">{example.name}</p>
+          <p className="text-xs text-muted-foreground">{example.position}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-2xl font-semibold tabular-nums" data-testid="example-percentage">
+            {result.percentage}%
+          </p>
+          <p className={result.band === 'highly_recommended' || result.band === 'recommended' ? 'text-xs text-success' : 'text-xs text-muted-foreground'}>
+            {result.bandLabel}
+          </p>
+          <p className="text-[11px] text-muted-foreground tabular-nums">
+            {result.raw} of {result.max} points
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {result.rows.map((row) => (
+          <ScoreRow key={row.label} label={row.label} score={row.awarded} weight={row.weight} note={row.note} />
+        ))}
+      </div>
+
+      <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+        Points over the points available, under the default bands ({DEFAULT_BANDS.highly_recommended}% and above highly
+        recommended, {DEFAULT_BANDS.recommended}% recommended). Every line is shown to the HR officer before any decision
+        is recorded.
+      </p>
+    </div>
   )
 }
 

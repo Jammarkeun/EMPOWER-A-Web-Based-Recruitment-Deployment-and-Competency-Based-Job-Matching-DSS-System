@@ -1,6 +1,6 @@
 import * as React from 'react'
-import { Link } from 'react-router-dom'
-import { FileWarning, ChevronRight } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { FileWarning, ChevronRight, X } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent } from '@/components/ui/card'
@@ -19,13 +19,37 @@ import { formatDate, humanise } from '@/lib/utils'
  * resignation awaiting clearance, a termination awaiting an administrator's
  * review. Closed cases, withdrawn ones included, stay in the full history.
  */
+const STATUS_LABELS = {
+  for_review: 'Awaiting review',
+  info_requested: 'Waiting on employee',
+}
+
+/** The groups a dashboard figure opens this list on, in the figure's words. */
+const STATUS_FILTERS = {
+  awaiting_clearance: 'resignations awaiting clearance',
+  info_requested: 'resignations waiting on the employee',
+}
+
 export default function Separations() {
-  const [type, setType] = React.useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  // In the address bar, so a dashboard figure opens exactly the cases it counted.
+  const type = searchParams.get('type') ?? ''
+  const status = searchParams.get('status') ?? ''
+  const [source, setSource] = React.useState('')
   const [openOnly, setOpenOnly] = React.useState(true)
   const { data, loading, error, refetch } = useApi('/separations', {
     type: type || undefined,
+    status: status || undefined,
+    source: source || undefined,
     open_only: openOnly ? 1 : undefined,
   })
+
+  function updateFilter(key, next) {
+    const params = new URLSearchParams(searchParams)
+    if (next) params.set(key, next)
+    else params.delete(key)
+    setSearchParams(params)
+  }
 
   return (
     <>
@@ -57,7 +81,7 @@ export default function Separations() {
           </div>
           <Select
             value={type}
-            onChange={(e) => setType(e.target.value)}
+            onChange={(e) => updateFilter('type', e.target.value)}
             placeholder="All separations"
             aria-label="Filter by separation type"
             className="sm:w-56"
@@ -65,8 +89,33 @@ export default function Separations() {
             <option value="resignation">Resignations</option>
             <option value="termination">Terminations</option>
           </Select>
+          <Select
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            placeholder="Filed anywhere"
+            aria-label="Filter by where it was filed"
+            className="sm:w-56"
+          >
+            <option value="portal">Requested in the portal</option>
+            <option value="office">Filed at the office</option>
+          </Select>
         </CardContent>
       </Card>
+
+      {status && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>
+            Showing{' '}
+            <span className="font-medium text-foreground">
+              {STATUS_FILTERS[status] ?? humanise(status).toLowerCase()}
+            </span>
+          </span>
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => updateFilter('status', '')}>
+            <X className="h-3 w-3" />
+            Show every case
+          </Button>
+        </div>
+      )}
 
       <Card>
         {loading ? (
@@ -76,11 +125,13 @@ export default function Separations() {
         ) : !data?.length ? (
           <EmptyState
             icon={FileWarning}
-            title={openOnly ? 'Nothing waiting' : 'No separations recorded'}
+            title={status ? 'No cases in this group' : openOnly ? 'Nothing waiting' : 'No separations recorded'}
             description={
-              openOnly
-                ? 'No resignation is awaiting clearance and no termination is awaiting review.'
-                : "Resignations and terminations are filed from an employee's record."
+              status
+                ? 'Show every case to see the rest.'
+                : openOnly
+                  ? 'No resignation is awaiting clearance and no termination is awaiting review.'
+                  : "Resignations and terminations are filed from an employee's record."
             }
           />
         ) : (
@@ -109,9 +160,12 @@ export default function Separations() {
                     <p className="font-mono text-xs text-muted-foreground">{record.employee_number}</p>
                   </TableCell>
                   <TableCell>
-                    <Badge tone={record.type === 'termination' ? 'destructive' : 'muted'}>
-                      {humanise(record.type)}
-                    </Badge>
+                    <div className="flex flex-col items-start gap-1">
+                      <Badge tone={record.type === 'termination' ? 'destructive' : 'muted'}>
+                        {humanise(record.type)}
+                      </Badge>
+                      {record.source === 'portal' && <Badge tone="info">Portal request</Badge>}
+                    </div>
                   </TableCell>
                   <TableCell className="max-w-xs text-sm">{record.reason}</TableCell>
                   <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
@@ -119,16 +173,29 @@ export default function Separations() {
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
                     {formatDate(record.exit_date)}
+                    {/* What the employee asked for, until HR confirms a date. */}
+                    {!record.exit_date && record.requested_exit_date && (
+                      <span className="block text-xs">Requested {formatDate(record.requested_exit_date)}</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">
                       <StatusBadge
                         status={record.status}
-                        label={record.status === 'for_review' ? 'Awaiting review' : undefined}
+                        label={STATUS_LABELS[record.status]}
                       />
                       {record.clearance_status && record.clearance_status !== 'cleared' && (
                         <span className="text-xs text-warning">
                           Clearance {humanise(record.clearance_status).toLowerCase()}
+                        </span>
+                      )}
+                      {record.notice && (
+                        <span className="text-xs text-muted-foreground">
+                          {record.notice.acknowledged
+                            ? 'Notice: receipt confirmed'
+                            : record.notice.viewed
+                              ? 'Notice: opened, not confirmed'
+                              : 'Notice: not opened yet'}
                         </span>
                       )}
                     </div>

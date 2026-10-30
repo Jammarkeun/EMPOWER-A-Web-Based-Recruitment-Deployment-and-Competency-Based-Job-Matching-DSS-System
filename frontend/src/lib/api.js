@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { BACKGROUND_HEADER, SESSION_END_CODES, sessionActivity, signOutNotice } from '@/lib/session'
 
 const TOKEN_KEY = 'empower.token'
 
@@ -34,6 +35,21 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+function headerOf(config, name) {
+  const headers = config?.headers
+  if (!headers) return undefined
+  return typeof headers.get === 'function' ? headers.get(name) : headers[name]
+}
+
+/**
+ * Whether the server counted this request as the person being active: it was
+ * signed in and not one the screen made on its own. Mirrors the server's rule,
+ * so the idle warning appears when the server's clock says it should.
+ */
+function countsAsActivity(config) {
+  return Boolean(headerOf(config, 'Authorization')) && !headerOf(config, BACKGROUND_HEADER)
+}
+
 /**
  * Normalises every failure into a single shape the UI can render.
  *
@@ -42,10 +58,36 @@ api.interceptors.request.use((config) => {
  * error.response.data itself.
  */
 api.interceptors.response.use(
-  (response) => response,
-  (error) => {
+  (response) => {
+    if (countsAsActivity(response.config)) sessionActivity.touch()
+    return response
+  },
+  async (error) => {
     const status = error.response?.status
-    const payload = error.response?.data ?? {}
+    let payload = error.response?.data ?? {}
+
+    // A download (responseType "blob") receives its error as a Blob too, so
+    // the server's message - "Choose a report format", say - was lost behind a
+    // generic one. Read it back when it is the usual JSON envelope.
+    if (typeof Blob !== 'undefined' && payload instanceof Blob) {
+      try {
+        payload = payload.type?.includes('json') ? JSON.parse(await payload.text()) : {}
+      } catch {
+        payload = {}
+      }
+    }
+
+    // Refused after signing in (a 422, a 403) still means the server accepted
+    // the token and counted the request, so the idle clock restarts here too.
+    if (error.response && status !== 401 && countsAsActivity(error.config)) {
+      sessionActivity.touch()
+    }
+
+    // A sign-in that ran out says why; the sign-in page repeats it, so the
+    // person is not left wondering where their screen went.
+    if (status === 401 && SESSION_END_CODES.has(payload.code)) {
+      signOutNotice.set(payload.message)
+    }
 
     // An expired or revoked token should return the user to the login screen
     // rather than leaving them on a page that silently fails to load.
@@ -56,6 +98,12 @@ api.interceptors.response.use(
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'
       }
+    }
+
+    // Still on an office-issued password: the server answers nothing else
+    // until it is replaced, so go to the one page that can do it.
+    if (status === 403 && payload.code === 'password_change_required' && !window.location.pathname.startsWith('/change-password')) {
+      window.location.href = '/change-password'
     }
 
     return Promise.reject({
@@ -90,13 +138,20 @@ function fallbackMessage(status) {
   }
 }
 
-/** Unwraps the response envelope so callers get the payload directly. */
+/**
+ * Unwraps the response envelope so callers get the payload directly.
+ *
+ * `background: true` marks a request the screen makes on its own, such as a
+ * poll, so the server does not count it as the person being active.
+ */
 export async function get(url, params, options = {}) {
-  const { signal, retries = 2 } = options
+  const { signal, retries = 2, background = false } = options
+  const headers = background ? { [BACKGROUND_HEADER]: '1' } : undefined
+  const query = queryParams(params)
 
   for (let attempt = 0; ; attempt += 1) {
     try {
-      const { data } = await api.get(url, { params, signal })
+      const { data } = await api.get(url, { params: query, signal, headers })
       return data
     } catch (error) {
       if (signal?.aborted || error?.original?.code === 'ERR_CANCELED') throw error
@@ -108,6 +163,19 @@ export async function get(url, params, options = {}) {
       await wait(250 * (2 ** attempt), signal)
     }
   }
+}
+
+/**
+ * Booleans as 1 and 0. A query string carries `true` as the text "true",
+ * which Laravel's `boolean` rule refuses - the manpower-request "needing
+ * workers only" toggle failed with a validation error that way.
+ */
+export function queryParams(params) {
+  if (!params) return params
+
+  return Object.fromEntries(
+    Object.entries(params).map(([key, value]) => [key, typeof value === 'boolean' ? Number(value) : value])
+  )
 }
 
 export async function getCached(url, params, options = {}) {
@@ -134,6 +202,11 @@ export async function put(url, body) {
 
 export async function patch(url, body) {
   const { data } = await api.patch(url, body)
+  return data
+}
+
+export async function del(url) {
+  const { data } = await api.delete(url)
   return data
 }
 

@@ -27,6 +27,8 @@ class ClientCompanyResource extends JsonResource
             'departments_count' => $this->whenCounted('departments'),
             'job_requests_count' => $this->whenCounted('jobRequests'),
             'employees_count' => $this->whenCounted('employees'),
+            // Placed there today: active deployments only.
+            'deployed_count' => $this->whenCounted('deployed'),
             'created_at' => $this->created_at?->toIso8601String(),
         ];
     }

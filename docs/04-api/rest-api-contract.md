@@ -1,11 +1,30 @@
 # EMPOWER REST API Contract
 
+> **Scope of this document.** It describes the endpoints in prose. The
+> authoritative list of every route, with its middleware, is
+> `php artisan route:list --path=api` in `backend/laravel`. The sections marked
+> *(updated 2026-10-19)* were checked against the code on that date.
+
 ## API Standards
 - Base URL: /api/v1
 - Auth: Laravel Sanctum bearer token for protected endpoints.
 - Format: application/json, UTF-8.
-- Timezone: Asia/Manila, stored in UTC.
+- Timezone: Asia/Manila. Timestamps are stored as Manila wall time (since the
+  12 October 2026 migration) and returned as ISO 8601 with the +08:00 offset.
 - Pagination: page, per_page, sort_by, sort_dir.
+- An account still on an office-issued password (`must_change_password`) is
+  answered **403** with `"code": "password_change_required"` by every
+  authenticated endpoint except `GET /auth/me`, `GET /auth/session`,
+  `POST /auth/logout` and `POST /auth/change-password`.
+- Sign-in limits *(added 2026-10-22, security audit V-02)*: a token stops
+  working **720 minutes after sign-in** (`SANCTUM_EXPIRATION`) or after
+  **60 minutes without a request of the account's own** (`SANCTUM_IDLE_TIMEOUT`).
+  Both values are provisional (client question 20.4); `0` turns a limit off. A
+  token refused for either reason is deleted and answered **401** with
+  `"code": "session_expired"` or `"code": "session_idle"`. Any other 401 carries
+  no code. Requests the client makes on its own (polls) send
+  `X-Empower-Background: 1`; they are answered normally but do not restart the
+  idle limit.
 - Standard Response Envelope:
 
 ```json
@@ -74,13 +93,40 @@
 }
 ```
 
+The `user` object also carries `permissions` and `must_change_password`. When
+that is `true` the account must call `POST /auth/change-password` before
+anything else.
+
 ### POST /auth/logout
 - Public: No.
 - Response 200: Token revoked.
 
 ### GET /auth/me
 - Public: No.
-- Response 200: Current user profile, roles, permissions.
+- Response 200: Current user profile, roles, permissions, `must_change_password`,
+  and `session` (as below). The login response's `user` carries `session` too.
+
+### GET /auth/session *(added 2026-10-22)*
+- Public: No. Allowed while `must_change_password` is true.
+- Counts as activity, so it is what "Stay signed in" calls; it cannot extend the
+  720-minute lifetime.
+- Response 200: `{ "data": { "idle_timeout_minutes": 60, "expires_at": "2026-10-22T20:00:00+08:00" } }`
+  (either is `null` when that limit is off).
+
+### POST /auth/change-password *(updated 2026-10-19)*
+- Public: No. Allowed while `must_change_password` is true.
+- Request: `current_password`, `password`, `password_confirmation`.
+- Rules: the password policy (12+ characters, not a common password) and a new
+  password different from the current one. Clears `must_change_password` and
+  ends every other session.
+
+### Password recovery *(updated 2026-10-19)*
+
+| Endpoint | Public | Behaviour |
+| --- | --- | --- |
+| `GET /auth/password-recovery` | Yes | `{ email_reset_available, link_expires_minutes, office: { name, address, contact } }`. Says nothing about any account. |
+| `POST /auth/forgot-password` | Yes, 5/hour per address | `{ email }`. **503** `code: email_reset_unavailable` unless `PASSWORD_RESET_EMAIL=true` and a real mailer is configured. Otherwise always **200** with the same message, whether or not an account exists; a link is sent after the response, at most three times an hour per address, never to a deactivated account. |
+| `POST /auth/reset-password` | Yes, 10/hour per address | `{ email, token, password, password_confirmation }`. **200** on success: password set, `must_change_password` cleared, every session ended, token deleted (single use). **422** for an invalid, used, expired (60 min) or mismatched link, or a password the policy refuses. |
 
 ## Applicant Self-Registration
 
@@ -141,10 +187,10 @@ onto a client's shortlist. See `POST /applicants/{id}/verify-identity`.
 }
 ```
 
-### POST /register/check-email
-- Public: Yes. Throttled to 20 requests per minute.
-- Request: `{ "email": "ana@example.com" }`
-- Response 200: `{ "data": { "available": true } }`
+### ~~POST /register/check-email~~ *(removed 2026-10-22, security audit V-03)*
+- Answered whether any address - staff accounts included - had an account, 20
+  times a minute, and the sign-up form never used it. A taken address is still
+  reported by `POST /register` itself (5 requests per hour).
 
 ### POST /register
 - Public: Yes. Throttled to **5 requests per hour** per address, since this is an
@@ -210,28 +256,49 @@ creates the full document checklist in `missing` state; assigns the `portal`
 role only; and notifies every active admin and HR user that someone will be
 visiting.
 
-## Access Control
+## Access Control *(updated 2026-10-19)*
 
-### GET /roles
-### POST /roles
-### PUT /roles/{id}
-### GET /permissions
-### PUT /roles/{id}/permissions
-### GET /users
+Roles and their permissions are seeded (`RolesAndPermissionsSeeder`) and read
+only; there are no endpoints that create roles or change their permissions.
+
+### GET /users *(updated 2026-10-30)*
+- Paged (`page`, `per_page` up to 100). Filters `search`, `user_type`,
+  `is_active`. `user_type=employee` lists portal logins that reach an
+  employment record - including a registration login still typed `applicant`
+  after its owner was deployed (`User::portalEmployee`); `user_type=applicant`
+  lists the other applicant logins. Each row carries `portal_access`
+  (`employee` | `applicant` | null); `user_type` itself is never rewritten.
+### GET /users/roles
 ### POST /users
-### PUT /users/{id}
-### PUT /users/{id}/status
+- Staff and coordinator accounts. The password the administrator sets is
+  temporary: the account starts with `must_change_password = true`.
+### GET /users/{id}
+### PATCH /users/{id}
+### PATCH /users/{id}/status
+### POST /users/{id}/reset-password
+- No request body. Generates a temporary password, ends every session, sets
+  `must_change_password`, and returns `{ temporary_password, notice }` once.
+  The administrator never chooses the password.
+### POST /users/portal-access
+- `{ applicant_id | employee_id, email }`. Returns the temporary password once;
+  the account starts with `must_change_password = true`.
+### GET /users/{id}/coordinator-assignments
+### POST /users/{id}/coordinator-assignment
 
 Validation highlights:
-- role_key unique.
 - email unique.
-- admin role assignment requires admin privilege.
+- a portal account cannot be given a staff role.
 
 ## Client Company and Departments
 
 ### GET /clients
 Filters:
 - status, search, business_type.
+
+Each row carries `deployed_count`: active deployments at that client today, the
+same figure as `summary.deployed_staff` on `GET /clients/{id}/overview`. The
+overview's `open_requests` and `positions_to_fill` count open, in-progress and
+partially fulfilled requests, as `GET /job-requests?only_open=1` lists them.
 
 ### POST /clients
 Request:
@@ -342,7 +409,10 @@ Business rules:
 
 ### GET /job-requests
 Filters:
-- client_company_id, department_id, request_status, date_from, date_to, deadline_from, deadline_to.
+- client_company_id, client_department_id, request_status (a status of the
+  request lifecycle; 422 otherwise), date_from, date_to (date requested,
+  inclusive), only_open (`1`: open, in progress or partially fulfilled).
+- Booleans are sent as `1`/`0`; Laravel's `boolean` rule refuses `true`.
 
 ### POST /job-requests
 Request:
@@ -412,11 +482,41 @@ Business rules:
 
 ## Applicant Management
 
-### GET /applicants
-Filters:
-- source_channel, current_status, folder_category, readiness, search.
+### GET /applicants *(updated 2026-10-30)*
+Filters, all applied together on the server with the paging:
+- `search` — word by word: every word must appear in the first, middle or last
+  name, applicant code, contact number, email or position sought, so
+  "Juan Cruz" finds Juan Dela Cruz.
+- `current_status` — one of the statuses `GET /applicant-statuses` lists, or
+  several separated by commas (any of them); 422 if any is unknown, reported
+  under `current_status`. **`deployed` is read from the employment record, not
+  the column**: an active employee with an active deployment. Deployment moves
+  an applicant through `deployed` and on to `active` in one transaction, so no
+  record rests at `deployed`, and a status can disagree with the employment
+  record. Every other status is matched on the column.
+- `folder_category`, `source_channel` (`walk_in`, `messenger`, `email`,
+  `online`), `date_from`, `date_to`.
+- `preferred_position_id`; `client_company_id` — applicants who applied for any
+  of that client's positions.
 - `awaiting_identity_check=1` returns only applicants who registered online and
   have not yet been seen at the office. This is the queue the counter works from.
+- `documents_lapsed=1` — status reached with every document verified, folder no
+  longer Folder 1.
+- `exclude_deployed=1` — leaves out anyone placed today by the same rule as the
+  `deployed` filter. The dashboard's "ready for deployment" figure uses it.
+
+Each row carries `status_label`, `stage`, `documents_lapsed` and `placement`:
+`{ deployed, company, mismatch }`, by the same rule as the `deployed` filter.
+`mismatch` is `status_not_updated` (placed, status not moved on),
+`no_active_deployment` (status says employed, no active deployment) or null;
+shown, never corrected. Sorted by `sort_by`/`sort_dir` (default newest
+application first), then by id, so equal dates page consistently.
+
+### GET /applicant-statuses *(new 2026-10-19)*
+- Needs `applicants.view`.
+- `{ statuses: [{ value, label, stage, closed, past_document_gate, workflow }], stages: [{ key, label, statuses }], deployable: [...] }`
+  in lifecycle order. `deployable` is where a deployment can be recorded from
+  today (only `approved` when Settings require the client's approval).
 
 ### POST /applicants
 ### GET /applicants/{id}
@@ -612,12 +712,39 @@ Rules:
 - Evaluation does not create deployment.
 - HR must explicitly shortlist and confirm.
 
-## Training Management
+## Training Management *(updated 2026-10-19)*
 
 ### GET /trainings
+- Filters: `status` (`scheduled`, `ongoing`, `completed`, `cancelled`),
+  `date_from`, `date_to`; paginated, with enrolled / attended / completed counts.
 ### POST /trainings
+### GET /trainings/candidates
+- Applicants at a stage where training applies, each with any completed or
+  scheduled session. `awaiting_only=1` keeps only those without a completion.
 ### GET /trainings/{id}
+- The session with its roster: attendance and completion, each with who
+  recorded it and when.
+### PATCH /trainings/{id}
+- Details (`training_title`, `training_date`, `location`, `trainer_name`,
+  `remarks`) and `status`. Only what is sent changes; corrections are audited
+  field by field. Refused (409) when:
+  - the status move is not allowed — a cancelled session cannot be reopened, a
+    completed one can go back to `scheduled`/`ongoing` to add a late attendee;
+  - `ongoing` or `completed` is asked for before the session date;
+  - the date would move into the future once attendance or a completion is
+    recorded;
+  - cancelling a session with a completion recorded on it.
+- Response: the session as `GET /trainings/{id}` returns it.
 ### POST /trainings/{id}/enrollments
+- `{ applicant_ids: [...] }`. Each is enrolled or skipped with the reason
+  (already on the roster, not at a stage where training applies). Enrolling
+  moves the applicant to `training_scheduled`.
+
+Each roster event sends the applicant one `training` notification naming the
+session, its date and its location, linked to `/portal/training`: enrolled,
+session date or location changed (to those with nothing recorded yet), session
+cancelled, taken off the roster, completion recorded, completion withdrawn. The
+status moves these cause send no separate status notification.
 ### PATCH /trainings/{id}/enrollments/{enrollmentId}
 
 Enrollment update payload:
@@ -632,6 +759,17 @@ Enrollment update payload:
 
 Rules:
 - Applicant must be in eligible status before enrollment.
+- No attendance or completion before the session date, or for a cancelled
+  session. A completion needs attendance `present` and moves the applicant to
+  `training_completed`. Withdrawing a completion moves them back, unless they
+  have already been endorsed on the strength of it.
+### DELETE /trainings/{id}/enrollments/{enrollmentId}
+- Only while nothing is recorded for that enrolment.
+
+`training_scheduled` and `training_completed` cannot be set through
+`PATCH /applicants/{id}/status`; they follow the roster. `GET /applicants/{id}`
+returns a `training` block — `requirement_met` is the same check the
+endorsement gate makes.
 
 ## Deployment and Employee Conversion
 
@@ -673,9 +811,29 @@ Refused (400) unless **all** of the following hold:
 - the applicant has **not declined the placement**.
 
 ### GET /deployments
+- Filters client_company_id, client_department_id, deployment_status
+  (`active` or `ended`; 422 otherwise), date_from, date_to (deployment date,
+  inclusive). `completed` and `transferred`, listed by the original schema, were
+  never written by anything and are no longer accepted (2026-10-30).
 ### GET /deployments/{id}
-### POST /deployments/{id}/reassign
+### POST /deployments/{id}/reassign *(updated 2026-10-19)*
+- Needs `deployment.reassign`. Within the employee's **current client only**.
+- Request: `client_department_id` (required), `position_title`,
+  `supervisor_name`, `effective_date` (required), `remarks` (the reason,
+  required), optional `change_type` (`reassignment` by default), optional
+  `client_company_id` (must be the current client).
+- Refused: 422 for another client, a department of another client or an
+  inactive one, a date before the placement began or its last move, a future
+  date, or a change that changes nothing; 409 for a placement or employee that
+  is no longer active.
+- Response: the deployment with its `history`, each move in names
+  (`from_department`, `to_department`, positions, `reason`, `changed_by`).
 ### GET /employees
+- Filters search, employment_status (`active`, `resigned`, `terminated`;
+  422 otherwise), client_company_id, client_department_id (the employee's
+  current placement). There is no `archived` employee status (removed
+  2026-10-30; nothing ever set it): archiving a former employee writes a
+  snapshot to Archives and leaves the status as it was.
 ### GET /employees/{id}
 ### PATCH /employees/{id}
 
@@ -703,15 +861,47 @@ Create payload:
 
 Rules:
 - Only active employees can receive new violation records.
+- *(added 2026-10-29)* An optional `attendance_review_id` records the violation
+  from an attendance review. It is refused unless the review is **verified**,
+  belongs to this employee, has no violation yet, and `violation_date` is the
+  reviewed day; it also needs `attendance.review`.
+
+## Attendance (DTR) *(reworked 2026-10-29)*
+
+Schedules, the DTR (typed in or imported), the comparison, leave and holidays,
+and the review of flagged days. Every endpoint, permission and rule is listed in
+`docs/07-project-management/dtr-attendance-rework.md` §6. Key rules:
+
+- A scheduled day with nothing on file is `awaiting_dtr`, never an absence,
+  until an import or HR declares the DTR for it received.
+- Changing or clearing a day already on file requires `reason`; old times are
+  kept as revisions.
+- An import is a draft until previewed and confirmed; a day that differs from
+  the DTR on file is replaced only with `conflict_action: replace` and a reason;
+  the same file cannot be imported twice (409).
+- Review statuses: `for_review`, `under_verification`, `verified`, `corrected`,
+  `closed`; verified, corrected, closed and reopening need a `note`.
 
 ## Separation Management
 
+### GET /separations
 ### POST /employees/{id}/resignations
 ### PUT /employees/{id}/resignations/{resignationId}
+### POST /employees/{id}/resignations/{resignationId}/complete
 ### POST /employees/{id}/terminations
-### PUT /employees/{id}/terminations/{terminationId}
+### POST /employees/{id}/terminations/{terminationId}/finalise
+### POST /employees/{id}/terminations/{terminationId}/withdraw
+### PUT /employees/{id}/terminations/{terminationId}/clearance
 
-Resignation payload:
+`GET /separations` filters: `type`, `status` (a resignation or termination
+status, or `awaiting_clearance` — resignations `filed` or `accepted` and not
+yet cleared, the dashboard figure of that name; 422 otherwise), `open_only`,
+`source`
+(`portal` | `office`, resignations only). Each row carries `source`,
+`requested_exit_date`, `clearance_status`, and for a finalised termination
+`notice: {viewed, acknowledged}`.
+
+Resignation payload (filed at the office):
 
 ```json
 {
@@ -732,7 +922,41 @@ Termination payload:
 }
 ```
 
+Resignation update (`PUT`, `separation.create`):
+
+```json
+{
+  "status": "info_requested",
+  "employee_message": "Please confirm whether you can render the full 30 days.",
+  "exit_date": "2026-11-28",
+  "clearance_status": "in_progress",
+  "remarks": "Internal note, never shown to the employee",
+  "withdrawal_reason": "Required with status withdrawn; internal"
+}
+```
+
 Rules:
+- Resignation statuses: `filed` (under review), `info_requested`, `accepted`,
+  `completed`, `withdrawn`. HR moves `filed → info_requested | accepted |
+  withdrawn`, `info_requested → filed | accepted | withdrawn`, `accepted →
+  filed | withdrawn`. Completion is its own action (`confirm: true`), from
+  `filed` or `accepted`, once clearance is `cleared` and `exit_date` is set.
+- `info_requested` needs `employee_message`; `accepted` needs an `exit_date`;
+  `withdrawn` needs `withdrawal_reason` (internal).
+- A save that changes nothing writes no history and sends no notification.
+- One open resignation per employee, enforced by a row lock and by the unique
+  `open_employee_id` column.
+- `finalise` takes `confirm: true` and an optional `employee_message`, which is
+  the only text from the termination the employee sees. Finalising is the only
+  event that notifies the employee; drafts, reviews and withdrawals do not.
+- Termination clearance (`pending | in_progress | cleared`) is recorded only
+  after finalisation.
+- The employee record (`GET /employees/{id}`) adds to each case: `source`,
+  `requested_exit_date`, `employee_remarks`, `employee_message`,
+  `allowed_statuses`, `history`, and for a finalised termination
+  `notice: {issued_at, has_portal_account, notification
+  (not_sent | not_delivered | unread | read), notification_read_at, viewed_at,
+  acknowledged_at}`.
 - Separation completion updates employee status.
 - Archiving is enabled only after closure checks pass.
 
@@ -749,8 +973,8 @@ Rules:
 - The categories are a partition of `unread_count`, not a second tally — which
   is what stops the bell and the per-section sidebar counts from disagreeing.
   The client polls this once and reads it everywhere.
-- Categories are `application`, `requirements`, `deployment`, `general`, taken
-  from the notification's own payload. A category with nothing unread is absent
+- Categories are `application`, `requirements`, `training`, `deployment`,
+  `coordination`, `general`, taken from the notification's own payload. A category with nothing unread is absent
   rather than zero.
 - Grouped in PHP rather than SQL on purpose: a JSON path expression is spelled
   differently on MySQL, PostgreSQL and SQLite, and one person's unread
@@ -770,6 +994,13 @@ Rules:
 - Muting suppresses the alert only. Documents are still verified and placements
   still recorded; nothing in the recruitment process depends on a notification
   having been delivered.
+- *(updated 2026-10-19)* For a notification addressed to an applicant or
+  employee record, the preferences that apply are those of the portal login
+  linked to that person by either `applicant_id` or `employee_id`
+  (`User::portalAccountFor()`) — the same login whose inbox reads it
+  (`User::notifiableRecords()`). Employee logins linked only to the employee
+  record used to have their muted categories ignored for anything addressed to
+  the applicant record.
 
 ## Applicant and Employee Portal
 
@@ -783,6 +1014,27 @@ change. Portal accounts hold no staff permissions at all.
   documents are outstanding, employment details if any, and recent activity.
 - `placement_decision_due` is true only while a client is considering the
   applicant (`client_evaluation` or `approved`) and they have not yet answered.
+- `application.stages` is the path in lifecycle order (`key`, `label`), the
+  same list `GET /applicants/{id}` gives the staff screen; Training is the
+  fourth stage, between Requirements and Client evaluation.
+- `training` is the block `GET /portal/training` returns. Reading it marks no
+  notification read.
+
+### GET /portal/training
+- The applicant's own training, read from the roster:
+  `{ status, label, explanation, required, sessions: [...] }`.
+- `status`: `completed` (a completion recorded in a session that was not
+  cancelled — the endorsement gate's own check), else `in_progress`,
+  `scheduled` or `missed` from the sessions, else `not_required` (the
+  *Require training before deployment* setting is off), `not_reached` (before
+  the Training stage), `pending` (at or past it, nothing scheduled) or
+  `not_recorded` (deployed with no completion on record).
+- Each session: `title`, `training_code`, `date`, `location`, `trainer_name`,
+  the applicant's `attendance_status` and `completion_status`, `completed_on`,
+  and `state` — `scheduled`, `in_progress` (marked present, session under way
+  or over, or its date passed, with no completion recorded), `completed`,
+  `missed` (marked absent) or `cancelled`. Remarks and officers' names are not
+  included, and no start time exists to include.
 
 ### GET /portal/documents
 - The applicant's own checklist, each row carrying `review_state` and
@@ -838,9 +1090,32 @@ refresh, a new session, and a different device.
   already been given.
 - A declined placement blocks `POST /deployments` until HR clears it.
 
-### GET /portal/employment, POST /portal/resignation
+### GET /portal/employment
 - The employee half of the portal: current placement, deployment history,
-  disciplinary record, and filing a resignation for HR to process.
+  disciplinary record, and `separation`: `eligibility {can_request, reason}`,
+  `notice_days`, the current `resignation` (status label, requested and
+  confirmed last day, HR's message, clearance once accepted, next steps,
+  `can_withdraw`, `can_respond`, timeline), `past_resignations`, and a
+  termination `notice` once one is finalised (effective date, HR's message,
+  clearance, next steps, office contact, viewed/acknowledged). The reason,
+  remarks and documents on a termination are never included.
+- Opening it records the first view of a termination notice.
+
+### POST /portal/resignation
+- Multipart: `requested_exit_date` (today to one year ahead), `reason`,
+  `remarks` (optional), `letter` (optional file), `acknowledged` (must be
+  accepted). The employee, placement and filing date come from the server.
+- 403 without employment; 409 when the employment has ended or a request is
+  already open.
+
+### POST /portal/resignation/withdraw, POST /portal/resignation/respond
+- Withdraw (optional `reason`) while the request is `filed` or
+  `info_requested`; 409 once HR has accepted it. Respond (`message`) only while
+  `info_requested`; it returns the request to review.
+
+### GET /portal/resignation/letter, POST /portal/separation-notice/acknowledge
+- A short-lived link to the employee's own letter; receipt of a finalised
+  termination notice (idempotent, changes no status).
 
 Rules:
 - Applicants can never set a review or lifecycle status. There is no route, and
@@ -852,23 +1127,102 @@ Rules:
 
 ### GET /archives
 Filters:
-- entity_type, archived_at_from, archived_at_to, search.
+- entity_type, date_from, date_to (archived date), search - case-insensitive
+  on every engine, including MariaDB, whose JSON column is binary-collated.
+  Accented names are found however the snapshot stored them: snapshots
+  written before 2026-10-30 hold `ñ` as `\u00f1`, newer ones as the letter.
 
 ### GET /archives/{id}
-### GET /audit-logs
-Filters:
-- actor_user_id, action_type, module_key, date_from, date_to.
+### GET /audit-logs *(updated 2026-10-19)*
+- Administrator only (`audit.view`). Read-only: no endpoint edits or deletes an
+  entry.
+- Filters: `actor_user_id`, `actor_role`, `client_company_id`, `action_type`,
+  `module_key`, `record_type`, `record_id`, `date_from`, `date_to`.
+- Each entry: `actor { id, name }`, `actor_role`, `company_name`,
+  `record { type, id, label }` (for example "APP-2026-0007 · Juan Dela Cruz"),
+  `detail_level` and `changes`. `detail_level` is `changes` when the entry holds
+  a value before and after, `values` when it holds only what was written, and
+  `activity` when it holds no values at all. Each change row is
+  `{ field, label, kind, before, after }` with `kind` `changed`, `recorded` (only
+  the new value is known) or `previous` (only the old one). Credentials are
+  shown as `[redacted]` at any depth.
 
-## Reports
+### GET /audit-logs/facets *(new 2026-10-19)*
+- The action types, modules, record types, roles and acting users that occur in
+  the trail, for the filters.
 
-### GET /reports/dashboard-summary
+### GET /retention-reviews *(new 2026-10-19)*
+- Needs `archives.view` and `applicants.view`. Filter `category`
+  (`unhired_applicant`, `closed_record_documents`), paginated.
+- `{ policy, counts, undated_closed_records, rows }`. Each row names the record,
+  the relevant date and why it is listed, the review due date, any earlier
+  decision whose date has passed, and the `actions` offered (`retain`; `archive`
+  for unhired applicants, through `PATCH /applicants/{id}/status`). Computed from
+  the retention settings; nothing is archived or deleted by listing.
+
+### POST /retention-reviews *(new 2026-10-19)*
+- Needs `archives.create`. `{ category, applicant_id, note, retain_until }` keeps
+  a listed record on file until the date (after today, within ten years).
+  **409** when the record is not due in that category. Audited.
+
+## Dashboard *(updated 2026-10-30)*
+
+### GET /dashboard/summary
+- `links.ready_for_deployment` and `links.incomplete_requirements` are the
+  `GET /applicants` filters each figure was counted with, so the figure and the
+  list it opens are the same people. "Ready" is Folder 1 in
+  `ready_for_deployment`, `client_evaluation` or `approved`; "incomplete
+  requirements" is `initial_screening`, `incomplete_requirements` or
+  `pending_final_requirements` (`ApplicantStatuses`).
+- "Ready for deployment" also leaves out anyone placed today whatever their
+  status says, and its link carries `exclude_deployed=1`.
+- `attention.pending_clearance` counts resignations waiting on HR (`filed` or
+  `accepted`, not yet cleared); `attention.resignations_awaiting_employee`
+  counts those at `info_requested`, waiting on the employee's answer. Their
+  `links` open `GET /separations` on exactly those cases
+  (`status=awaiting_clearance` and `status=info_requested`).
+
+## Searching *(2026-10-30)*
+
+Every `search` (and the global `GET /search?q=`) matches the text as typed:
+`%` and `_` are characters, not wildcards, so `50%` no longer finds "500" and a
+lone `%` no longer returns everything (`App\Support\TextSearch`). Case is
+ignored on every engine.
+
+## Data repair: `php artisan empower:reconcile-placement-status` *(2026-10-30)*
+
+Lists applicants whose status disagrees with the employment record; with
+`--apply --actor=<staff email>` corrects the two shapes the database itself
+proves (placed but not marked → `active`; marked employed with no employee
+record → the status before the move to `deployed`, from the history), each
+with a status-history row, an audit entry and a reason. Everything else is
+listed for a person to decide. A dry run by default.
+
+## Reports *(updated 2026-10-19)*
+
+### GET /reports
+- The catalogue: each report's `filters`, and `options` — the values each choice
+  filter accepts for that report, from the vocabulary that owns them.
+### POST /reports/preview
+- Also returns `letterhead` (`agency`, `address`, from the organisation
+  settings) for the printed preview *(2026-10-29)*.
+- The Applicant Report's `current_status=deployed` reads the employment record,
+  as `GET /applicants` does. Rows are ordered with id as the last key, so the
+  100-row preview is the start of the export *(2026-10-30)*.
 ### POST /reports/export
+- PDF and Excel are laid out like CDE's Manpower Requisition Form *(2026-10-29)*:
+  letterhead (logo, agency, address, title in capitals), "Label: value" lines
+  (Report, Period, Number of Records, Date generated, Prepared by), the summary,
+  the table, and Prepared / Reviewed / Approved by signature lines. In Excel the
+  letterhead fills rows 1–5, the headings are on row 6 (frozen and filtered),
+  and rows 1–6 repeat on every printed page. CSV stays plain data.
+
 Request:
 
 ```json
 {
-  "report_type": "deployment",
-  "export_format": "xlsx",
+  "report_type": "deployments",
+  "format": "xlsx",
   "filters": {
     "client_company_id": 1,
     "date_from": "2026-01-01",
@@ -877,12 +1231,21 @@ Request:
 }
 ```
 
-Response 202:
+- `format` (`pdf`, `xlsx`, `csv`) is required (422 without it). A choice filter
+  with a value outside the report's own `options` is refused (422).
+- The rows are counted first. Below `empower.reports.queue_threshold_rows`
+  (1000) the file is built once and returned directly; at or above it the export
+  is queued and built once, by the job.
+- Text that could run as a spreadsheet formula (`=`, `+`, `-`, `@` and the
+  control characters before them) is written as text: prefixed with `'` in CSV,
+  stored as an explicit string cell in XLSX. Numbers are untouched.
+
+Response 202 (queued):
 
 ```json
 {
   "success": true,
-  "message": "Export queued",
+  "message": "Large report queued for generation",
   "data": {
     "export_id": 87,
     "status": "queued"
@@ -890,8 +1253,118 @@ Response 202:
 }
 ```
 
-### GET /reports/export/{id}
-- Returns queued, processing, completed, failed and file URL when completed.
+### GET /reports/exports/{id}
+- Returns `queued`, `processing`, `completed` or `failed`, and a download URL
+  when completed. A job whose first attempt fails goes back to `queued` for its
+  retry, and to `failed` only after the last attempt.
+### GET /reports/exports/{id}/download
+
+## Coordinator Functions *(new 2026-10-28, CDE meeting 2026-10-26)*
+
+CDE named three coordinator functions: violation report, incident report and
+manpower requisition. Every `/coordinator/*` route scopes to the client in the
+coordinator's active assignment, resolved on the server; no route reads a
+client id from the request. Coordinators hold only `coordination.access`.
+
+### Violation reports (existing)
+- `GET /coordinator/employees?search=&status=active&per_page=20` now backs a
+  type-to-search employee picker on the report form (the old dropdown loaded
+  100 and stopped). The search is word by word over names and employee number
+  *(2026-10-30)*.
+- The three coordinator lists accept a group status besides their own:
+  `pending` (violation reports, requisitions: submitted or under review) and
+  `open` (incident reports). Each `options` endpoint lists it first. The
+  dashboard figures open these lists on exactly what they count, with `mine=1`
+  where the figure is the coordinator's own *(2026-10-30)*.
+
+### Incident reports
+- `GET /coordinator/incident-reports/options` · `GET /coordinator/incident-reports`
+- `POST /coordinator/incident-reports` (multipart; `title`, `incident_date`,
+  `incident_time` HH:MM, `client_department_id`, `location`, `details`,
+  `evidence`, `submit`)
+- `GET|POST /coordinator/incident-reports/{id}` (POST edits a draft)
+- `POST /coordinator/incident-reports/{id}/submit` · `DELETE` (own draft only)
+- `POST /coordinator/incident-reports/{id}/notes` (`note`) — follow-up only;
+  a coordinator cannot change the status.
+- `GET /coordinator/incident-reports/{id}/evidence` — short-lived signed link.
+- Office (`incident_reports.view` / `.review`): `GET /incident-reports`
+  (default `status=open`), `GET /incident-reports/{id}`,
+  `POST /incident-reports/{id}/notes` (`note`, `status`: `under_review` "case
+  pending" | `resolved` "case resolved"; a note is required except to
+  acknowledge a new report), `GET /incident-reports/{id}/evidence`.
+- An incident names no employee and never creates a violation.
+
+### Manpower requisitions (CDE Manpower Requisition Form, from 2026-10-29)
+- `GET /coordinator/requisitions/options` — the form definition: `provisional`
+  (false), `version` (`cde-2026-10`), `title`, the five `reasons` in the form's
+  order, the client's departments and positions.
+- `GET|POST /coordinator/requisitions`, `GET|POST /coordinator/requisitions/{id}`,
+  `POST …/{id}/submit`, `DELETE …/{id}` (own draft), `GET …/{id}/attachment`
+  (temporary-form requisitions only; CDE's form takes no upload).
+- Required: `date_requested` ("Date requested", ≤ today), `required_by` ("Date
+  Needed", ≥ date_requested), `workers_needed` ("Total Manpower Needed", ≥ 1),
+  `position_title` or `job_position_id`, `request_reason` (`new_position` |
+  `replacement` | `additional_manpower` | `reliever_manpower` | `others`).
+  `request_reason_details` is required for `others`, optional for
+  `replacement` (whom it replaces), and cleared for the rest.
+  Optional: `male_count`, `female_count` (sum ≤ `workers_needed`),
+  `qualifications` ("Required Qualification(s)"), `other_remarks`,
+  `client_department_id` (EMPOWER's, not on CDE's form). Any other key,
+  including the temporary form's old fields, is ignored.
+- A draft or returned requisition started on the temporary form is completed on
+  CDE's form: saving it takes the current `form_version`, and `submit` is
+  refused (422 `request_reason`) until a reason is ticked. What the temporary
+  form recorded (`reason`, `gender_requirement`, `employment_type`,
+  `work_location`, `work_schedule`, `compensation_notes`,
+  `additional_instructions`, `client_requester_name`, the attachment) is never
+  changed and is still returned.
+- Responses add `request_reason_label`, `other_remarks`, and `acknowledged_by`
+  (`{name, at}` of whoever approved it, read from the status history; null
+  before approval).
+- HR (`requisitions.view` / `.review`): `GET /requisitions` (default
+  `status=pending`), `GET /requisitions/{id}`,
+  `POST /requisitions/{id}/review` (`action`: `start_review` | `return` |
+  `approve` | `reject` | `fulfil`; `note` required for return and reject),
+  `GET /requisitions/{id}/attachment`.
+- Status: draft → submitted → under_review → approved → fulfilled, with
+  returned (back to the coordinator) and rejected. Submission approves
+  nothing; nobody reviews a requisition they filed (403). Every change writes
+  `manpower_requisition_status_history` and the audit trail.
+- An approved requisition becomes a manpower request through
+  `POST /job-requests` with `manpower_requisition_id`; the two are linked in one
+  transaction, once only (409 otherwise).
+
+## Document Expiry After Deployment *(new 2026-10-28)*
+- `requirement_types.post_deployment_rule`: `pre_deployment_only` |
+  `renew_while_employed` | null (not confirmed by CDE). Editable through
+  `PATCH /settings/requirement-types/{id}`; a change recalculates folders.
+- Requirement rows (staff and portal) carry `expiry_assessment`
+  (`state`, `label`, `needs_action`, `days_left`, `rule`, `rule_label`) and, on
+  the staff screen, `history` (versions a renewal replaced).
+- Dashboard `attention.expired_documents` now counts only applicants not yet
+  deployed (whether or not the daily check has marked the document);
+  `attention.employee_renewals_overdue` counts deployed workers' lapsed
+  renew-while-employed documents.
+- Portal: a deployed worker may send a renewal over an accepted document once
+  its renewal is due; the version replaced is kept.
+
+## Departments *(updated 2026-10-28)*
+- `POST /clients/{id}/departments`: `department_code` is optional; when blank
+  one is derived from the name, unique within the client.
+- `PUT /clients/{id}/departments/{departmentId}`: switching a department to
+  `inactive` while active employees are placed in it returns 409.
+- `GET /clients/{id}/departments/{departmentId}/employees` also returns
+  `moves` — reassignments into and out of the department.
+
+## Sign-in Monitoring *(new 2026-10-28, administrator only)*
+- `GET /security/sessions` — live sessions: account, device, IP, signed in,
+  last active, ends. No token or hash is returned.
+- `GET /security/sign-ins` — successful and failed attempts, sign-outs and
+  ended sessions from the audit trail (`result`, `search`, `date_from`,
+  `date_to`).
+- `DELETE /security/sessions/{id}` — signs that device out (not your own).
+- Permissions `sessions.view` and `sessions.revoke`, held by the administrator
+  only.
 
 ## Validation Matrix (Critical)
 1. Lifecycle transition validation map is mandatory for applicant and employee status updates.

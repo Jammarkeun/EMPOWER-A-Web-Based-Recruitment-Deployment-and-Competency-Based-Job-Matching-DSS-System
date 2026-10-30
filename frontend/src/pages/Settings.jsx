@@ -15,6 +15,8 @@ import {
   Sun,
   Moon,
   Monitor,
+  FolderSync,
+  Pencil,
 } from 'lucide-react'
 import { get, put, post, patch } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
@@ -24,9 +26,11 @@ import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import NotificationPreferences from '@/components/NotificationPreferences'
+import ProfilePhotoUploader from '@/components/ProfilePhotoUploader'
+import ConfirmActionDialog from '@/components/ConfirmActionDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, MobileInput, NameInput, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Field, FormGrid } from '@/components/ui/form'
@@ -39,7 +43,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { cn, humanise } from '@/lib/utils'
+import { cn, formatDateTime, humanise } from '@/lib/utils'
+import { formProblems } from '@/lib/validation'
 
 /**
  * System configuration, organised by what each group governs rather than by
@@ -87,7 +92,7 @@ export default function Settings() {
         <TabsList>
           <TabsTrigger value="account">My account</TabsTrigger>
           {canViewSystem && <TabsTrigger value="documents">Documents</TabsTrigger>}
-          {canViewSystem && <TabsTrigger value="competency">Criteria</TabsTrigger>}
+          {canViewSystem && <TabsTrigger value="competency">Job requirements</TabsTrigger>}
           {canViewSystem && <TabsTrigger value="system">System</TabsTrigger>}
         </TabsList>
 
@@ -143,7 +148,12 @@ function AccountTab() {
 
   async function saveProfile(event) {
     event.preventDefault()
-    setProfileErrors({})
+
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(profile, { mobiles: ['mobile_number'], names: ['first_name', 'last_name'] })
+    setProfileErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSavingProfile(true)
 
     try {
@@ -176,54 +186,63 @@ function AccountTab() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <UserIcon className="h-4 w-4" />
-            Your details
-          </CardTitle>
-          <CardDescription>
-            Your email address and role are set by an administrator.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={saveProfile} className="space-y-4" noValidate>
-            <FormGrid>
-              <Field label="First name" htmlFor="first_name" error={profileErrors.first_name?.[0]}>
-                <Input
-                  value={profile.first_name}
-                  onChange={(e) => setProfile({ ...profile, first_name: e.target.value })}
+      <div className="space-y-4">
+        {/* The portal's control, saving to the staff account instead of an
+            applicant record. */}
+        <ProfilePhotoUploader
+          endpoint="/auth/profile/photo"
+          description="Shown beside your name at the top of every page."
+        />
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <UserIcon className="h-4 w-4" />
+              Your details
+            </CardTitle>
+            <CardDescription>
+              Your email address and role are set by an administrator.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={saveProfile} className="space-y-4" noValidate>
+              <FormGrid>
+                <Field label="First name" htmlFor="first_name" error={profileErrors.first_name?.[0]}>
+                  <NameInput
+                    value={profile.first_name}
+                    onChange={(e) => setProfile({ ...profile, first_name: e.target.value })}
+                  />
+                </Field>
+                <Field label="Last name" htmlFor="last_name" error={profileErrors.last_name?.[0]}>
+                  <NameInput
+                    value={profile.last_name}
+                    onChange={(e) => setProfile({ ...profile, last_name: e.target.value })}
+                  />
+                </Field>
+              </FormGrid>
+
+              <Field label="Mobile number" htmlFor="mobile_number" error={profileErrors.mobile_number?.[0]}>
+                <MobileInput
+                  value={profile.mobile_number}
+                  onChange={(e) => setProfile({ ...profile, mobile_number: e.target.value })}
                 />
               </Field>
-              <Field label="Last name" htmlFor="last_name" error={profileErrors.last_name?.[0]}>
-                <Input
-                  value={profile.last_name}
-                  onChange={(e) => setProfile({ ...profile, last_name: e.target.value })}
-                />
-              </Field>
-            </FormGrid>
 
-            <Field label="Mobile number" htmlFor="mobile_number" error={profileErrors.mobile_number?.[0]}>
-              <Input
-                value={profile.mobile_number}
-                onChange={(e) => setProfile({ ...profile, mobile_number: e.target.value })}
-              />
-            </Field>
+              <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                <p className="text-xs text-muted-foreground">Email address</p>
+                <p className="font-medium">{user?.email}</p>
+                <p className="mt-2 text-xs text-muted-foreground">Role</p>
+                <p className="font-medium capitalize">{user?.roles?.join(', ')}</p>
+              </div>
 
-            <div className="rounded-md border bg-muted/40 p-3 text-sm">
-              <p className="text-xs text-muted-foreground">Email address</p>
-              <p className="font-medium">{user?.email}</p>
-              <p className="mt-2 text-xs text-muted-foreground">Role</p>
-              <p className="font-medium capitalize">{user?.roles?.join(', ')}</p>
-            </div>
-
-            <Button type="submit" disabled={savingProfile}>
-              {savingProfile ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save details
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+              <Button type="submit" disabled={savingProfile}>
+                {savingProfile ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Save details
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
 
       <div className="space-y-4">
         <Card>
@@ -329,14 +348,26 @@ function AccountTab() {
 
 /* ---------------------------------------------------------------- documents */
 
+/*
+ * Whether a document's expiry still matters once the worker is deployed.
+ * CDE, 26 October 2026: an NBI clearance only upon employment; the annual
+ * medical and the health card are renewed while employed. Left blank, a
+ * deployed worker's lapse is shown as unconfirmed and never flagged.
+ */
+const POST_DEPLOYMENT_RULES = [
+  { value: '', label: 'Not yet confirmed by CDE' },
+  { value: 'pre_deployment_only', label: 'Valid until deployment only' },
+  { value: 'renew_while_employed', label: 'Renewed while employed' },
+]
+
 function DocumentsTab({ data, canEdit, onChanged }) {
   const [dialogOpen, setDialogOpen] = React.useState(false)
   const toast = useToast()
 
   async function toggle(type, field, value) {
     try {
-      await patch(`/settings/requirement-types/${type.id}`, { [field]: value })
-      toast.success('Requirement updated')
+      const response = await patch(`/settings/requirement-types/${type.id}`, { [field]: value })
+      reportRecalculation(toast, response)
       onChanged()
     } catch (error) {
       toast.error('Could not update requirement', error.message)
@@ -357,6 +388,8 @@ function DocumentsTab({ data, canEdit, onChanged }) {
         title="Document handling"
         description="Applies to every uploaded requirement and evidence file."
       />
+
+      <FolderRecalculationPanel run={data.folder_recalculation} canEdit={canEdit} onChanged={onChanged} />
 
       <Card>
         <CardHeader className="flex-row items-start justify-between space-y-0">
@@ -386,6 +419,7 @@ function DocumentsTab({ data, canEdit, onChanged }) {
                     <TableHead>Document</TableHead>
                     <TableHead className="w-28">Required</TableHead>
                     <TableHead className="w-28">Expires</TableHead>
+                    <TableHead className="w-56">After deployment</TableHead>
                     <TableHead className="w-28">Active</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -415,6 +449,24 @@ function DocumentsTab({ data, canEdit, onChanged }) {
                         />
                       </TableCell>
                       <TableCell>
+                        {type.has_expiry ? (
+                          <Select
+                            aria-label={`${type.requirement_name} after deployment`}
+                            value={type.post_deployment_rule ?? ''}
+                            disabled={!canEdit}
+                            onChange={(e) => toggle(type, 'post_deployment_rule', e.target.value || null)}
+                          >
+                            {POST_DEPLOYMENT_RULES.map((rule) => (
+                              <option key={rule.value} value={rule.value}>
+                                {rule.label}
+                              </option>
+                            ))}
+                          </Select>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Does not expire</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
                         <Toggle
                           checked={type.active_flag}
                           disabled={!canEdit}
@@ -436,19 +488,167 @@ function DocumentsTab({ data, canEdit, onChanged }) {
   )
 }
 
-/* --------------------------------------------------------------- competency */
+/**
+ * Says what the folder recalculation after a requirement change did (R-17).
+ * A run that did not finish is a warning, never a quiet success.
+ */
+function reportRecalculation(toast, response) {
+  const run = response.data?.folder_recalculation
 
-function CompetencyTab({ data, canEdit, onChanged }) {
-  const [dialogOpen, setDialogOpen] = React.useState(false)
+  if (run && run.state !== 'completed') {
+    toast.warning('Saved, but folders were not all recalculated', response.message)
+  } else {
+    toast.success(response.message ?? 'Requirement updated')
+  }
+}
+
+/**
+ * The last folder recalculation (R-17). Changing which documents are required
+ * recalculates every applicant's folder; this says whether that finished, and
+ * lets an administrator run it again after a failure or interruption.
+ * Folders only - no applicant's stage in the pipeline is changed by it.
+ */
+function FolderRecalculationPanel({ run, canEdit, onChanged }) {
   const toast = useToast()
+  const [running, setRunning] = React.useState(false)
 
-  async function toggleActive(criterion, value) {
+  async function recalculate() {
+    setRunning(true)
     try {
-      const response = await patch(`/settings/criteria/${criterion.id}`, { is_active: value })
-      toast.success(response.message)
+      const response = await post('/settings/folder-recalculations')
+      const result = response.data?.folder_recalculation
+      if (result?.state === 'completed') toast.success('Folders recalculated', response.message)
+      else toast.warning('Recalculation did not finish', response.message)
       onChanged()
     } catch (error) {
-      toast.error('Could not update criterion', error.message)
+      toast.error('Could not recalculate folders', error.message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const tone = { completed: 'success', failed: 'destructive', interrupted: 'warning', running: 'info' }[run?.state] ?? 'muted'
+  const triggers = {
+    requirement_change: 'after a requirement change',
+    document_expiry: 'by the daily expiry check',
+    manual: 'on request',
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-start justify-between space-y-0">
+        <div className="space-y-1">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <FolderSync className="h-4 w-4 text-muted-foreground" />
+            Folder recalculation
+          </CardTitle>
+          <CardDescription>
+            Applicant folders follow the requirements above. They are recalculated after every change here and after
+            documents expire. Only folders change; no applicant's stage does.
+          </CardDescription>
+        </div>
+        {canEdit && (
+          <Button size="sm" variant={run?.needs_retry ? 'default' : 'outline'} onClick={recalculate} disabled={running}>
+            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderSync className="h-4 w-4" />}
+            {run?.needs_retry ? 'Finish recalculation' : 'Recalculate folders'}
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {run ? (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={tone}>{humanise(run.state)}</Badge>
+              <span className="text-muted-foreground">
+                Last run {triggers[run.trigger] ?? humanise(run.trigger)}
+                {run.requested_by && ` by ${run.requested_by}`}
+                {run.started_at && ` · ${formatDateTime(run.started_at)}`}
+              </span>
+            </div>
+            <p className="text-muted-foreground">
+              {run.applicants_checked} applicant(s) checked, {run.applicants_changed} folder(s) changed.
+            </p>
+            {run.error && <p className="text-status-danger-text">{run.error}</p>}
+            {run.state === 'interrupted' && (
+              <p className="text-status-warning-text">
+                This run stopped without finishing. Run it again so every folder matches the current requirements.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-muted-foreground">No recalculation has run yet.</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/* --------------------------------------------------------------- competency */
+
+/*
+ * What each catalogue setting does in the matching engine, in words an
+ * administrator can choose between. The type only matters in two places: a
+ * hard filter is always Must Have, and it decides whether a typed list needs
+ * every item (graded) or any one of them.
+ */
+const SCORING_OPTIONS = [
+  {
+    value: 'weighted_scale',
+    label: 'Scored',
+    hint: 'Adds points to the match score. For a list, applicants need every item and earn part of the points for some.',
+  },
+  {
+    value: 'weighted_binary',
+    label: 'Scored, any one item is enough',
+    hint: 'Adds points to the match score. For a list, holding any one item earns full points.',
+  },
+  {
+    value: 'hard_filter',
+    label: 'Always Must Have',
+    hint: 'Pass or fail on every client and request. Applicants who do not meet it are not eligible. It adds no points.',
+  },
+]
+
+const VALUE_OPTIONS = [
+  { value: 'number', label: 'Number', hint: 'Compared with a range HR sets, such as 18 to 35 years.' },
+  { value: 'text', label: 'List of items', hint: 'HR types the items the client needs, such as skills.' },
+  { value: 'enum', label: 'Rating (number scale)', hint: 'A number on a scale, such as an interview rating, compared with a range.' },
+  { value: 'boolean', label: 'Yes or no', hint: "Met when the applicant's record says yes." },
+]
+
+const scoringLabel = (type) => SCORING_OPTIONS.find((o) => o.value === type)?.label ?? humanise(type)
+
+function usageText(criterion) {
+  const requests = criterion.request_criteria_count ?? 0
+  const clients = criterion.company_criteria_count ?? 0
+  if (!requests && !clients) return 'Not used yet'
+
+  return [
+    requests ? `${requests} request${requests === 1 ? '' : 's'}` : null,
+    clients ? `${clients} client${clients === 1 ? '' : 's'}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+export function CompetencyTab({ data, canEdit, onChanged }) {
+  // null: closed. {}: adding. A criterion: editing it.
+  const [editing, setEditing] = React.useState(null)
+  const [turningOff, setTurningOff] = React.useState(null)
+  const [busyId, setBusyId] = React.useState(null)
+  const toast = useToast()
+
+  async function setActive(criterion, value) {
+    setBusyId(criterion.id)
+    try {
+      const response = await patch(`/settings/criteria/${criterion.id}`, { is_active: value })
+      toast.success(value ? 'Requirement turned on' : 'Requirement turned off', response.message)
+      setTurningOff(null)
+      onChanged()
+    } catch (error) {
+      toast.error(value ? 'Could not turn the requirement on' : 'Could not turn the requirement off', error.message)
+    } finally {
+      setBusyId(null)
     }
   }
 
@@ -459,8 +659,8 @@ function CompetencyTab({ data, canEdit, onChanged }) {
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <p className="text-sm text-muted-foreground">
             These bands decide how a score is described to HR. They change the wording on a
-            recommendation, never who is eligible &mdash; a mandatory requirement still disqualifies
-            a candidate regardless of their score.
+            recommendation, never who is eligible &mdash; a Must Have requirement still makes a
+            candidate not eligible regardless of their score.
           </p>
         </CardContent>
       </Card>
@@ -474,18 +674,19 @@ function CompetencyTab({ data, canEdit, onChanged }) {
       />
 
       <Card>
-        <CardHeader className="flex-row items-start justify-between space-y-0">
-          <div className="space-y-1">
-            <CardTitle className="text-base">Criteria</CardTitle>
+        <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+          <div className="min-w-0 flex-1 space-y-1">
+            <CardTitle className="text-base">Job requirements</CardTitle>
             <CardDescription>
-              The factors HR can attach to a manpower request. Weights are set per request, not
-              here.
+              The requirements HR can choose from when setting up a client or a manpower request.
+              Importance and values are set there, not here. Turning one off hides it from new
+              setups; requests that already use it keep it.
             </CardDescription>
           </div>
           {canEdit && (
-            <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
+            <Button size="sm" variant="outline" onClick={() => setEditing({})}>
               <Plus className="h-4 w-4" />
-              Add
+              Add job requirement
             </Button>
           )}
         </CardHeader>
@@ -493,26 +694,26 @@ function CompetencyTab({ data, canEdit, onChanged }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Criterion</TableHead>
-                <TableHead>How it is measured</TableHead>
-                <TableHead className="w-32">Direction</TableHead>
-                <TableHead className="w-24">Active</TableHead>
+                <TableHead>Requirement</TableHead>
+                <TableHead>What it measures</TableHead>
+                <TableHead className="w-32">Better when</TableHead>
+                <TableHead className="w-24">Offered</TableHead>
+                {canEdit && <TableHead className="w-16"><span className="sr-only">Actions</span></TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {(data.criteria ?? []).map((criterion) => (
-                <TableRow key={criterion.id} className={criterion.is_active ? '' : 'opacity-50'}>
+                <TableRow key={criterion.id} className={criterion.is_active ? '' : 'opacity-60'}>
                   <TableCell>
                     <p className="font-medium">{criterion.criteria_name}</p>
-                    <p className="font-mono text-xs text-muted-foreground">
-                      {criterion.criteria_code}
-                    </p>
+                    <p className="font-mono text-xs text-muted-foreground">{criterion.criteria_code}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Used on: {usageText(criterion)}</p>
                   </TableCell>
                   <TableCell className="max-w-sm text-sm text-muted-foreground">
                     {criterion.description}
                     <div className="mt-1">
                       <Badge tone={criterion.criteria_type === 'hard_filter' ? 'warning' : 'muted'}>
-                        {humanise(criterion.criteria_type)}
+                        {scoringLabel(criterion.criteria_type)}
                       </Badge>
                     </div>
                   </TableCell>
@@ -522,11 +723,24 @@ function CompetencyTab({ data, canEdit, onChanged }) {
                   <TableCell>
                     <Toggle
                       checked={criterion.is_active}
-                      disabled={!canEdit}
-                      onChange={(v) => toggleActive(criterion, v)}
-                      label={`${criterion.criteria_name} active`}
+                      disabled={!canEdit || busyId === criterion.id}
+                      onChange={(value) => (value ? setActive(criterion, true) : setTurningOff(criterion))}
+                      label={`Offer ${criterion.criteria_name}`}
                     />
                   </TableCell>
+                  {canEdit && (
+                    <TableCell>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => setEditing(criterion)}
+                        aria-label={`Edit ${criterion.criteria_name}`}
+                        title="Edit job requirement"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -534,7 +748,30 @@ function CompetencyTab({ data, canEdit, onChanged }) {
         </CardContent>
       </Card>
 
-      <NewCriterionDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreated={onChanged} />
+      <CriterionDialog
+        open={editing !== null}
+        criterion={editing?.id ? editing : null}
+        onOpenChange={(next) => !next && setEditing(null)}
+        onSaved={onChanged}
+      />
+
+      {/* Switching off is reversible and deletes nothing, but it changes what
+          HR can choose, so it says what will happen first. */}
+      <ConfirmActionDialog
+        open={turningOff !== null}
+        onOpenChange={(next) => !next && setTurningOff(null)}
+        tone="warning"
+        title={`Turn off ${turningOff?.criteria_name ?? 'this requirement'}?`}
+        description="It can be turned back on at any time. Nothing is deleted."
+        consequences={[
+          'HR can no longer add it to a client or a new manpower request.',
+          turningOff?.request_criteria_count
+            ? `It stays on the ${turningOff.request_criteria_count} request(s) that already use it, and still counts there, so their rankings can still be explained.`
+            : 'No request uses it yet.',
+        ]}
+        confirmLabel="Turn off"
+        onConfirm={() => setActive(turningOff, false)}
+      />
     </div>
   )
 }
@@ -680,9 +917,8 @@ function SettingsGroup({ group, canEdit, onSaved, title, description, icon: Icon
                 />
               ) : (
                 <>
-                  <Input
-                    type={setting.type === 'string' ? 'text' : 'number'}
-                    step={setting.type === 'decimal' ? '0.05' : '1'}
+                  <SettingInput
+                    type={setting.type}
                     value={values[setting.key] ?? ''}
                     disabled={!canEdit}
                     onChange={(e) => setValues({ ...values, [setting.key]: e.target.value })}
@@ -758,8 +994,12 @@ function NewRequirementDialog({ open, onOpenChange, onCreated }) {
     setSaving(true)
 
     try {
-      await post('/settings/requirement-types', form)
-      toast.success('Requirement added', 'It now appears on every applicant checklist.')
+      const response = await post('/settings/requirement-types', form)
+      if (response.data?.folder_recalculation) {
+        reportRecalculation(toast, response)
+      } else {
+        toast.success('Requirement added', 'It now appears on every applicant checklist.')
+      }
       onOpenChange(false)
       onCreated()
     } catch (error) {
@@ -863,44 +1103,97 @@ function NewRequirementDialog({ open, onOpenChange, onCreated }) {
   )
 }
 
-function NewCriterionDialog({ open, onOpenChange, onCreated }) {
+/** Checks what the server will check, so a missing field is named before saving. */
+export function criterionProblems(form, editing) {
+  const problems = {}
+  if (!form.criteria_name.trim()) problems.criteria_name = ['Enter a name.']
+  if (!editing && !form.criteria_code.trim()) problems.criteria_code = ['Enter a code.']
+  if (!form.description.trim()) problems.description = ['Describe what it measures.']
+  return problems
+}
+
+/**
+ * Adds a job requirement to the catalogue, or edits one in place.
+ *
+ * The code and value type are fixed once created: the code names the
+ * applicant field the requirement reads, and values already saved against it
+ * were entered in its value type. Editing shows them but does not send them.
+ */
+function CriterionDialog({ open, onOpenChange, criterion, onSaved }) {
+  const editing = Boolean(criterion)
   const [form, setForm] = React.useState(emptyCriterion())
   const [errors, setErrors] = React.useState({})
   const [saving, setSaving] = React.useState(false)
   const toast = useToast()
 
+  // Every opening starts from what is saved, so a cancelled edit leaves
+  // nothing behind.
   React.useEffect(() => {
-    if (open) {
-      setForm(emptyCriterion())
-      setErrors({})
-    }
-  }, [open])
+    if (!open) return
+    setForm(
+      criterion
+        ? {
+            criteria_code: criterion.criteria_code,
+            criteria_name: criterion.criteria_name ?? '',
+            criteria_type: criterion.criteria_type,
+            value_type: criterion.value_type,
+            score_direction: criterion.score_direction,
+            description: criterion.description ?? '',
+          }
+        : emptyCriterion()
+    )
+    setErrors({})
+  }, [open, criterion])
+
+  const editable = ['criteria_name', 'criteria_type', 'score_direction', 'description']
+  const changed = editing ? editable.filter((key) => form[key] !== (criterion[key] ?? '')) : editable
+  const inUse = (criterion?.request_criteria_count ?? 0) + (criterion?.company_criteria_count ?? 0)
+  const scoringChanged = editing && (changed.includes('criteria_type') || changed.includes('score_direction'))
 
   async function submit(event) {
     event.preventDefault()
-    setErrors({})
-    setSaving(true)
 
+    const problems = criterionProblems(form, editing)
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
+    setSaving(true)
     try {
-      await post('/settings/criteria', form)
-      toast.success('Criterion added', 'HR can now attach it to a manpower request.')
+      if (editing) {
+        await patch(
+          `/settings/criteria/${criterion.id}`,
+          Object.fromEntries(changed.map((key) => [key, form[key]]))
+        )
+        toast.success('Job requirement updated')
+      } else {
+        await post('/settings/criteria', form)
+        toast.success('Job requirement added', 'HR can now choose it for clients and requests.')
+      }
       onOpenChange(false)
-      onCreated()
+      onSaved()
     } catch (error) {
-      if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not add criterion', error.message)
+      if (error.isValidation && Object.keys(error.errors ?? {}).length) {
+        setErrors(error.errors)
+        toast.error('Some entries need fixing', 'Check the highlighted fields.')
+      } else {
+        toast.error('Could not save the job requirement', error.message)
+      }
     } finally {
       setSaving(false)
     }
   }
 
+  const scoring = SCORING_OPTIONS.find((o) => o.value === form.criteria_type)
+  const valueOption = VALUE_OPTIONS.find((o) => o.value === form.value_type)
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add a criterion</DialogTitle>
+          <DialogTitle>{editing ? 'Edit job requirement' : 'Add job requirement'}</DialogTitle>
           <DialogDescription>
-            A factor HR can weigh when ranking applicants. The weight is chosen per request.
+            A requirement HR can choose when setting up a client or a manpower request. How
+            important it is, and the values to meet, are set there.
           </DialogDescription>
         </DialogHeader>
 
@@ -910,7 +1203,8 @@ function NewCriterionDialog({ open, onOpenChange, onCreated }) {
               <Input
                 value={form.criteria_name}
                 onChange={(e) => setForm({ ...form, criteria_name: e.target.value })}
-                placeholder="e.g. Physical Fitness"
+                placeholder="e.g. Typing Speed"
+                maxLength={120}
                 autoFocus
               />
             </Field>
@@ -918,19 +1212,22 @@ function NewCriterionDialog({ open, onOpenChange, onCreated }) {
             <Field
               label="Code"
               htmlFor="criteria_code"
-              required
+              required={!editing}
               error={errors.criteria_code?.[0]}
-              hint="Lowercase letters and underscores"
+              hint={
+                editing
+                  ? 'Cannot be changed after the requirement is added.'
+                  : 'The applicant field it reads. Lowercase letters and underscores only.'
+              }
             >
               <Input
                 value={form.criteria_code}
+                disabled={editing}
                 onChange={(e) =>
-                  setForm({
-                    ...form,
-                    criteria_code: e.target.value.toLowerCase().replace(/[^a-z_]/g, '_'),
-                  })
+                  setForm({ ...form, criteria_code: e.target.value.toLowerCase().replace(/[^a-z_]/g, '_') })
                 }
-                placeholder="physical_fitness"
+                placeholder="typing_speed"
+                maxLength={60}
               />
             </Field>
           </FormGrid>
@@ -939,59 +1236,83 @@ function NewCriterionDialog({ open, onOpenChange, onCreated }) {
             <Input
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
-              placeholder="Shown to HR when configuring a request"
+              placeholder="Shown to HR when they choose it"
+              maxLength={255}
             />
           </Field>
 
           <FormGrid>
-            <Field label="How it scores" htmlFor="criteria_type" required>
-              <Select
-                value={form.criteria_type}
-                onChange={(e) => setForm({ ...form, criteria_type: e.target.value })}
-              >
-                <option value="weighted_scale">Graded on a range</option>
-                <option value="weighted_binary">All or nothing</option>
-                <option value="hard_filter">Eligibility gate</option>
+            <Field label="How it counts" htmlFor="criteria_type" required hint={scoring?.hint} error={errors.criteria_type?.[0]}>
+              <Select value={form.criteria_type} onChange={(e) => setForm({ ...form, criteria_type: e.target.value })}>
+                {SCORING_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </Select>
             </Field>
 
-            <Field label="Direction" htmlFor="score_direction" required>
-              <Select
-                value={form.score_direction}
-                onChange={(e) => setForm({ ...form, score_direction: e.target.value })}
-              >
+            <Field
+              label="Better when"
+              htmlFor="score_direction"
+              required
+              hint="Which end of a number range earns full points. Distance, for example, is lower is better."
+              error={errors.score_direction?.[0]}
+            >
+              <Select value={form.score_direction} onChange={(e) => setForm({ ...form, score_direction: e.target.value })}>
                 <option value="higher_better">Higher is better</option>
                 <option value="lower_better">Lower is better</option>
               </Select>
             </Field>
           </FormGrid>
 
-          <Field label="Value type" htmlFor="value_type" required>
+          <Field
+            label="Value type"
+            htmlFor="value_type"
+            required={!editing}
+            hint={editing ? `${valueOption?.hint ?? ''} Cannot be changed after the requirement is added.` : valueOption?.hint}
+            error={errors.value_type?.[0]}
+          >
             <Select
               value={form.value_type}
+              disabled={editing}
               onChange={(e) => setForm({ ...form, value_type: e.target.value })}
             >
-              <option value="number">Number</option>
-              <option value="text">Text</option>
-              <option value="enum">Fixed choices</option>
-              <option value="boolean">Yes or no</option>
+              {VALUE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </Select>
           </Field>
 
-          <div className="rounded-md border border-warning/40 bg-warning/5 p-3">
-            <p className="text-xs text-muted-foreground">
-              A new criterion needs a matching value on the applicant record to score against. If
-              nothing is recorded there, it will score zero for everyone.
-            </p>
-          </div>
+          {scoringChanged && inUse > 0 && (
+            <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              <p className="text-xs text-muted-foreground">
+                In use on {usageText(criterion)}. The change applies to each of those requests the next
+                time it is evaluated.
+              </p>
+            </div>
+          )}
+
+          {!editing && (
+            <div className="rounded-md border border-warning/40 bg-warning/5 p-3">
+              <p className="text-xs text-muted-foreground">
+                Matching reads this requirement from the applicant field named by the code. If no
+                such field is recorded, nobody can meet it &mdash; and as Always Must Have, every
+                applicant would be not eligible.
+              </p>
+            </div>
+          )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || (editing && changed.length === 0)}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              Add criterion
+              {editing ? 'Save changes' : 'Add job requirement'}
             </Button>
           </DialogFooter>
         </form>
@@ -1000,10 +1321,21 @@ function NewCriterionDialog({ open, onOpenChange, onCreated }) {
   )
 }
 
+/**
+ * A setting's input: text for text, otherwise a number box that takes only
+ * the kind of number the setting holds. None of them can be negative.
+ */
+function SettingInput({ type, ...props }) {
+  if (type === 'string') return <Input type="text" {...props} />
+
+  return <NumberInput min="0" step={type === 'decimal' ? '0.05' : '1'} {...props} />
+}
+
 /** Inputs return strings; the API expects the declared type. */
 function coerce(value, type) {
-  if (type === 'integer') return parseInt(value, 10)
-  if (type === 'decimal') return parseFloat(value)
+  // Number(), not parseInt: "1.5" stays 1.5 and "12abc" stays invalid, so
+  // the server refuses them instead of quietly saving 1 or 12.
+  if (type === 'integer' || type === 'decimal') return value === '' || value === null ? null : Number(value)
   if (type === 'boolean') return !!value
   return value
 }

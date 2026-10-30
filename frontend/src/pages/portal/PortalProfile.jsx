@@ -5,10 +5,14 @@ import { patch } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, MobileInput } from '@/components/ui/input'
+import { formProblems } from '@/lib/validation'
 import { Field } from '@/components/ui/form'
 import { LoadingState, ErrorState } from '@/components/ui/states'
 import { formatDate } from '@/lib/utils'
+import ProfilePhotoUploader from '@/components/ProfilePhotoUploader'
+import PersonAvatar from '@/components/PersonAvatar'
+import { useAuth } from '@/contexts/AuthContext'
 
 /**
  * The applicant's own record.
@@ -36,11 +40,13 @@ export default function PortalProfile() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Profile</h1>
+        <h1 className="text-[26px] font-normal leading-tight tracking-[-0.01em] sm:text-[32px]">Profile</h1>
         <p className="text-sm text-muted-foreground">
           Your details as they appear on your application.
         </p>
       </div>
+
+      <ProfilePhotoUploader />
 
       <IdentityCard identity={data.identity} reason={data.locked_fields_reason} />
 
@@ -60,6 +66,8 @@ export default function PortalProfile() {
 }
 
 function IdentityCard({ identity, reason }) {
+  // The same picture as the header and the card above, from the signed-in account.
+  const { user, renewPhoto } = useAuth()
   const rows = [
     ['Full name', identity.full_name],
     ['Reference number', identity.applicant_code],
@@ -81,12 +89,7 @@ function IdentityCard({ identity, reason }) {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-start gap-3">
-          <span
-            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary text-base font-semibold text-primary-foreground"
-            aria-hidden="true"
-          >
-            {identity.initials}
-          </span>
+          <PersonAvatar src={user?.photo_url} name={identity.full_name} size="md" className="h-12 w-12" onError={renewPhoto} />
           <div className="min-w-0">
             <CardTitle className="text-base">{identity.full_name}</CardTitle>
             <CardDescription>
@@ -148,8 +151,12 @@ function ContactForm({ values, onSaved, toast }) {
 
     if (saving) return
 
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { mobiles: ['contact_number'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSaving(true)
-    setErrors({})
 
     const payload = {
       contact_number: form.contact_number || null,
@@ -191,13 +198,10 @@ function ContactForm({ values, onSaved, toast }) {
               error={errors.contact_number?.[0]}
               hint="The number we will call about a placement."
             >
-              <Input
+              <MobileInput
                 id="contact_number"
-                type="tel"
                 value={form.contact_number}
                 onChange={(e) => set('contact_number', e.target.value)}
-                autoComplete="tel"
-                placeholder="09XX XXX XXXX"
               />
             </Field>
 

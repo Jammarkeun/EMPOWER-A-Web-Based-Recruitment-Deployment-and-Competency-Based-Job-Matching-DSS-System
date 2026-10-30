@@ -5,15 +5,21 @@ namespace App\Http\Controllers;
 use App\Http\Resources\EmployeeResource;
 use App\Http\Resources\ViolationResource;
 use App\Http\Responses\ApiResponse;
+use App\Models\AttendanceReview;
+use App\Models\Deployment;
 use App\Models\Employee;
 use App\Models\EmployeeViolation;
 use App\Models\Resignation;
 use App\Models\Termination;
+use App\Services\AttendanceReviewService;
 use App\Services\AuditService;
 use App\Services\DocumentStorageService;
+use App\Services\DocumentUploadPolicy;
+use App\Services\SeparationPresenter;
 use App\Services\ViolationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class EmployeeController extends Controller
@@ -22,6 +28,8 @@ class EmployeeController extends Controller
         private readonly AuditService $audit,
         private readonly DocumentStorageService $storage,
         private readonly ViolationService $violations,
+        private readonly AttendanceReviewService $attendanceReviews,
+        private readonly SeparationPresenter $separations,
     ) {
     }
 
@@ -31,7 +39,7 @@ class EmployeeController extends Controller
 
         $filters = $request->validate([
             'search' => ['nullable', 'string', 'max:120'],
-            'employment_status' => ['nullable', 'string'],
+            'employment_status' => ['nullable', Rule::in(array_keys(config('empower.employee_transitions', [])))],
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['nullable', 'integer', 'exists:client_departments,id'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
@@ -41,9 +49,8 @@ class EmployeeController extends Controller
             ->with(['applicant', 'currentCompany', 'currentDepartment'])
             ->withCount('violations')
             ->when($filters['search'] ?? null, function ($q, $v) {
-                $operator = $q->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-                $q->where(function ($sub) use ($v, $operator) {
-                    $sub->where('employee_number', $operator, "%{$v}%")
+                $q->where(function ($sub) use ($v) {
+                    $sub->whereContains('employee_number', $v)
                         ->orWhereHas('applicant', fn ($a) => $a->search($v));
                 });
             })
@@ -51,6 +58,7 @@ class EmployeeController extends Controller
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('current_client_company_id', $v))
             ->when($filters['client_department_id'] ?? null, fn ($q, $v) => $q->where('current_department_id', $v))
             ->orderByDesc('hire_date')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(EmployeeResource::collection($employees), 'Employees retrieved');
@@ -72,15 +80,19 @@ class EmployeeController extends Controller
             'currentDepartment',
             'deployments.company',
             'deployments.department',
-            'deployments.history',
+            ...array_map(fn (string $relation) => "deployments.{$relation}", Deployment::HISTORY_RELATIONS),
             'violations.issuer',
             'violations.reporter',
             'violations.report',
             'statusHistory.changedBy',
             'resignation.processor',
+            'resignation.filer',
+            'resignation.withdrawer',
+            'resignation.events.actor',
             'termination.creator',
             'termination.approver',
             'termination.withdrawer',
+            'termination.events.actor',
         ]);
 
         return ApiResponse::success([
@@ -116,6 +128,25 @@ class EmployeeController extends Controller
             'has_letter' => filled($resignation->resignation_letter_path),
             'is_open' => $resignation->isOpen(),
             'can_be_completed' => $resignation->canBeCompleted(),
+
+            // The employee's side: sent from the portal or filed at the
+            // office, the last day they asked for, and their own note.
+            'source' => $resignation->source,
+            'filed_by' => $resignation->filer?->full_name,
+            'requested_exit_date' => $resignation->requested_exit_date?->toDateString(),
+            'employee_remarks' => $resignation->employee_remarks,
+            // How much notice the request gives, against CDE's stated period.
+            'notice_given_days' => $resignation->requested_exit_date && $resignation->filing_date
+                ? (int) $resignation->filing_date->diffInDays($resignation->requested_exit_date)
+                : null,
+            'notice_days' => (int) config('empower.separation.notice_days'),
+            // What the employee is told, apart from the internal remarks.
+            'employee_message' => $resignation->employee_message,
+            'withdrawn_by' => $resignation->withdrawer?->full_name,
+            'withdrawn_at' => $resignation->withdrawn_at?->toIso8601String(),
+            'withdrawal_reason' => $resignation->withdrawal_reason,
+            'allowed_statuses' => Resignation::STAFF_TRANSITIONS[$resignation->status] ?? [],
+            'history' => $this->separations->staffHistory($resignation->events),
         ];
     }
 
@@ -140,6 +171,11 @@ class EmployeeController extends Controller
             'withdrawal_reason' => $termination->withdrawal_reason,
             'has_documents' => filled($termination->documents_path),
             'is_open' => $termination->isOpen(),
+            'employee_message' => $termination->employee_message,
+            'clearance_status' => $termination->clearance_status,
+            // Created, read, opened, acknowledged: four separate facts.
+            'notice' => $this->separations->staffNoticeStatus($termination),
+            'history' => $this->separations->staffHistory($termination->events),
         ];
     }
 
@@ -151,7 +187,7 @@ class EmployeeController extends Controller
             'biometric_number' => ['nullable', 'string', 'max:60'],
             'current_position_title' => ['nullable', 'string', 'max:150'],
             'current_supervisor_name' => ['nullable', 'string', 'max:190'],
-            'profile_notes' => ['nullable', 'string'],
+            'profile_notes' => ['nullable', 'string', 'max:5000'],
         ]);
 
         $before = $employee->only(array_keys($data));
@@ -174,7 +210,7 @@ class EmployeeController extends Controller
      */
     public function violations(Employee $employee): JsonResponse
     {
-        $this->authorize('view', $employee);
+        $this->authorize('viewViolations', $employee);
 
         $violations = $employee->violations()->with(['issuer', 'reporter', 'report'])->get();
         $active = $violations->filter->isActive();
@@ -212,14 +248,23 @@ class EmployeeController extends Controller
             'violation_type' => ['required', Rule::in(EmployeeViolation::TYPES)],
             'description' => ['required', 'string', 'max:2000'],
             'penalty' => ['nullable', 'string', 'max:190'],
-            'status' => ['nullable', Rule::in(['open', 'under_review', 'resolved', 'escalated'])],
-            'remarks' => ['nullable', 'string'],
-            'evidence' => [
-                'nullable', 'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
+            'status' => ['nullable', Rule::in(EmployeeViolation::STATUSES)],
+            'remarks' => ['nullable', 'string', 'max:5000'],
+            'evidence' => DocumentUploadPolicy::rules(required: false),
+            // Set when the violation comes from a verified attendance
+            // discrepancy, so the review keeps the link.
+            'attendance_review_id' => ['nullable', 'integer', 'exists:attendance_reviews,id'],
         ]);
+
+        $review = isset($data['attendance_review_id']) ? AttendanceReview::find($data['attendance_review_id']) : null;
+        unset($data['attendance_review_id']);
+
+        if ($review) {
+            // Only what HR has verified can become discipline. The comparison
+            // alone never reaches this far.
+            $this->authorize('reviewAttendance', Employee::class);
+            $this->attendanceReviews->assertCanLinkViolation($review, $employee, $data['violation_date']);
+        }
 
         // A violation is disciplinary evidence tied to current employment.
         // Recording one against someone who has already left would sit outside
@@ -242,11 +287,19 @@ class EmployeeController extends Controller
          * however a violation reaches the file. Reaching the threshold
          * notifies and flags; it never acts. An administrator decides.
          */
-        [$violation, $reached] = $this->violations->record(
-            $employee,
-            array_merge($data, ['evidence_path' => $evidencePath]),
-            $request->user()
-        );
+        [$violation, $reached] = DB::transaction(function () use ($employee, $data, $evidencePath, $review, $request) {
+            $result = $this->violations->record(
+                $employee,
+                array_merge($data, ['evidence_path' => $evidencePath]),
+                $request->user()
+            );
+
+            if ($review) {
+                $this->attendanceReviews->linkViolation($review, $result[0], $request->user());
+            }
+
+            return $result;
+        });
 
         return ApiResponse::created([
             'violation' => new ViolationResource($violation->load('issuer')),
@@ -260,17 +313,17 @@ class EmployeeController extends Controller
 
     public function updateViolation(Request $request, Employee $employee, EmployeeViolation $violation): JsonResponse
     {
-        $this->authorize('recordViolation', $employee);
+        $this->authorize('updateViolation', $employee);
 
         abort_unless($violation->employee_id === $employee->id, 404);
 
         $data = $request->validate([
-            'violation_type' => ['sometimes', Rule::in(['awol', 'absences', 'suspension', 'late', 'misconduct', 'policy_violation'])],
+            'violation_type' => ['sometimes', Rule::in(EmployeeViolation::TYPES)],
             'description' => ['sometimes', 'string', 'max:2000'],
             'penalty' => ['nullable', 'string', 'max:190'],
-            'status' => ['sometimes', Rule::in(['open', 'under_review', 'resolved', 'escalated'])],
-            'resolution_date' => ['nullable', 'date'],
-            'remarks' => ['nullable', 'string'],
+            'status' => ['sometimes', Rule::in(EmployeeViolation::STATUSES)],
+            'resolution_date' => ['nullable', 'date', 'after_or_equal:'.$violation->violation_date?->toDateString()],
+            'remarks' => ['nullable', 'string', 'max:5000'],
         ]);
 
         $before = $violation->only(array_keys($data));
@@ -283,7 +336,7 @@ class EmployeeController extends Controller
 
     public function violationEvidence(Employee $employee, EmployeeViolation $violation): JsonResponse
     {
-        $this->authorize('view', $employee);
+        $this->authorize('viewViolations', $employee);
 
         abort_unless($violation->employee_id === $employee->id, 404);
 

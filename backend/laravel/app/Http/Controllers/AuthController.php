@@ -6,7 +6,11 @@ use App\Http\Responses\ApiResponse;
 use App\Models\User;
 use App\Notifications\PasswordChanged;
 use App\Rules\PasswordPolicy;
+use App\Rules\PersonName;
+use App\Rules\PhilippineMobileNumber;
 use App\Services\AuditService;
+use App\Services\ProfilePhotoService;
+use App\Services\SessionLifetime;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -15,8 +19,22 @@ use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    public function __construct(private readonly AuditService $audit)
-    {
+    /**
+     * A bcrypt hash of a random value nobody kept, checked when no account uses
+     * the email address typed in (security audit V-03).
+     *
+     * Without it an unknown address was refused at once, while a known one paid
+     * for a full password check first, so the time a failed sign-in took said
+     * whether the address was registered. Checking this instead makes both
+     * cases do the same work. Cost 12 to match BCRYPT_ROUNDS; regenerate it if
+     * that setting is ever changed.
+     */
+    private const STAND_IN_HASH = '$2y$12$1SsyiwP7pbWKCLaS5c0kwuKRiLagElzf6f3kT.NvH7V252v.ZO7..';
+
+    public function __construct(
+        private readonly AuditService $audit,
+        private readonly SessionLifetime $sessions,
+    ) {
     }
 
     public function login(Request $request): JsonResponse
@@ -42,7 +60,12 @@ class AuthController extends Controller
 
         $user = User::where('email', $credentials['email'])->first();
 
-        if (! $user || ! Hash::check($credentials['password'], $user->password)) {
+        // Always one full password check, against the stand-in when there is no
+        // account, so an unknown address takes as long to refuse as a wrong
+        // password does.
+        $passwordMatches = Hash::check($credentials['password'], $user?->password ?: self::STAND_IN_HASH);
+
+        if (! $user || ! $passwordMatches) {
             RateLimiter::hit($throttleKey, 300);
 
             $this->audit->record(
@@ -77,7 +100,25 @@ class AuthController extends Controller
         // Any previously issued token is discarded, so a login elsewhere ends
         // older sessions rather than accumulating live tokens indefinitely.
         $user->tokens()->delete();
-        $token = $user->createToken('empower-api')->plainTextToken;
+        $issued = $user->createToken('empower-api');
+        $token = $issued->plainTextToken;
+
+        // Where this sign-in came from, so the administrator can see every
+        // device signed in (CDE, 26 October 2026). The token itself is only
+        // ever stored hashed. Never allowed to stop the sign-in: on a database
+        // not yet migrated the columns are missing, and that once locked
+        // everybody out. The attempt is still in the audit trail either way.
+        try {
+            $issued->accessToken->forceFill([
+                'ip_address' => $request->ip(),
+                'user_agent' => mb_substr((string) $request->userAgent(), 0, 255),
+            ])->save();
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        // So the profile below can say when this new sign-in ends.
+        $user->withAccessToken($issued->accessToken);
 
         $user->forceFill(['last_login_at' => now()])->save();
 
@@ -121,6 +162,18 @@ class AuthController extends Controller
     }
 
     /**
+     * When this sign-in ends, for the warning shown before it does.
+     *
+     * Also what "Stay signed in" calls: like any request of the person's own,
+     * it counts as activity and restarts the idle limit. It cannot move the
+     * lifetime, which runs from signing in.
+     */
+    public function session(Request $request): JsonResponse
+    {
+        return ApiResponse::success($this->sessions->describe($request->user()->currentAccessToken()));
+    }
+
+    /**
      * Let a user maintain their own contact details.
      *
      * Email and role are deliberately excluded. Changing an email address is how
@@ -130,11 +183,13 @@ class AuthController extends Controller
      */
     public function updateProfile(Request $request): JsonResponse
     {
+        PhilippineMobileNumber::normalizeRequest($request, 'mobile_number');
+
         $data = $request->validate([
-            'first_name' => ['sometimes', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['sometimes', 'string', 'max:100'],
-            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'first_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'mobile_number' => ['nullable', 'string', 'max:30', new PhilippineMobileNumber()],
         ]);
 
         $user = $request->user();
@@ -144,6 +199,35 @@ class AuthController extends Controller
         $this->audit->recordUpdate('auth', User::class, $user->id, $before, $data);
 
         return ApiResponse::success($this->profile($user->fresh()), 'Your details have been updated');
+    }
+
+    /**
+     * The signed-in staff member's own profile picture, from Settings.
+     *
+     * For administrators, HR, and coordinators, kept on the account itself.
+     * A portal account is refused: its picture belongs to its applicant record,
+     * where HR sees it beside the application, and is changed from the portal.
+     * Storing a second one here would give that person a picture nobody sees.
+     *
+     * Like the profile update above, the target is always the signed-in
+     * account, so there is no identifier to change to reach somebody else's.
+     */
+    public function uploadPhoto(Request $request, ProfilePhotoService $photos): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($user->isPortalAccount()) {
+            return ApiResponse::error('Change your picture from your portal profile.', 403);
+        }
+
+        $request->validate(['photo' => $photos->rules()], $photos->messages('photo'));
+
+        $photos->replace($user, $request->file('photo'));
+
+        return ApiResponse::success(
+            ['photo_url' => $photos->url($user->profile_photo_path)],
+            'Your profile picture has been updated.'
+        );
     }
 
     /**
@@ -214,7 +298,19 @@ class AuthController extends Controller
             ]);
         }
 
-        $user->forceFill(['password' => Hash::make($data['password'])])->save();
+        // Re-using the current password would leave a temporary one the office
+        // knows in use, and the forced change would mean nothing.
+        if (Hash::check($data['password'], $user->password)) {
+            throw ValidationException::withMessages([
+                'password' => ['Choose a password different from your current one.'],
+            ]);
+        }
+
+        $user->forceFill([
+            'password' => Hash::make($data['password']),
+            // The account holder chose this one: the office no longer knows it.
+            'must_change_password' => false,
+        ])->save();
 
         // Every other session is invalidated, which is the point of a password
         // change if the old one may have been compromised.
@@ -250,13 +346,39 @@ class AuthController extends Controller
             'user_type' => $user->user_type,
             'applicant_id' => $user->applicant_id,
             'employee_id' => $user->employee_id,
+            // Whether a portal login has an employment record behind it. The
+            // account type cannot say: a login made at registration stays
+            // "applicant" after its owner is deployed, which hid My employment
+            // (and with it the resignation request) from those employees.
+            'employment' => $user->isPortalAccount() ? $this->portalEmployment($user) : null,
+            // A portal account's picture is its applicant record's, the one HR
+            // sees; a staff account keeps its own, set from Settings.
+            'photo_url' => app(ProfilePhotoService::class)->url(
+                $user->isPortalAccount() ? $user->applicant?->profile_photo_path : $user->profile_photo_path
+            ),
             'last_login_at' => $user->last_login_at?->toIso8601String(),
+            // Still on a password the office issued: the screen shows only the
+            // change-password page, and the API refuses everything else.
+            'must_change_password' => (bool) $user->must_change_password,
             'roles' => $user->getRoleNames(),
             'permissions' => $user->getAllPermissions()->pluck('name'),
             // The client a coordinator covers, so the screen can name it. The
             // server never takes this back from the browser: every coordinator
             // request is scoped from the assignment again.
             'coordinator' => $user->isCoordinator() ? $this->coordinatorProfile($user) : null,
+            // The idle limit and the end of this sign-in, so the screen can warn
+            // before the server signs the person out.
+            'session' => $this->sessions->describe($user->currentAccessToken()),
+        ];
+    }
+
+    private function portalEmployment(User $user): array
+    {
+        $employee = $user->portalEmployee();
+
+        return [
+            'has_record' => $employee !== null,
+            'status' => $employee?->employment_status,
         ];
     }
 

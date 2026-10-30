@@ -6,8 +6,8 @@ use App\Http\Responses\ApiResponse;
 use App\Models\Employee;
 use App\Models\Resignation;
 use App\Models\Termination;
-use App\Services\AuditService;
 use App\Services\DocumentStorageService;
+use App\Services\DocumentUploadPolicy;
 use App\Services\SeparationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,7 +18,6 @@ class SeparationController extends Controller
     public function __construct(
         private readonly SeparationService $separation,
         private readonly DocumentStorageService $storage,
-        private readonly AuditService $audit,
     ) {
     }
 
@@ -28,18 +27,28 @@ class SeparationController extends Controller
 
         $filters = $request->validate([
             'type' => ['nullable', Rule::in(['resignation', 'termination'])],
-            'status' => ['nullable', 'string'],
+            // "awaiting_clearance" is the dashboard's figure of that name:
+            // resignations HR still has to review or clear.
+            'status' => ['nullable', Rule::in(array_unique([...Resignation::STATUSES, ...Termination::STATUSES, 'awaiting_clearance']))],
             // "Needs action": the cases still waiting on somebody, which is
             // the question a person opening this list usually has.
             'open_only' => ['nullable', 'boolean'],
+            // Requests employees sent from the portal, apart from filings
+            // made at the office. Resignations only: terminations are always
+            // the office's.
+            'source' => ['nullable', Rule::in(['portal', 'office'])],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
         $openOnly = (bool) ($filters['open_only'] ?? false);
+        $source = $filters['source'] ?? null;
 
         $resignations = Resignation::with('employee.applicant')
-            ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
+            ->when($filters['status'] ?? null, fn ($q, $v) => $v === 'awaiting_clearance'
+                ? $q->whereIn('status', Resignation::AWAITING_HR)->where('clearance_status', '!=', 'cleared')
+                : $q->where('status', $v))
             ->when($openOnly, fn ($q) => $q->whereIn('status', Resignation::OPEN_STATUSES))
+            ->when($source, fn ($q, $v) => $q->where('source', $v))
             ->latest('filing_date')->get()
             ->map(fn ($r) => [
                 'type' => 'resignation',
@@ -47,15 +56,18 @@ class SeparationController extends Controller
                 'employee_id' => $r->employee_id,
                 'employee_name' => $r->employee?->full_name,
                 'employee_number' => $r->employee?->employee_number,
+                'source' => $r->source,
                 'reason' => $r->reason,
                 'date' => $r->filing_date?->toDateString(),
+                'requested_exit_date' => $r->requested_exit_date?->toDateString(),
                 'exit_date' => $r->exit_date?->toDateString(),
                 'clearance_status' => $r->clearance_status,
                 'status' => $r->status,
                 'is_open' => $r->isOpen(),
+                'notice' => null,
             ]);
 
-        $terminations = Termination::with('employee.applicant')
+        $terminations = $source === 'portal' ? collect() : Termination::with('employee.applicant')
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($openOnly, fn ($q) => $q->whereIn('status', Termination::OPEN_STATUSES))
             ->latest('termination_date')->get()
@@ -65,12 +77,19 @@ class SeparationController extends Controller
                 'employee_id' => $t->employee_id,
                 'employee_name' => $t->employee?->full_name,
                 'employee_number' => $t->employee?->employee_number,
+                'source' => 'office',
                 'reason' => $t->reason,
                 'date' => $t->termination_date?->toDateString(),
+                'requested_exit_date' => null,
                 'exit_date' => $t->termination_date?->toDateString(),
-                'clearance_status' => null,
+                'clearance_status' => $t->clearance_status,
                 'status' => $t->status,
                 'is_open' => $t->isOpen(),
+                // Whether the employee has seen the notice, once there is one.
+                'notice' => $t->isFinalized() ? [
+                    'viewed' => $t->notice_viewed_at !== null,
+                    'acknowledged' => $t->notice_acknowledged_at !== null,
+                ] : null,
             ]);
 
         $records = match ($filters['type'] ?? null) {
@@ -95,12 +114,8 @@ class SeparationController extends Controller
             // period is allowed but must be recorded rather than assumed.
             'rendering_days' => ['nullable', 'integer', 'between:0,90'],
             'exit_date' => ['nullable', 'date', 'after_or_equal:filing_date'],
-            'remarks' => ['nullable', 'string'],
-            'letter' => [
-                'nullable', 'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
+            'remarks' => ['nullable', 'string', 'max:5000'],
+            'letter' => DocumentUploadPolicy::rules(required: false),
         ]);
 
         if ($request->hasFile('letter')) {
@@ -135,16 +150,25 @@ class SeparationController extends Controller
             'rendering_days' => ['nullable', 'integer', 'between:0,90'],
             'exit_date' => ['nullable', 'date', 'after_or_equal:'.$resignation->filing_date->toDateString()],
             'clearance_status' => ['sometimes', Rule::in(['pending', 'in_progress', 'cleared'])],
-            'status' => ['sometimes', Rule::in(['filed', 'accepted', 'withdrawn'])],
-            'remarks' => ['nullable', 'string'],
+            // Completion has its own action and confirmation.
+            'status' => ['sometimes', Rule::in(['filed', 'info_requested', 'accepted', 'withdrawn'])],
+            // Internal. Never shown to the employee.
+            'remarks' => ['nullable', 'string', 'max:5000'],
+            // Shown to the employee in their portal, and required when asking
+            // them for more information.
+            'employee_message' => ['nullable', 'string', 'max:2000', 'required_if:status,info_requested'],
+            // Internal: why HR closed the request.
+            'withdrawal_reason' => ['nullable', 'string', 'max:255', 'required_if:status,withdrawn'],
+        ], [
+            'employee_message.required_if' => 'Tell the employee what information is needed.',
+            'withdrawal_reason.required_if' => 'Say why the resignation is being closed.',
         ]);
 
-        $before = $resignation->only(array_keys($data));
-        $resignation->update($data);
+        // Validated, transitioned, historised, audited, and the employee told -
+        // or nothing at all, if nothing changed.
+        $resignation = $this->separation->updateResignation($resignation, $data, $request->user());
 
-        $this->audit->recordUpdate('separation', Resignation::class, $resignation->id, $before, $data);
-
-        return ApiResponse::success($resignation->fresh(), 'Resignation updated');
+        return ApiResponse::success($resignation, 'Resignation updated');
     }
 
     /**
@@ -175,13 +199,9 @@ class SeparationController extends Controller
         $data = $request->validate([
             'reason' => ['required', 'string', 'max:255'],
             'termination_date' => ['required', 'date'],
-            'remarks' => ['nullable', 'string'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
             'status' => ['nullable', Rule::in(['draft', 'for_review'])],
-            'documents' => [
-                'nullable', 'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
+            'documents' => DocumentUploadPolicy::rules(required: false),
         ]);
 
         if ($request->hasFile('documents')) {
@@ -207,12 +227,40 @@ class SeparationController extends Controller
 
         $this->requireConfirmation($request);
 
-        $termination = $this->separation->finaliseTermination($termination, $request->user());
+        $data = $request->validate([
+            // What the employee reads in their portal notice. The reason and
+            // remarks on the termination stay with the office.
+            'employee_message' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $termination = $this->separation->finaliseTermination(
+            $termination,
+            $request->user(),
+            $data['employee_message'] ?? null,
+        );
 
         return ApiResponse::success(
             $termination,
-            'Termination finalised. The employee record has been archived.'
+            'Termination finalised. The employee record has been archived and the employee has been sent a notice.'
         );
+    }
+
+    /**
+     * The clearance that follows a finalised termination.
+     */
+    public function updateTerminationClearance(Request $request, Employee $employee, Termination $termination): JsonResponse
+    {
+        $this->authorize('separate', $employee);
+
+        abort_unless($termination->employee_id === $employee->id, 404);
+
+        $data = $request->validate([
+            'clearance_status' => ['required', Rule::in(['pending', 'in_progress', 'cleared'])],
+        ]);
+
+        $termination = $this->separation->updateTerminationClearance($termination, $data['clearance_status'], $request->user());
+
+        return ApiResponse::success($termination, 'Clearance updated');
     }
 
     /**

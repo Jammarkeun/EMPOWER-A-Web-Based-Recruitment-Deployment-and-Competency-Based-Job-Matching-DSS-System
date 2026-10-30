@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useNavigate, useLocation, Navigate, Link } from 'react-router-dom'
-import { Loader2, FolderCheck, Scale, ScrollText } from 'lucide-react'
+import { Clock, Loader2, FolderCheck, Scale, ScrollText } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { Input, PasswordInput } from '@/components/ui/input'
 import { Field } from '@/components/ui/form'
 import AuthLayout, { AuthCard } from '@/components/AuthLayout'
 import { homePathFor } from '@/lib/utils'
+import { signOutNotice } from '@/lib/session'
 
 /**
  * Where a user belongs after signing in.
@@ -43,6 +44,25 @@ const POINTS = [
   },
 ]
 
+function safeReturnPath(path) {
+  if (typeof path !== 'string' || !path.startsWith('/')) return null
+  if (path.startsWith('//') || path.includes('\\')) return null
+  return path
+}
+
+/**
+ * The page to go back to after signing in, if any.
+ *
+ * Only a path inside this app is honoured; anything that could leave the site
+ * ("//host", "/\host", a full URL) is ignored. So is a page another account
+ * was on when it signed out: the next person to sign in on the computer
+ * starts at their own home, not on a screen their role may not cover.
+ */
+function returnPathFor(state, user) {
+  if (state?.fromUser != null && state.fromUser !== user?.id) return null
+  return safeReturnPath(state?.from)
+}
+
 export default function Login() {
   const { login, isAuthenticated, loading, user } = useAuth()
   const navigate = useNavigate()
@@ -55,6 +75,12 @@ export default function Login() {
   const [formError, setFormError] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
 
+  // Why the person is here, when they did not sign out themselves - a sign-in
+  // that went idle or reached its limit (audit V-02). Read once, then cleared,
+  // so it is not shown again on the next visit.
+  const [notice] = React.useState(signOutNotice.peek)
+  React.useEffect(() => signOutNotice.clear(), [])
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
@@ -64,7 +90,7 @@ export default function Login() {
   }
 
   if (isAuthenticated) {
-    return <Navigate to={location.state?.from ?? destinationFor(user)} replace />
+    return <Navigate to={returnPathFor(location.state, user) ?? destinationFor(user)} replace />
   }
 
   async function handleSubmit(event) {
@@ -77,7 +103,7 @@ export default function Login() {
       // login() returns the signed-in user, which is what decides the
       // destination — the context state has not updated yet at this point.
       const signedIn = await login(email, password)
-      navigate(location.state?.from ?? destinationFor(signedIn), { replace: true })
+      navigate(returnPathFor(location.state, signedIn) ?? destinationFor(signedIn), { replace: true })
       toast.success(`Welcome back, ${signedIn.full_name.split(' ')[0]}`, 'You are signed in.')
     } catch (error) {
       if (error.isValidation) {
@@ -113,6 +139,16 @@ export default function Login() {
     >
       <AuthCard>
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          {notice && (
+            <div
+              className="flex items-start gap-2 rounded-md border border-status-warning-border bg-status-warning-bg px-3 py-2 text-sm text-status-warning-text"
+              role="status"
+            >
+              <Clock className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{notice}</span>
+            </div>
+          )}
+
           <Field label="Email address" htmlFor="email" required error={errors.email?.[0]}>
             <Input
               type="email"
@@ -132,6 +168,12 @@ export default function Login() {
               required
             />
           </Field>
+
+          <p className="-mt-2 text-right text-xs">
+            <Link to="/forgot-password" className="font-medium text-brand underline-offset-4 hover:underline">
+              Forgot your password?
+            </Link>
+          </p>
 
           {formError && (
             <div

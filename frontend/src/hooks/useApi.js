@@ -51,12 +51,21 @@ export function useApi(url, params, options = {}) {
   // would restart any effect depending on refetch.
   const hasData = React.useRef(false)
 
+  // Only the newest request may write its answer. The effect's own cleanup
+  // already ignored a load for filters the screen has moved on from, but a
+  // refetch() started earlier - after saving something, say - could still
+  // land last and put the previous filter's rows back on screen.
+  const latestRequest = React.useRef(0)
+
   const load = React.useCallback(
     async ({ background, signal, isCancelled = () => false } = {}) => {
       if (!enabled) {
         setLoading(false)
         return
       }
+
+      const requestId = ++latestRequest.current
+      const stale = () => isCancelled() || requestId !== latestRequest.current
 
       if (background) {
         setRefreshing(true)
@@ -70,7 +79,7 @@ export function useApi(url, params, options = {}) {
 
         // Guards against a slow response from a previous filter overwriting the
         // results of a newer one after the user has typed again.
-        if (isCancelled()) return
+        if (stale()) return
 
         setData(response.data)
         setMeta(response.meta ?? null)
@@ -78,9 +87,9 @@ export function useApi(url, params, options = {}) {
         hasData.current = true
         if (cacheId) responseCache.set(cacheId, { data: response.data, meta: response.meta ?? null, updatedAt: Date.now() })
       } catch (err) {
-        if (!isCancelled()) setError(err)
+        if (!stale()) setError(err)
       } finally {
-        if (!isCancelled()) {
+        if (!stale()) {
           setLoading(false)
           setRefreshing(false)
         }
@@ -108,6 +117,7 @@ export function useApi(url, params, options = {}) {
     if (cacheId) {
       const cached = responseCache.get(cacheId)
       if (cached && Date.now() - cached.updatedAt < staleTime) {
+        latestRequest.current += 1
         setData(cached.data)
         setMeta(cached.meta)
         setUpdatedAt(cached.updatedAt)

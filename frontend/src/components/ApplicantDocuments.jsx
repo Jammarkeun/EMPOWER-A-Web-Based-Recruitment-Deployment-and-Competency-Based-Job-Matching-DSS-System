@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, ChevronRight, ExternalLink, FolderOpen, Loader2, UserRound } from 'lucide-react'
+import { ArrowLeft, ChevronRight, ExternalLink, FolderOpen, Loader2 } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,8 +8,9 @@ import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { EmptyState, ErrorState, LoadingState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
-import { FolderStatus, RequirementsPanel } from '@/pages/ApplicantDetail'
-import { Pagination } from '@/pages/Applicants'
+import PersonAvatar from '@/components/PersonAvatar'
+import { FolderStatus, RequirementsPanel } from '@/components/applicant/RequirementsPanel'
+import { Pagination } from '@/components/Pagination'
 import { formatDate } from '@/lib/utils'
 
 /**
@@ -72,7 +73,7 @@ function ApplicantList({ clientCompanyId, onOpen }) {
       />
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={8} columns={5} />
         </div>
       ) : error ? (
@@ -114,9 +115,7 @@ function ApplicantList({ clientCompanyId, onOpen }) {
                   >
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                          <UserRound className="h-4 w-4" />
-                        </span>
+                        <PersonAvatar src={row.photo_url} name={row.full_name} size="sm" />
                         <div className="min-w-0">
                           <p className="truncate font-semibold text-foreground transition-colors group-hover:text-brand">
                             {row.full_name}
@@ -190,9 +189,9 @@ function ApplicantFolder({ applicantId, onBack }) {
 
       <Card>
         <CardContent className="flex flex-wrap items-center gap-4 pt-5">
-          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <UserRound className="h-6 w-6" />
-          </span>
+          {/* The applicant's own picture, read from the same record as the
+              documents below - never one of the documents themselves. */}
+          <PersonAvatar src={applicant.photo_url} name={applicant.full_name} size="md" />
           <div className="min-w-0 flex-1">
             <p className="text-lg font-semibold tracking-tight">{applicant.full_name}</p>
             <p className="text-sm text-muted-foreground">

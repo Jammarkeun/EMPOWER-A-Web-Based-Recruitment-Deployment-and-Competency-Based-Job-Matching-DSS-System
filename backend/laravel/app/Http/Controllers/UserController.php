@@ -10,6 +10,8 @@ use App\Models\Employee;
 use App\Models\User;
 use App\Notifications\PasswordChanged;
 use App\Rules\PasswordPolicy;
+use App\Rules\PersonName;
+use App\Rules\PhilippineMobileNumber;
 use App\Services\AuditService;
 use App\Services\CoordinatorAssignmentService;
 use Illuminate\Support\Facades\DB;
@@ -49,19 +51,30 @@ class UserController extends Controller
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
+        // A login made at registration keeps user_type "applicant" after its
+        // owner is deployed, and the portal shows them their employment
+        // through the applicant record (User::portalEmployee). The two portal
+        // filters follow the same rule, so a deployed worker is listed - and
+        // labelled - as an employee login rather than only under "applicant".
+        $reachesEmployee = fn ($q) => $q->whereNotNull('employee_id')
+            ->orWhereHas('applicant', fn ($a) => $a->whereHas('employee'));
+
         $users = User::query()
-            ->with(['roles', 'activeCoordinatorAssignment.company'])
-            ->when($filters['search'] ?? null, function ($q, $v) {
-                $operator = $q->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-                $q->where(fn ($sub) => $sub
-                    ->where('first_name', $operator, "%{$v}%")
-                    ->orWhere('last_name', $operator, "%{$v}%")
-                    ->orWhere('email', $operator, "%{$v}%"));
+            ->with(['roles', 'activeCoordinatorAssignment.company', 'applicant:id', 'applicant.employee:id,applicant_id'])
+            ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(fn ($sub) => $sub
+                ->whereContains('first_name', $v)
+                ->orWhereContains('last_name', $v)
+                ->orWhereContains('email', $v)))
+            ->when($filters['user_type'] ?? null, fn ($q, $v) => match ($v) {
+                'employee' => $q->whereIn('user_type', User::PORTAL_TYPES)->where($reachesEmployee),
+                'applicant' => $q->where('user_type', 'applicant')->whereNot($reachesEmployee),
+                default => $q->where('user_type', $v),
             })
-            ->when($filters['user_type'] ?? null, fn ($q, $v) => $q->where('user_type', $v))
             ->when(isset($filters['is_active']), fn ($q) => $q->where('is_active', $filters['is_active']))
             ->orderBy('user_type')
             ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->orderBy('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(
@@ -72,14 +85,16 @@ class UserController extends Controller
 
     public function store(Request $request): JsonResponse
     {
-        $this->authorize('manageUsers');
+        $this->authorize('createUsers');
+
+        PhilippineMobileNumber::normalizeRequest($request, 'mobile_number');
 
         $data = $request->validate([
-            'first_name' => ['required', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['required', 'string', 'max:100'],
-            'email' => ['required', 'email', 'max:190', 'unique:users,email'],
-            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'first_name' => ['required', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['required', 'string', 'max:100', new PersonName()],
+            'email' => ['required', 'email:rfc,filter', 'max:190', 'unique:users,email'],
+            'mobile_number' => ['nullable', 'string', 'max:30', new PhilippineMobileNumber()],
             'user_type' => ['required', Rule::in(['admin', 'hr', 'coordinator'])],
             // A coordinator's role is fixed; staff choose admin or hr.
             'role' => ['required_unless:user_type,coordinator', 'nullable', 'string', 'exists:roles,name'],
@@ -110,8 +125,10 @@ class UserController extends Controller
 
             // Set outside the mass assignment: a verification timestamp is a system
             // fact, and keeping it out of $fillable means no request payload can
-            // ever claim an address is verified.
-            $user->forceFill(['email_verified_at' => now()])->save();
+            // ever claim an address is verified. The password was chosen by the
+            // administrator, so the new staff member replaces it at their first
+            // sign-in (audit SEC-07).
+            $user->forceFill(['email_verified_at' => now(), 'must_change_password' => true])->save();
 
             $user->syncRoles([$role]);
 
@@ -148,29 +165,42 @@ class UserController extends Controller
 
     public function update(Request $request, User $user): JsonResponse
     {
-        $this->authorize('manageUsers');
+        $this->authorize('updateUsers');
+
+        PhilippineMobileNumber::normalizeRequest($request, 'mobile_number');
 
         $data = $request->validate([
-            'first_name' => ['sometimes', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['sometimes', 'string', 'max:100'],
-            'email' => ['sometimes', 'email', 'max:190', Rule::unique('users', 'email')->ignore($user->id)],
-            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'first_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'email' => ['sometimes', 'email:rfc,filter', 'max:190', Rule::unique('users', 'email')->ignore($user->id)],
+            'mobile_number' => ['nullable', 'string', 'max:30', new PhilippineMobileNumber()],
             'role' => ['sometimes', 'string', 'exists:roles,name'],
         ]);
 
-        $before = $user->only(['first_name', 'last_name', 'email', 'mobile_number']);
-
-        $user->update(collect($data)->except('role')->all());
-
+        // Every check runs before anything is written, so a refused role change
+        // cannot leave the name or email half-updated.
         if (isset($data['role'])) {
+            // Changing what an account may do is its own permission.
+            $this->authorize('manageRoles');
+
             // The role must fit the kind of account: a coordinator stays a
-            // coordinator, and staff cannot be given the coordinator role,
-            // which would leave them without an assignment to scope them.
+            // coordinator, a portal account stays a portal account, and staff
+            // cannot be given the coordinator role, which would leave them
+            // without an assignment to scope them.
             $data['role'] = $this->roleFor($user->user_type, $data['role']);
             $this->assertNotLastAdministrator($user, $data['role']);
-            $user->syncRoles([$data['role']]);
         }
+
+        $before = $user->only(['first_name', 'last_name', 'email', 'mobile_number']);
+
+        DB::transaction(function () use ($user, $data) {
+            $user->update(collect($data)->except('role')->all());
+
+            if (isset($data['role'])) {
+                $user->syncRoles([$data['role']]);
+            }
+        });
 
         $this->audit->recordUpdate('users', User::class, $user->id, $before, $data);
 
@@ -186,7 +216,7 @@ class UserController extends Controller
      */
     public function setStatus(Request $request, User $user): JsonResponse
     {
-        $this->authorize('manageUsers');
+        $this->authorize('updateUsers');
 
         $data = $request->validate([
             'is_active' => ['required', 'boolean'],
@@ -221,13 +251,21 @@ class UserController extends Controller
 
     public function resetPassword(Request $request, User $user): JsonResponse
     {
-        $this->authorize('manageUsers');
+        $this->authorize('updateUsers');
 
-        $data = $request->validate([
-            'password' => ['required', 'string', 'confirmed', new PasswordPolicy()],
-        ]);
+        /*
+         * The office issues a temporary password; it never chooses a working
+         * one (audit SEC-07, decided 2026-10-19). The administrator used to type
+         * the new password, and so knew it for as long as it stayed in use. Now
+         * the system generates it, shows it once, and the holder has to replace
+         * it before the account does anything else (EnsurePasswordIsCurrent).
+         */
+        $temporaryPassword = Str::password(14);
 
-        $user->forceFill(['password' => Hash::make($data['password'])])->save();
+        $user->forceFill([
+            'password' => Hash::make($temporaryPassword),
+            'must_change_password' => true,
+        ])->save();
 
         // Every existing session is ended: a password reset that leaves old
         // sessions alive does not actually lock anyone out.
@@ -235,12 +273,17 @@ class UserController extends Controller
 
         $this->audit->record('update', 'users', User::class, $user->id, null, [
             'password' => '[redacted]',
+            'temporary' => true,
             'sessions_revoked' => true,
         ]);
 
         $user->notify(new PasswordChanged());
 
-        return ApiResponse::success(null, 'Password reset. The user has been signed out everywhere.');
+        return ApiResponse::success([
+            // Shown once. Only its hash is kept.
+            'temporary_password' => $temporaryPassword,
+            'notice' => 'Give this to '.$user->full_name.' in person or over a channel you trust. It works only to choose a new password, the first time they sign in.',
+        ], 'Temporary password issued. The user has been signed out everywhere.');
     }
 
     /**
@@ -253,12 +296,12 @@ class UserController extends Controller
      */
     public function provisionPortalAccess(Request $request): JsonResponse
     {
-        $this->authorize('manageUsers');
+        $this->authorize('createUsers');
 
         $data = $request->validate([
             'applicant_id' => ['required_without:employee_id', 'nullable', 'integer', 'exists:applicants,id'],
             'employee_id' => ['required_without:applicant_id', 'nullable', 'integer', 'exists:employees,id'],
-            'email' => ['required', 'email', 'max:190', 'unique:users,email'],
+            'email' => ['required', 'email:rfc,filter', 'max:190', 'unique:users,email'],
         ]);
 
         if (isset($data['applicant_id'], $data['employee_id'])) {
@@ -313,6 +356,9 @@ class UserController extends Controller
 
         $user->syncRoles(['portal']);
 
+        // Issued by the office, so replaced by the holder at the first sign-in.
+        $user->forceFill(['must_change_password' => true])->save();
+
         $this->audit->record('create', 'users', User::class, $user->id, null, [
             'portal_access_for' => $person->full_name,
             'user_type' => $user->user_type,
@@ -323,7 +369,7 @@ class UserController extends Controller
             // Shown once. The hash cannot be reversed, so if it is lost the
             // password has to be reset rather than retrieved.
             'temporary_password' => $temporaryPassword,
-            'notice' => 'Give this password to the account holder. It cannot be displayed again.',
+            'notice' => 'Give this password to the account holder. It cannot be displayed again, and it only lets them choose their own password the first time they sign in.',
         ], 'Portal access created');
     }
 
@@ -363,7 +409,7 @@ class UserController extends Controller
      */
     public function assignCoordinator(Request $request, User $user): JsonResponse
     {
-        $this->authorize('manageUsers');
+        $this->authorize('updateUsers');
 
         abort_unless($user->isCoordinator(), 422, 'Only a coordinator account can be assigned to a client company.');
 
@@ -390,6 +436,21 @@ class UserController extends Controller
      */
     private function roleFor(string $userType, ?string $requested): string
     {
+        /*
+         * A portal account is an applicant or employee. It keeps the portal
+         * role and nothing else: giving one a staff role would hand the HR
+         * permissions to a person outside the agency.
+         */
+        if (in_array($userType, ['applicant', 'employee'], true)) {
+            if ($requested !== null && $requested !== 'portal') {
+                throw ValidationException::withMessages([
+                    'role' => ['An applicant or employee account always has the portal role.'],
+                ]);
+            }
+
+            return 'portal';
+        }
+
         if ($userType === 'coordinator') {
             if ($requested !== null && $requested !== 'coordinator') {
                 throw ValidationException::withMessages([
@@ -469,6 +530,26 @@ class UserController extends Controller
         );
     }
 
+    /**
+     * "employee" when the login reaches an employment record, directly or
+     * through its applicant record; "applicant" for any other portal login.
+     * The list eager-loads what this reads; a single account loads it here.
+     */
+    private function portalAccess(User $user): ?string
+    {
+        if (! $user->isPortalAccount()) {
+            return null;
+        }
+
+        if ($user->employee_id) {
+            return 'employee';
+        }
+
+        $user->loadMissing('applicant.employee:id,applicant_id');
+
+        return $user->applicant?->employee ? 'employee' : 'applicant';
+    }
+
     private function present(User $user): array
     {
         return [
@@ -480,6 +561,8 @@ class UserController extends Controller
             'email' => $user->email,
             'mobile_number' => $user->mobile_number,
             'user_type' => $user->user_type,
+            // Which portal the login actually opens onto, by the rule above.
+            'portal_access' => $this->portalAccess($user),
             'is_active' => (bool) $user->is_active,
             'roles' => $user->getRoleNames(),
             'applicant_id' => $user->applicant_id,

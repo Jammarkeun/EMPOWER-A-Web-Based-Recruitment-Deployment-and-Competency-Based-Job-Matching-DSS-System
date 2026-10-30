@@ -14,7 +14,8 @@ import { useToast } from '@/components/ui/toast'
 import { getCached } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import AuthLayout from '@/components/AuthLayout'
-import { Input, PasswordInput } from '@/components/ui/input'
+import { Input, MobileInput, NameInput, PasswordInput } from '@/components/ui/input'
+import { formProblems, latestBirthDate } from '@/lib/validation'
 import { Select } from '@/components/ui/select'
 import { Field } from '@/components/ui/form'
 import { Card, CardContent } from '@/components/ui/card'
@@ -130,7 +131,12 @@ export default function Register() {
 
   async function handleSubmit(event) {
     event.preventDefault()
-    setErrors({})
+
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { mobiles: ['contact_number'], names: ['first_name', 'middle_name', 'last_name'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setFormError('')
     setSubmitting(true)
 
@@ -208,7 +214,7 @@ export default function Register() {
 
                     <div className="grid gap-4 sm:grid-cols-3">
                       <Field label="First name" htmlFor="first_name" required error={errors.first_name?.[0]}>
-                        <Input
+                        <NameInput
                           value={form.first_name}
                           onChange={(e) => set('first_name', e.target.value)}
                           autoComplete="given-name"
@@ -217,14 +223,14 @@ export default function Register() {
                         />
                       </Field>
                       <Field label="Middle name" htmlFor="middle_name" error={errors.middle_name?.[0]}>
-                        <Input
+                        <NameInput
                           value={form.middle_name}
                           onChange={(e) => set('middle_name', e.target.value)}
                           autoComplete="additional-name"
                         />
                       </Field>
                       <Field label="Last name" htmlFor="last_name" required error={errors.last_name?.[0]}>
-                        <Input
+                        <NameInput
                           value={form.last_name}
                           onChange={(e) => set('last_name', e.target.value)}
                           autoComplete="family-name"
@@ -245,6 +251,7 @@ export default function Register() {
                           type="date"
                           value={form.birth_date}
                           onChange={(e) => set('birth_date', e.target.value)}
+                          max={latestBirthDate()}
                           autoComplete="bday"
                           required
                         />
@@ -271,12 +278,9 @@ export default function Register() {
                         error={errors.contact_number?.[0]}
                         hint="How the office will reach you."
                       >
-                        <Input
-                          type="tel"
+                        <MobileInput
                           value={form.contact_number}
                           onChange={(e) => set('contact_number', e.target.value)}
-                          autoComplete="tel"
-                          placeholder="09XX XXX XXXX"
                           required
                         />
                       </Field>

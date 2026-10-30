@@ -8,7 +8,7 @@ import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
 import { FillBar } from '@/pages/JobRequests'
-import { Pagination } from '@/pages/Applicants'
+import { Pagination } from '@/components/Pagination'
 
 /**
  * The client's manpower requests and how far each has been filled.
@@ -39,7 +39,7 @@ export default function CoordinatorRequests() {
       />
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={5} columns={5} />
         </div>
       ) : error ? (

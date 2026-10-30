@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate, formatDateTime } from '@/lib/utils'
-import { Pagination } from '@/pages/Applicants'
+import { Pagination, useClampPage } from '@/components/Pagination'
 import { ReportStatus } from './CoordinatorEmployeeDetail'
 
 /**
@@ -38,6 +38,8 @@ export default function CoordinatorReports() {
     if (key !== 'page') next.delete('page')
     setSearchParams(next)
   }
+
+  useClampPage(meta, (p) => update('page', String(p)))
 
   return (
     <div className="space-y-4">
@@ -70,7 +72,7 @@ export default function CoordinatorReports() {
       />
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={5} columns={6} />
         </div>
       ) : error ? (

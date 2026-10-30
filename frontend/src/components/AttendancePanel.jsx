@@ -1,13 +1,14 @@
 import * as React from 'react'
-import { CalendarClock, ChevronLeft, ChevronRight, Loader2, Pencil, Save, X, FileWarning, Info } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { CalendarClock, ChevronLeft, ChevronRight, Loader2, Pencil, Save, X, Info, CalendarOff, Ban, ClipboardCheck } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useApi } from '@/hooks/useApi'
-import { post } from '@/lib/api'
+import { patch, post } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
+import { Input, NumberInput } from '@/components/ui/input'
 import { Field, FormGrid } from '@/components/ui/form'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -19,108 +20,82 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { cn, formatDate, todayISO } from '@/lib/utils'
+import AttendanceDayDialog from '@/components/attendance/AttendanceDayDialog'
+import ExceptionDialog from '@/components/attendance/ExceptionDialog'
+import {
+  DAY_STATUS,
+  DISCREPANCIES,
+  REVIEW_STATUS,
+  WEEKDAYS,
+  currentMonth,
+  discrepancyText,
+  formatMinutes,
+  monthBounds,
+  monthParam,
+  reviewQueuePath,
+  shiftMonth,
+  shiftText,
+} from '@/lib/attendance'
+import { cn, formatDate, formatDateTime, todayISO } from '@/lib/utils'
 
-const WEEKDAYS = [
-  [1, 'Mon'],
-  [2, 'Tue'],
-  [3, 'Wed'],
-  [4, 'Thu'],
-  [5, 'Fri'],
-  [6, 'Sat'],
-  [7, 'Sun'],
-]
+/** Kept for screens that imported it from here. */
+export { formatMinutes }
 
-/** "1h 15m", "25m", or a dash. */
-export function formatMinutes(minutes) {
-  if (!minutes) return '—'
-  const hours = Math.floor(minutes / 60)
-  const rest = minutes % 60
-  if (!hours) return `${rest}m`
-  return rest ? `${hours}h ${rest}m` : `${hours}h`
-}
-
-function monthBounds(month) {
-  const [year, m] = month.split('-').map(Number)
-  const last = new Date(year, m, 0).getDate()
-  return {
-    from: `${month}-01`,
-    to: `${month}-${String(last).padStart(2, '0')}`,
-  }
-}
-
-function shiftMonth(month, delta) {
-  const [year, m] = month.split('-').map(Number)
-  const date = new Date(year, m - 1 + delta, 1)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-}
-
-function currentMonth() {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-}
-
-const STATUS = {
-  present: { label: 'On schedule', tone: 'success' },
-  absent: { label: 'Absent', tone: 'destructive' },
-  rest_day: { label: 'Rest day', tone: 'muted' },
-  rest_day_work: { label: 'Worked on rest day', tone: 'info' },
-  no_schedule: { label: 'No schedule', tone: 'muted' },
-  no_schedule_work: { label: 'Worked, no schedule', tone: 'warning' },
-  awaiting_record: { label: 'No record yet', tone: 'muted' },
-  outside_employment: { label: 'Not employed', tone: 'muted' },
-  upcoming: { label: 'Upcoming', tone: 'muted' },
-}
-
-function flagBadges(day) {
-  const labels = {
-    late: [`Late ${formatMinutes(day.late_minutes)}`, 'warning'],
-    undertime: [`Left early ${formatMinutes(day.undertime_minutes)}`, 'warning'],
-    overtime: [`Past end ${formatMinutes(day.overtime_minutes)}`, 'info'],
-    missing_time_in: ['No time-in', 'destructive'],
-    missing_time_out: ['No time-out', 'destructive'],
-  }
-
-  return day.flags
-    .filter((flag) => labels[flag])
-    .map((flag) => (
-      <Badge key={flag} tone={labels[flag][1]}>
-        {labels[flag][0]}
-      </Badge>
-    ))
+const PERIOD_STATUS = {
+  current: ['Current', 'success'],
+  upcoming: ['Upcoming', 'info'],
+  ended: ['Ended', 'muted'],
+  voided: ['Voided', 'destructive'],
 }
 
 /**
- * The daily time record, set beside the schedule it should have followed.
+ * One employee's schedule set beside their DTR, a month at a time.
  *
- * The review panel asked for the DTR to be compared with the schedule. Workers
- * clock in on the client's own biometrics; HR copies the resulting DTR in here,
- * a period at a time, and the comparison is worked out from what is on file -
- * so correcting a time or a schedule corrects the comparison too.
+ * The individual view of the one attendance system. It shows this employee's
+ * schedule, each day's DTR against it, and where every flagged day stands in
+ * review - all read from the same endpoints and comparison as the
+ * Attendance (DTR) page. The per-employee entry that belongs to one person
+ * stays here: the schedule, typing in their DTR from the client's sheet, and
+ * their leave. Review decisions do not: a flagged day links to that exact day
+ * in the central review queue, so there is one place where they are made.
  *
- * It reports and stops. Late, left early, stayed past the end, missing a
- * punch, absent: each is shown, none is acted on. A violation is still a
- * separate decision somebody makes (the row offers to start one, already
- * filled in), and nothing on this screen is pay.
+ * The month lives in the address bar (`?month=`), so a link from the review
+ * queue or the workforce summary opens on the period it came from.
+ *
+ * A day with nothing on file is "awaiting DTR" until the client's DTR for it
+ * is known to have been received - it is never counted as an absence. Nothing
+ * here is pay, and nothing here records a violation.
  */
-export default function AttendancePanel({ employee, onRecordViolation }) {
+export default function AttendancePanel({ employee }) {
   const { can } = useAuth()
-  const [month, setMonth] = React.useState(currentMonth)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const month = monthParam(searchParams.get('month'))
+
+  function setMonth(value) {
+    const next = new URLSearchParams(searchParams)
+    if (value === currentMonth()) next.delete('month')
+    else next.set('month', value)
+    setSearchParams(next, { replace: true })
+  }
+
   const [editing, setEditing] = React.useState(false)
-  const [scheduleOpen, setScheduleOpen] = React.useState(false)
+  const [scheduleDialog, setScheduleDialog] = React.useState(null)
+  const [voiding, setVoiding] = React.useState(null)
+  const [exceptionOpen, setExceptionOpen] = React.useState(false)
+  const [openDay, setOpenDay] = React.useState(null)
 
   const period = monthBounds(month)
   const { data, loading, refreshing, error, refetch } = useApi(`/employees/${employee.id}/attendance`, period)
 
   const mayManage = can('attendance.manage')
-  const mayRecordViolation = can('violations.create') && employee.employment_status === 'active'
 
   if (loading) return <LoadingState label="Loading attendance…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
   if (!data) return null
 
-  const { summary, days, policy, current_schedule: schedule, schedules } = data
+  const { summary, days, policy, current_schedule: schedule, schedules, schedule_changes: changes, exceptions, review_counts: reviewCounts } = data
   const grace = policy?.late_grace_minutes ?? 0
+  const latest = schedules.find((s) => s.status === 'active')
 
   return (
     <div className="space-y-4">
@@ -133,10 +108,10 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
                   <CalendarClock className="h-4 w-4 text-muted-foreground" />
                   Schedule
                 </CardTitle>
-                <CardDescription>What this employee is meant to work.</CardDescription>
+                <CardDescription>What the client set this employee to work.</CardDescription>
               </div>
-              {mayManage && (
-                <Button variant="outline" size="sm" onClick={() => setScheduleOpen(true)}>
+              {mayManage && employee.employment_status === 'active' && (
+                <Button variant="outline" size="sm" onClick={() => setScheduleDialog({ mode: 'new' })}>
                   {schedule ? 'Change' : 'Set schedule'}
                 </Button>
               )}
@@ -146,11 +121,33 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
             {schedule ? (
               <div>
                 <p className="font-medium">{schedule.description}</p>
+                {schedule.break_minutes ? (
+                  <p className="text-xs text-muted-foreground">
+                    Break {schedule.break_start ? `from ${schedule.break_start}, ` : ''}
+                    {schedule.break_minutes} min — shown, not deducted
+                  </p>
+                ) : null}
                 <p className="text-xs text-muted-foreground">
                   Since {formatDate(schedule.effective_from)}
+                  {schedule.company && ` · ${schedule.company}`}
+                  {schedule.department && `, ${schedule.department}`}
                   {schedule.set_by && ` · set by ${schedule.set_by}`}
                 </p>
                 {schedule.remarks && <p className="mt-1 text-xs text-muted-foreground">{schedule.remarks}</p>}
+                {mayManage && (
+                  <div className="mt-2 flex gap-1.5">
+                    <Button variant="ghost" size="sm" onClick={() => setScheduleDialog({ mode: 'correct', schedule })}>
+                      <Pencil className="h-3.5 w-3.5" />
+                      Correct
+                    </Button>
+                    {latest?.id === schedule.id && (
+                      <Button variant="ghost" size="sm" onClick={() => setVoiding(schedule)}>
+                        <Ban className="h-3.5 w-3.5" />
+                        Void
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-muted-foreground">
@@ -158,18 +155,45 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
               </p>
             )}
 
-            {schedules.length > 1 && (
+            {schedules.filter((s) => s.id !== schedule?.id).length > 0 && (
               <details className="text-xs">
-                <summary className="cursor-pointer text-muted-foreground">Earlier schedules</summary>
-                <ul className="mt-2 space-y-1.5">
+                <summary className="cursor-pointer text-muted-foreground">Schedule history</summary>
+                <ul className="mt-2 space-y-2">
                   {schedules
                     .filter((s) => s.id !== schedule?.id)
                     .map((s) => (
-                      <li key={s.id} className="text-muted-foreground">
-                        <span className="text-foreground">{s.description}</span> ·{' '}
-                        {formatDate(s.effective_from)} – {formatDate(s.effective_to, 'now')}
+                      <li key={s.id} className={cn('text-muted-foreground', s.status === 'voided' && 'line-through decoration-1')}>
+                        <Badge tone={PERIOD_STATUS[s.period_status]?.[1]} className="mr-1.5 no-underline">
+                          {PERIOD_STATUS[s.period_status]?.[0]}
+                        </Badge>
+                        <span className="text-foreground">{s.description}</span> · {formatDate(s.effective_from)} –{' '}
+                        {formatDate(s.effective_to, 'now')}
+                        {s.void_reason && <span className="block no-underline">Voided: {s.void_reason}</span>}
                       </li>
                     ))}
+                </ul>
+              </details>
+            )}
+
+            {changes.length > 0 && (
+              <details className="text-xs">
+                <summary className="cursor-pointer text-muted-foreground">Corrections ({changes.length})</summary>
+                <ul className="mt-2 space-y-2">
+                  {changes.map((change, i) => (
+                    <li key={i} className="text-muted-foreground">
+                      <span className="text-foreground">{change.action === 'void' ? 'Voided' : 'Corrected'}</span>
+                      {change.action !== 'void' &&
+                        Object.keys(change.after ?? {}).map((field) => (
+                          <span key={field} className="block">
+                            {field.replace('_', ' ')}: {String(change.before?.[field] ?? '—')} → {String(change.after[field] ?? '—')}
+                          </span>
+                        ))}
+                      {change.reason && <span className="block">“{change.reason}”</span>}
+                      <span className="block">
+                        {change.by} · {formatDateTime(change.at)}
+                      </span>
+                    </li>
+                  ))}
                 </ul>
               </details>
             )}
@@ -204,30 +228,27 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
               </div>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
+            <DataStatus summary={summary} />
             <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Tile label="Scheduled days" value={summary.scheduled_days} />
-              <Tile label="Present" value={summary.days_present} />
-              <Tile label="Absent" value={summary.days_absent} tone={summary.days_absent ? 'destructive' : null} />
+              <Tile label="On schedule" value={summary.on_schedule_days} />
+              <Tile label="Discrepancies" value={summary.discrepancy_days} tone={summary.discrepancy_days ? 'warning' : null} />
+              <Tile label="Awaiting DTR" value={summary.awaiting_dtr_days} />
               <Tile
                 label="Late"
-                value={summary.days_late}
+                value={summary.late_days}
                 hint={summary.late_minutes ? formatMinutes(summary.late_minutes) : null}
-                tone={summary.days_late ? 'warning' : null}
+                tone={summary.late_days ? 'warning' : null}
               />
               <Tile
-                label="Left early"
-                value={summary.days_undertime}
-                hint={summary.undertime_minutes ? formatMinutes(summary.undertime_minutes) : null}
-                tone={summary.days_undertime ? 'warning' : null}
+                label="Early departure"
+                value={summary.early_departure_days}
+                hint={summary.early_departure_minutes ? formatMinutes(summary.early_departure_minutes) : null}
+                tone={summary.early_departure_days ? 'warning' : null}
               />
-              <Tile label="Past scheduled end" value={formatMinutes(summary.overtime_minutes)} />
-              <Tile
-                label="Missing punches"
-                value={summary.incomplete_records}
-                tone={summary.incomplete_records ? 'destructive' : null}
-              />
-              <Tile label="Worked on rest day" value={summary.rest_day_work} />
+              <Tile label="Missing punches" value={summary.missing_punch_days} tone={summary.missing_punch_days ? 'destructive' : null} />
+              <Tile label="No DTR record" value={summary.no_record_days} tone={summary.no_record_days ? 'destructive' : null} />
             </dl>
           </CardContent>
         </Card>
@@ -237,17 +258,31 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <p>
           Late is counted from the scheduled start
-          {grace > 0 ? `, once past the ${grace}-minute allowance set in Settings` : ' to the minute (no grace period is set)'}.
-          “Past scheduled end” is time recorded after the shift ends — reported for HR, not approved
-          overtime, and never priced. Entries come from the client’s DTR; this system does not connect
-          to the biometric device.
+          {grace > 0 ? `, once past the ${grace}-minute allowance set in Settings` : ' to the minute (no grace period is set — CDE has not stated one)'}.
+          A day with nothing on file is <strong>awaiting DTR</strong>, not an absence; it becomes “No DTR record” only once
+          the client's DTR for it has been imported or marked complete. Time after the scheduled end is information,
+          not approved overtime. Breaks are shown, never deducted. This system does not connect to the biometric device.
         </p>
       </div>
+
+      {exceptions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Leave and holidays this month:</span>
+          {exceptions.map((e) => (
+            <Badge key={e.id} tone="info">
+              {e.label} {formatDate(e.date_from)}
+              {e.date_to !== e.date_from && ` – ${formatDate(e.date_to)}`}
+              {e.scope === 'client' && ' (whole client)'}
+            </Badge>
+          ))}
+        </div>
+      )}
 
       {editing ? (
         <DtrEditor
           employee={employee}
           days={days}
+          period={period}
           onCancel={() => setEditing(false)}
           onSaved={() => {
             setEditing(false)
@@ -259,12 +294,28 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
           <CardHeader className="pb-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="text-base">Day by day</CardTitle>
+              <div className="flex flex-wrap gap-2">
+                {reviewCounts?.open > 0 && (
+                  <Button size="sm" variant="outline" asChild>
+                    <Link to={reviewQueuePath(employee.id, month)}>
+                      <ClipboardCheck className="h-3.5 w-3.5" />
+                      {reviewCounts.open} open in the review queue
+                    </Link>
+                  </Button>
+                )}
               {mayManage && (
-                <Button size="sm" onClick={() => setEditing(true)}>
-                  <Pencil className="h-3.5 w-3.5" />
-                  Encode DTR
-                </Button>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setExceptionOpen(true)}>
+                    <CalendarOff className="h-3.5 w-3.5" />
+                    Record leave
+                  </Button>
+                  <Button size="sm" onClick={() => setEditing(true)}>
+                    <Pencil className="h-3.5 w-3.5" />
+                    Encode DTR
+                  </Button>
+                </div>
               )}
+              </div>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -273,7 +324,7 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
                 <EmptyState
                   icon={CalendarClock}
                   title="No schedule and no DTR yet"
-                  description="Set this employee's schedule, then encode their DTR from the client's time records to compare the two."
+                  description="Set this employee's schedule, then import or encode their DTR from the client's time records to compare the two."
                 />
               </div>
             ) : (
@@ -286,18 +337,15 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
                       <TableHead>Time in</TableHead>
                       <TableHead>Time out</TableHead>
                       <TableHead>Comparison</TableHead>
+                      <TableHead>Review</TableHead>
                       <TableHead className="w-0" />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {days.map((day) => {
-                      const status = STATUS[day.status]
-                      const quiet = ['outside_employment', 'upcoming', 'rest_day', 'no_schedule'].includes(day.status)
-                      const violationType = day.flags.includes('absent')
-                        ? 'absences'
-                        : day.flags.includes('late')
-                          ? 'late'
-                          : null
+                      const status = DAY_STATUS[day.status]
+                      const quiet = ['outside_employment', 'upcoming', 'rest_day', 'no_schedule', 'awaiting_dtr'].includes(day.status)
+                      const reviewStatus = REVIEW_STATUS[day.review_status]
 
                       return (
                         <TableRow key={day.date} className={cn(quiet && 'text-muted-foreground')}>
@@ -305,48 +353,38 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
                             <span className="inline-block w-9 text-xs text-muted-foreground">{day.weekday}</span>
                             {formatDate(day.date)}
                           </TableCell>
-                          <TableCell className="whitespace-nowrap text-sm">
-                            {day.schedule
-                              ? `${day.schedule.start}–${day.schedule.end}${day.schedule.crosses_midnight ? ' (+1)' : ''}`
-                              : '—'}
-                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-sm">{shiftText(day.schedule)}</TableCell>
                           <TableCell className="font-mono text-sm">{day.time_in ?? '—'}</TableCell>
                           <TableCell className="font-mono text-sm">
                             {day.time_out ?? '—'}
-                            {day.time_out && day.time_out_next_day && (
-                              <span className="ml-1 text-xs text-muted-foreground">(+1)</span>
-                            )}
+                            {day.time_out && day.time_out_next_day && <span className="ml-1 text-xs text-muted-foreground">(+1)</span>}
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap items-center gap-1.5">
                               {day.status !== 'discrepancy' && status && (
-                                <Badge tone={status.tone}>{status.label}</Badge>
+                                <Badge tone={status.tone}>{day.exception?.label ?? status.label}</Badge>
                               )}
-                              {flagBadges(day)}
-                              {day.remarks && (
-                                <span className="text-xs text-muted-foreground">{day.remarks}</span>
+                              {day.discrepancies.map((type) => (
+                                <Badge key={type} tone={DISCREPANCIES[type]?.tone ?? 'warning'}>
+                                  {discrepancyText(type, day)}
+                                </Badge>
+                              ))}
+                              {day.minutes_after_end > 0 && (
+                                <span className="text-xs text-muted-foreground">+{formatMinutes(day.minutes_after_end)} after end</span>
                               )}
+                              {day.source === 'import' && (
+                                <span className="text-xs text-muted-foreground">{day.import_code}</span>
+                              )}
+                              {day.remarks && <span className="text-xs text-muted-foreground">{day.remarks}</span>}
                             </div>
                           </TableCell>
+                          <TableCell>
+                            {reviewStatus && <Badge tone={reviewStatus.tone}>{reviewStatus.label}</Badge>}
+                          </TableCell>
                           <TableCell className="text-right">
-                            {mayRecordViolation && violationType && onRecordViolation && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                title="Start a violation record for this day. Nothing is recorded until you save it."
-                                onClick={() =>
-                                  onRecordViolation({
-                                    violation_date: day.date,
-                                    violation_type: violationType,
-                                    description:
-                                      violationType === 'late'
-                                        ? `Timed in at ${day.time_in} against a ${day.schedule.start} scheduled start (${formatMinutes(day.late_minutes)} late), per the DTR for ${formatDate(day.date)}.`
-                                        : `No time-in or time-out recorded on a scheduled work day (${day.schedule.start}–${day.schedule.end}), per the DTR for ${formatDate(day.date)}.`,
-                                  })
-                                }
-                              >
-                                <FileWarning className="h-3.5 w-3.5" />
-                                Violation
+                            {(reviewStatus || day.has_record) && (
+                              <Button variant="ghost" size="sm" onClick={() => setOpenDay(day.date)}>
+                                Details
                               </Button>
                             )}
                           </TableCell>
@@ -362,12 +400,45 @@ export default function AttendancePanel({ employee, onRecordViolation }) {
       )}
 
       <ScheduleDialog
-        open={scheduleOpen}
-        onOpenChange={setScheduleOpen}
+        state={scheduleDialog}
+        onClose={() => setScheduleDialog(null)}
         employee={employee}
         current={schedule}
         onSaved={refetch}
       />
+      <VoidScheduleDialog
+        schedule={voiding}
+        employee={employee}
+        onClose={() => setVoiding(null)}
+        onSaved={refetch}
+      />
+      <ExceptionDialog open={exceptionOpen} onOpenChange={setExceptionOpen} employee={employee} onSaved={refetch} />
+      <AttendanceDayDialog
+        key={openDay ?? 'none'}
+        open={openDay !== null}
+        onOpenChange={(value) => !value && setOpenDay(null)}
+        employeeId={employee.id}
+        date={openDay}
+        reviewHref={openDay ? reviewQueuePath(employee.id, month, openDay) : undefined}
+      />
+    </div>
+  )
+}
+
+/** Says plainly when there is not enough data for the figures to mean anything. */
+function DataStatus({ summary }) {
+  const message = {
+    no_dtr: 'No DTR is on file for this period yet. Until the client’s DTR is imported or encoded, these figures say nothing about this employee’s attendance.',
+    no_schedule: 'No schedule covers this period, so the DTR cannot be compared with anything.',
+    partial: `${summary.awaiting_dtr_days + summary.no_schedule_days} day(s) in this period cannot be compared yet — awaiting the DTR or without a schedule.`,
+  }[summary.data_status]
+
+  if (!message) return null
+
+  return (
+    <div className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-2 text-xs">
+      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+      <p>{message}</p>
     </div>
   )
 }
@@ -393,10 +464,12 @@ function Tile({ label, value, hint, tone }) {
 /**
  * Copying a DTR sheet in: every day of the period as a row of inputs.
  *
- * Only the rows that were changed are sent. Clearing a row removes that day's
- * record, which is what blanking a line on the sheet means.
+ * Only the rows that were changed are sent. Changing or clearing a day already
+ * on file asks for a reason; the earlier times are kept in that day's history.
+ * Ticking "complete" tells the comparison the client's DTR for the month has
+ * been read in full, so a scheduled day still blank had no time record.
  */
-function DtrEditor({ employee, days, onCancel, onSaved }) {
+function DtrEditor({ employee, days, period, onCancel, onSaved }) {
   const toast = useToast()
   const editable = days.filter((d) => !['outside_employment', 'upcoming'].includes(d.status))
 
@@ -409,17 +482,20 @@ function DtrEditor({ employee, days, onCancel, onSaved }) {
   )
 
   const [rows, setRows] = React.useState(initial)
+  const [reason, setReason] = React.useState('')
+  const [complete, setComplete] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [errors, setErrors] = React.useState({})
 
   const changed = Object.keys(rows).filter((date) => JSON.stringify(rows[date]) !== JSON.stringify(initial[date]))
+  const touchesExisting = changed.filter((date) => days.find((d) => d.date === date)?.has_record).length
 
   function set(date, field, value) {
     setRows((current) => ({ ...current, [date]: { ...current[date], [field]: value } }))
   }
 
   async function save() {
-    if (changed.length === 0) {
+    if (changed.length === 0 && !complete) {
       onCancel()
       return
     }
@@ -434,11 +510,13 @@ function DtrEditor({ employee, days, onCancel, onSaved }) {
           time_out: rows[date].time_out || null,
           remarks: rows[date].remarks || null,
         })),
+        reason: reason || null,
+        ...(complete ? { complete_from: period.from, complete_to: period.to > todayISO() ? todayISO() : period.to } : {}),
       })
       toast.success('DTR saved', response.message)
       onSaved()
     } catch (error) {
-      if (error.isValidation) {
+      if (error.isValidation && Object.keys(error.errors).length) {
         setErrors(error.errors)
         toast.error('Some entries need fixing', 'Times are 24-hour HH:MM.')
       } else {
@@ -456,8 +534,8 @@ function DtrEditor({ employee, days, onCancel, onSaved }) {
           <div className="space-y-1">
             <CardTitle className="text-base">Encode DTR</CardTitle>
             <CardDescription>
-              Copy the times from the client’s DTR. A time-out earlier than the time-in is read as the
-              next day. Leave a row blank for a day with no record.
+              Copy the times from the client’s DTR. A time-out earlier than the time-in is read as the next day.
+              Leave a row blank for a day with no record.
             </CardDescription>
           </div>
           <div className="flex gap-2">
@@ -465,11 +543,35 @@ function DtrEditor({ employee, days, onCancel, onSaved }) {
               <X className="h-3.5 w-3.5" />
               Cancel
             </Button>
-            <Button size="sm" onClick={save} disabled={saving}>
+            <Button size="sm" onClick={save} disabled={saving || (touchesExisting > 0 && !reason.trim())}>
               {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
               Save {changed.length ? `${changed.length} day${changed.length === 1 ? '' : 's'}` : ''}
             </Button>
           </div>
+        </div>
+        <div className="grid gap-3 pt-2 sm:grid-cols-2">
+          {touchesExisting > 0 && (
+            <Field
+              label={`Reason for changing ${touchesExisting} day(s) already on file`}
+              htmlFor="dtr_reason"
+              required
+              hint="The earlier times are kept with this reason."
+            >
+              <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Corrected from the client's signed DTR" />
+            </Field>
+          )}
+          <label className="flex cursor-pointer items-start gap-2 text-xs text-muted-foreground sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={complete}
+              onChange={(e) => setComplete(e.target.checked)}
+              className="mt-0.5 h-4 w-4 cursor-pointer rounded border-input accent-primary"
+            />
+            <span>
+              The client’s DTR for {formatDate(period.from)} – {formatDate(period.to)} has been read in full. Scheduled days
+              left blank had no time record and will be flagged “No DTR record” for review.
+            </span>
+          </label>
         </div>
       </CardHeader>
       <CardContent className="p-0">
@@ -492,13 +594,13 @@ function DtrEditor({ employee, days, onCancel, onSaved }) {
                   .map(([, messages]) => messages[0])
 
                 return (
-                  <TableRow key={day.date} className={cn(changed.includes(day.date) && 'bg-primary/[0.04]')}>
+                  <TableRow key={day.date} className={cn(changed.includes(day.date) && '[&>td]:!bg-inset-selected')}>
                     <TableCell className="whitespace-nowrap">
                       <span className="inline-block w-9 text-xs text-muted-foreground">{day.weekday}</span>
                       {formatDate(day.date)}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                      {day.schedule ? `${day.schedule.start}–${day.schedule.end}` : 'Rest day'}
+                      {day.schedule ? shiftText(day.schedule) : day.exception?.label ?? 'Rest day'}
                     </TableCell>
                     <TableCell>
                       <Input
@@ -542,19 +644,29 @@ function DtrEditor({ employee, days, onCancel, onSaved }) {
   )
 }
 
-function ScheduleDialog({ open, onOpenChange, employee, current, onSaved }) {
+/**
+ * A new schedule from a date (the old one closes the day before), or a
+ * correction of one entered wrongly, which keeps its dates and needs a reason.
+ */
+function ScheduleDialog({ state, onClose, employee, current, onSaved }) {
   const toast = useToast()
   const today = todayISO()
+  const open = state !== null
+  const correcting = state?.mode === 'correct'
+  const target = state?.schedule ?? current
 
   const blank = React.useCallback(
     () => ({
       effective_from: current ? today : employee.hire_date ?? today,
-      work_days: current?.work_days ?? [1, 2, 3, 4, 5],
-      shift_start: current?.shift_start ?? '08:00',
-      shift_end: current?.shift_end ?? '17:00',
-      remarks: '',
+      work_days: target?.work_days ?? [1, 2, 3, 4, 5],
+      shift_start: target?.shift_start ?? '08:00',
+      shift_end: target?.shift_end ?? '17:00',
+      break_start: target?.break_start ?? '',
+      break_minutes: target?.break_minutes ?? '',
+      remarks: correcting ? target?.remarks ?? '' : '',
+      reason: '',
     }),
-    [current, employee.hire_date, today]
+    [current, target, correcting, employee.hire_date, today]
   )
 
   const [form, setForm] = React.useState(blank)
@@ -581,13 +693,26 @@ function ScheduleDialog({ open, onOpenChange, employee, current, onSaved }) {
     event.preventDefault()
     setSaving(true)
     setErrors({})
+    const body = {
+      work_days: form.work_days,
+      shift_start: form.shift_start,
+      shift_end: form.shift_end,
+      break_start: form.break_start || null,
+      break_minutes: form.break_minutes === '' ? null : Number(form.break_minutes),
+      remarks: form.remarks || null,
+    }
     try {
-      await post(`/employees/${employee.id}/schedules`, form)
-      toast.success('Schedule saved', 'The DTR is now compared against it from the date it takes effect.')
-      onOpenChange(false)
+      if (correcting) {
+        await patch(`/employees/${employee.id}/schedules/${target.id}`, { ...body, reason: form.reason })
+        toast.success('Schedule corrected', 'The old values are kept in its correction history.')
+      } else {
+        await post(`/employees/${employee.id}/schedules`, { ...body, effective_from: form.effective_from })
+        toast.success('Schedule saved', 'The DTR is now compared against it from the date it takes effect.')
+      }
+      onClose()
       onSaved()
     } catch (error) {
-      if (error.isValidation) setErrors(error.errors)
+      if (error.isValidation && Object.keys(error.errors).length) setErrors(error.errors)
       else toast.error('Could not save the schedule', error.message)
     } finally {
       setSaving(false)
@@ -595,26 +720,30 @@ function ScheduleDialog({ open, onOpenChange, employee, current, onSaved }) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
+    <Dialog open={open} onOpenChange={(next) => !saving && !next && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{current ? 'Change schedule' : 'Set schedule'}</DialogTitle>
+          <DialogTitle>{correcting ? 'Correct schedule' : current ? 'Change schedule' : 'Set schedule'}</DialogTitle>
           <DialogDescription>
-            {current
-              ? 'The current schedule ends the day before this one starts, so earlier days are still compared with the schedule that applied to them.'
-              : 'Use the schedule the client company gave this worker.'}
+            {correcting
+              ? `For a schedule entered wrongly. Its dates stay; the old values and your reason are kept. Every day from ${formatDate(target?.effective_from)} is then compared with the corrected times, including days already reviewed — their reviews keep what was shown at the time. To change hours from a date onward, use Change instead.`
+              : current
+                ? 'The current schedule ends the day before this one starts, so earlier days are still compared with the schedule that applied to them.'
+                : 'Use the schedule the client company gave this worker.'}
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <Field label="Takes effect" htmlFor="effective_from" required error={errors.effective_from?.[0]}>
-            <Input
-              type="date"
-              value={form.effective_from}
-              min={employee.hire_date ?? undefined}
-              onChange={(e) => setForm({ ...form, effective_from: e.target.value })}
-            />
-          </Field>
+          {!correcting && (
+            <Field label="Takes effect" htmlFor="effective_from" required error={errors.effective_from?.[0]}>
+              <Input
+                type="date"
+                value={form.effective_from}
+                min={employee.hire_date ?? undefined}
+                onChange={(e) => setForm({ ...form, effective_from: e.target.value })}
+              />
+            </Field>
+          )}
 
           <Field label="Work days" htmlFor="work_days" required error={errors.work_days?.[0]}>
             <div className="flex flex-wrap gap-1.5">
@@ -652,6 +781,20 @@ function ScheduleDialog({ open, onOpenChange, employee, current, onSaved }) {
             </Field>
           </FormGrid>
 
+          <FormGrid>
+            <Field label="Break starts" htmlFor="break_start" error={errors.break_start?.[0]} hint="Optional.">
+              <Input type="time" value={form.break_start} onChange={(e) => setForm({ ...form, break_start: e.target.value })} />
+            </Field>
+            <Field label="Break length (minutes)" htmlFor="break_minutes" error={errors.break_minutes?.[0]} hint="Shown only; never deducted.">
+              <NumberInput
+                value={form.break_minutes}
+                onChange={(e) => setForm({ ...form, break_minutes: e.target.value })}
+                min={1}
+                max={600}
+              />
+            </Field>
+          </FormGrid>
+
           <Field label="Remarks" htmlFor="schedule_remarks" error={errors.remarks?.[0]}>
             <Input
               value={form.remarks}
@@ -660,13 +803,75 @@ function ScheduleDialog({ open, onOpenChange, employee, current, onSaved }) {
             />
           </Field>
 
+          {correcting && (
+            <Field label="Reason for the correction" htmlFor="schedule_reason" required error={errors.reason?.[0]}>
+              <Input
+                value={form.reason}
+                onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                placeholder="e.g. Shift start mistyped; the client sheet says 07:00"
+              />
+            </Field>
+          )}
+
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saving || form.work_days.length === 0}>
+            <Button type="submit" disabled={saving || form.work_days.length === 0 || (correcting && form.reason.trim().length < 5)}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              Save schedule
+              {correcting ? 'Save correction' : 'Save schedule'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function VoidScheduleDialog({ schedule, employee, onClose, onSaved }) {
+  const toast = useToast()
+  const [reason, setReason] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+
+  React.useEffect(() => setReason(''), [schedule])
+
+  async function submit(event) {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      await post(`/employees/${employee.id}/schedules/${schedule.id}/void`, { reason })
+      toast.success('Schedule voided', 'It is kept on file and no longer compared against.')
+      onClose()
+      onSaved()
+    } catch (error) {
+      toast.error('Could not void the schedule', error.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={schedule !== null} onOpenChange={(next) => !saving && !next && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Void this schedule?</DialogTitle>
+          <DialogDescription>
+            For a schedule entered in error. It stays on file, marked voided, and the schedule before it runs on
+            in its place. To change hours from a date, set a new schedule instead.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          <p className="text-sm font-medium">{schedule?.description}</p>
+          <Field label="Reason" htmlFor="void_reason" required>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Entered against the wrong employee" />
+          </Field>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="destructive" disabled={saving || reason.trim().length < 5}>
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+              Void schedule
             </Button>
           </DialogFooter>
         </form>

@@ -14,9 +14,14 @@ use App\Models\Applicant;
  */
 class PlacementResponseRecorded extends EmpowerNotification
 {
+    /**
+     * The note is passed in rather than read off the applicant: answers are
+     * kept per endorsement now (audit R-05), not in columns on the applicant.
+     */
     public function __construct(
         private readonly Applicant $applicant,
         private readonly string $response,
+        private readonly ?string $note = null,
     ) {
     }
 
@@ -36,12 +41,10 @@ class PlacementResponseRecorded extends EmpowerNotification
     {
         if ($this->response === 'declined') {
             return sprintf(
-                '%s has withdrawn from this placement%s. They cannot be deployed until '
-                .'their decision is confirmed and cleared.',
+                '%s has withdrawn from this placement%s. They cannot be deployed to it '
+                .'unless they change their mind and the office records their new answer.',
                 $this->applicant->applicant_code,
-                $this->applicant->placement_response_note
-                    ? ': "'.$this->applicant->placement_response_note.'"'
-                    : ''
+                $this->note ? ': "'.$this->note.'"' : ''
             );
         }
 

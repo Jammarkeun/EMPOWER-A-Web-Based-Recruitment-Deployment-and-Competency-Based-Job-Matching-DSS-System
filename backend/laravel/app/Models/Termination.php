@@ -5,10 +5,14 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Termination extends Model
 {
     use HasFactory;
+
+    /** draft | for_review -> finalized (administrator) or withdrawn (SeparationService). */
+    public const STATUSES = ['draft', 'for_review', 'finalized', 'withdrawn'];
 
     protected $fillable = [
         'employee_id',
@@ -23,6 +27,11 @@ class Termination extends Model
         'withdrawn_by',
         'withdrawn_at',
         'withdrawal_reason',
+        'employee_message',
+        'clearance_status',
+        'notice_notification_id',
+        'notice_viewed_at',
+        'notice_acknowledged_at',
     ];
 
     protected function casts(): array
@@ -31,7 +40,17 @@ class Termination extends Model
             'termination_date' => 'date:Y-m-d',
             'finalized_at' => 'datetime',
             'withdrawn_at' => 'datetime',
+            'notice_viewed_at' => 'datetime',
+            'notice_acknowledged_at' => 'datetime',
         ];
+    }
+
+    public function events(): HasMany
+    {
+        return $this->hasMany(SeparationEvent::class, 'case_id')
+            ->where('case_type', 'termination')
+            ->orderBy('occurred_at')
+            ->orderBy('id');
     }
 
     public function employee(): BelongsTo

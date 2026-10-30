@@ -4,24 +4,35 @@ use App\Http\Controllers\ApplicantController;
 use App\Http\Controllers\ApplicantQualificationController;
 use App\Http\Controllers\ArchiveController;
 use App\Http\Controllers\AttendanceController;
+use App\Http\Controllers\AttendanceExceptionController;
+use App\Http\Controllers\AttendanceImportController;
+use App\Http\Controllers\AttendanceReviewController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ClientCompanyController;
 use App\Http\Controllers\CoordinatorController;
+use App\Http\Controllers\CoordinatorIncidentController;
 use App\Http\Controllers\CoordinatorReportController;
+use App\Http\Controllers\CoordinatorRequisitionController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeploymentController;
+use App\Http\Controllers\DocumentFileController;
 use App\Http\Controllers\DocumentLibraryController;
 use App\Http\Controllers\DocumentScanController;
 use App\Http\Controllers\EmployeeController;
+use App\Http\Controllers\IncidentReportController;
 use App\Http\Controllers\JobPositionController;
 use App\Http\Controllers\JobRequestController;
+use App\Http\Controllers\ManpowerRequisitionController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\PortalController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\RegistrationController;
 use App\Http\Controllers\RequirementController;
+use App\Http\Controllers\RetentionReviewController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SeparationController;
+use App\Http\Controllers\SessionMonitorController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\TrainingController;
 use App\Http\Controllers\UserController;
@@ -44,7 +55,18 @@ Route::prefix('v1')->group(function () {
 
     // Login is throttled again inside the controller, keyed by email and IP
     // together, so this only caps raw request volume.
-    Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+    Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
+
+    /*
+     * Getting back into an account (audit FN-03, UX-09). Public, and answering
+     * the same way whether or not an account exists. The email route is off
+     * until PASSWORD_RESET_EMAIL is set and a real mailer is configured; until
+     * then the screen sends people to the office, which issues a temporary
+     * password that has to be replaced at the first sign-in.
+     */
+    Route::get('auth/password-recovery', [PasswordResetController::class, 'options']);
+    Route::post('auth/forgot-password', [PasswordResetController::class, 'sendLink'])->middleware('throttle:reset-link');
+    Route::post('auth/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:password-reset');
 
     /*
     |------------------------------------------------------------------
@@ -56,9 +78,10 @@ Route::prefix('v1')->group(function () {
     | an HR officer confirms the person's identity in person, so an open
     | endpoint cannot inject anyone into the recruitment pipeline.
     |
-    | Rate limited tightly: registration is a write from an unauthenticated
-    | caller, and a handful an hour from one address is far more than a genuine
-    | applicant needs.
+    | Rate limited (the `registration` limit in AppServiceProvider): ten new
+    | accounts an hour from one address, and thirty submissions in all, so
+    | correcting a mistake in the form costs nothing but the form still cannot
+    | be hammered. Both are set in config/empower.php.
     */
     Route::get('register/requirements', [RegistrationController::class, 'requirements']);
     /*
@@ -69,23 +92,70 @@ Route::prefix('v1')->group(function () {
      * a title and the company hiring - and it is read-only.
      */
     Route::get('register/positions', [JobPositionController::class, 'open']);
-    Route::post('register/check-email', [RegistrationController::class, 'checkEmail'])
-        ->middleware('throttle:20,1');
-    Route::post('register', [RegistrationController::class, 'register'])
-        ->middleware('throttle:5,60');
 
-    Route::middleware(['auth:sanctum', 'active'])->group(function () {
+    // There is deliberately no "is this email taken?" lookup (security audit
+    // V-03). The sign-up form never used it, and twenty answers a minute about
+    // any address - staff accounts included - made it a directory of who has an
+    // account. A taken address is still reported when the form is submitted,
+    // within the thirty-submissions-an-hour limit below.
+    Route::post('register', [RegistrationController::class, 'register'])
+        ->middleware('throttle:registration');
+
+    /*
+     * One document from the private local disk, by signed link only.
+     *
+     * No sign-in is needed because the link itself is the permission: it is
+     * minted only inside a response the viewer was already authorised to
+     * receive, and it expires within minutes. Altering any part of it breaks
+     * the signature. On Supabase the bucket's own pre-signed links are used
+     * instead and this route is never linked to.
+     */
+    Route::get('document-files/{path}', DocumentFileController::class)
+        ->where('path', '.*')
+        ->middleware(['signed:relative', 'throttle:document-files'])
+        ->name('documents.file');
+
+    Route::middleware(['auth:sanctum', 'active', 'password.current'])->group(function () {
 
         // ------------------------------------------------------------- account
         Route::post('auth/logout', [AuthController::class, 'logout']);
         Route::get('auth/me', [AuthController::class, 'me']);
+        Route::get('auth/session', [AuthController::class, 'session']);
         Route::patch('auth/profile', [AuthController::class, 'updateProfile']);
         Route::post('auth/change-password', [AuthController::class, 'changePassword']);
+
+        // A staff account's own picture - administrator, HR, or coordinator.
+        // Portal accounts set theirs under /portal, on their applicant record.
+        Route::post('auth/profile/photo', [AuthController::class, 'uploadPhoto'])
+            ->middleware('throttle:profile-photo');
 
         // Which notifications this account wants. Open to every signed-in user,
         // staff and portal alike - the categories and the reasoning are the same.
         Route::get('auth/notification-preferences', [AuthController::class, 'notificationPreferences']);
         Route::patch('auth/notification-preferences', [AuthController::class, 'updateNotificationPreferences']);
+
+        // ------------------------------------------------------- notifications
+        // Always scoped to the signed-in user; there is deliberately no route
+        // that reads somebody else's notifications.
+        Route::get('notifications', [NotificationController::class, 'index']);
+        Route::get('notifications/unread-count', [NotificationController::class, 'unreadCount']);
+        Route::post('notifications/{id}/read', [NotificationController::class, 'markRead']);
+        Route::post('notifications/read-all', [NotificationController::class, 'markAllRead']);
+        // What a sidebar item counted, once its page has been opened.
+        Route::post('notifications/read-destinations', [NotificationController::class, 'markDestinationsRead']);
+    });
+
+    /*
+    |------------------------------------------------------------------
+    | Internal (staff) API
+    |------------------------------------------------------------------
+    |
+    | Everything below takes record ids and returns the agency's full view of
+    | a record, so applicant and employee accounts are refused outright by the
+    | `staff` middleware - even for their own record, which they read through
+    | /portal instead. Each action still checks its own permission.
+    */
+    Route::middleware(['auth:sanctum', 'active', 'password.current', 'staff'])->group(function () {
 
         // ------------------------------------------------------------ settings
         // Reading is open to anyone with settings.view (HR included); every
@@ -95,6 +165,7 @@ Route::prefix('v1')->group(function () {
         Route::post('settings/reset', [SettingsController::class, 'reset']);
         Route::post('settings/requirement-types', [SettingsController::class, 'storeRequirementType']);
         Route::patch('settings/requirement-types/{requirementType}', [SettingsController::class, 'updateRequirementType']);
+        Route::post('settings/folder-recalculations', [SettingsController::class, 'recalculateFolders']);
         Route::post('settings/criteria', [SettingsController::class, 'storeCriterion']);
         Route::patch('settings/criteria/{criterion}', [SettingsController::class, 'updateCriterion']);
 
@@ -158,7 +229,7 @@ Route::prefix('v1')->group(function () {
         // the values through the normal applicant endpoints.
         Route::get('document-scan/status', [DocumentScanController::class, 'status']);
         Route::post('document-scan', [DocumentScanController::class, 'scan'])
-            ->middleware('throttle:20,1');
+            ->middleware('throttle:document-scan');
         Route::get('document-scan/status/{scan}', [DocumentScanController::class, 'result']);
 
         // ---------------------------------------------------- document library
@@ -174,6 +245,8 @@ Route::prefix('v1')->group(function () {
         Route::get('documents/file/{requirement}', [DocumentLibraryController::class, 'download']);
 
         // ---------------------------------------------------------- applicants
+        // The status vocabulary in lifecycle order, for filters and pickers.
+        Route::get('applicant-statuses', [ApplicantController::class, 'statuses']);
         Route::apiResource('applicants', ApplicantController::class)
             ->only(['index', 'store', 'show', 'update']);
         Route::patch('applicants/{applicant}/status', [ApplicantController::class, 'changeStatus']);
@@ -181,6 +254,9 @@ Route::prefix('v1')->group(function () {
         // checked them against their documents at the counter.
         Route::post('applicants/{applicant}/verify-identity', [ApplicantController::class, 'verifyIdentity']);
         Route::get('applicants/{applicant}/timeline', [ApplicantController::class, 'timeline']);
+        // The applicant's answer to their current placement, recorded by HR or
+        // corrected with a reason. Earlier answers are kept.
+        Route::post('applicants/{applicant}/placement-decisions', [ApplicantController::class, 'placementDecision']);
         // Education, work history, skills, and certificates - what the
         // matching engine compares with a request's criteria. Staff only.
         Route::put('applicants/{applicant}/qualifications', [ApplicantQualificationController::class, 'update']);
@@ -212,11 +288,15 @@ Route::prefix('v1')->group(function () {
         );
 
         // ------------------------------------------------------------ training
+        // Before the resource routes, so "candidates" is not read as a session id.
+        Route::get('trainings/candidates', [TrainingController::class, 'candidates']);
         Route::apiResource('trainings', TrainingController::class)
             ->only(['index', 'store', 'show', 'update'])
             ->parameters(['trainings' => 'training']);
         Route::post('trainings/{training}/enrollments', [TrainingController::class, 'enrol']);
         Route::patch('trainings/{training}/enrollments/{enrollment}', [TrainingController::class, 'updateEnrolment']);
+        // Only while nothing has been recorded for the enrolment.
+        Route::delete('trainings/{training}/enrollments/{enrollment}', [TrainingController::class, 'removeEnrolment']);
 
         // ---------------------------------------------------------- deployment
         Route::get('deployments', [DeploymentController::class, 'index']);
@@ -230,12 +310,28 @@ Route::prefix('v1')->group(function () {
         Route::patch('employees/{employee}', [EmployeeController::class, 'update']);
 
         // ---------------------------------------------------------- attendance
-        // The DTR compared with the schedule. Encoded by HR from the client's
-        // timekeeping; nothing here computes pay.
+        // The one attendance workflow: schedules, the DTR (typed in or
+        // imported from the client's file), the comparison, and HR's review
+        // of what it flags. Nothing here computes pay or records a violation.
         Route::get('attendance', [AttendanceController::class, 'summary']);
+        Route::get('attendance/discrepancies', [AttendanceReviewController::class, 'index']);
+        Route::get('attendance/imports', [AttendanceImportController::class, 'index']);
+        Route::post('attendance/imports', [AttendanceImportController::class, 'store']);
+        Route::get('attendance/imports/{import}', [AttendanceImportController::class, 'show']);
+        Route::post('attendance/imports/{import}/preview', [AttendanceImportController::class, 'preview']);
+        Route::post('attendance/imports/{import}/confirm', [AttendanceImportController::class, 'confirm']);
+        Route::post('attendance/imports/{import}/discard', [AttendanceImportController::class, 'discard']);
+        Route::get('attendance/imports/{import}/file', [AttendanceImportController::class, 'file']);
+        Route::get('attendance/exceptions', [AttendanceExceptionController::class, 'index']);
+        Route::post('attendance/exceptions', [AttendanceExceptionController::class, 'store']);
+        Route::post('attendance/exceptions/{exception}/void', [AttendanceExceptionController::class, 'void']);
         Route::get('employees/{employee}/attendance', [AttendanceController::class, 'show']);
         Route::post('employees/{employee}/attendance', [AttendanceController::class, 'storeRecords']);
+        Route::get('employees/{employee}/attendance/days/{date}', [AttendanceController::class, 'day']);
+        Route::post('employees/{employee}/attendance/days/{date}/review', [AttendanceReviewController::class, 'store']);
         Route::post('employees/{employee}/schedules', [AttendanceController::class, 'storeSchedule']);
+        Route::patch('employees/{employee}/schedules/{schedule}', [AttendanceController::class, 'updateSchedule']);
+        Route::post('employees/{employee}/schedules/{schedule}/void', [AttendanceController::class, 'voidSchedule']);
 
         // ---------------------------------------------------------- violations
         Route::get('employees/{employee}/violations', [EmployeeController::class, 'violations']);
@@ -251,6 +347,20 @@ Route::prefix('v1')->group(function () {
         Route::post('violation-reports/{report}/review', [ViolationReportController::class, 'review']);
         Route::get('violation-reports/{report}/evidence', [ViolationReportController::class, 'evidence']);
 
+        // Incidents coordinators report from client sites, for the office to
+        // read and answer with notes. Never about one worker's record.
+        Route::get('incident-reports', [IncidentReportController::class, 'index']);
+        Route::get('incident-reports/{report}', [IncidentReportController::class, 'show']);
+        Route::post('incident-reports/{report}/notes', [IncidentReportController::class, 'addNote']);
+        Route::get('incident-reports/{report}/evidence', [IncidentReportController::class, 'evidence']);
+
+        // Coordinators' manpower requisitions (provisional form). Approving
+        // one creates nothing; HR records the manpower request, which links it.
+        Route::get('requisitions', [ManpowerRequisitionController::class, 'index']);
+        Route::get('requisitions/{requisition}', [ManpowerRequisitionController::class, 'show']);
+        Route::post('requisitions/{requisition}/review', [ManpowerRequisitionController::class, 'review']);
+        Route::get('requisitions/{requisition}/attachment', [ManpowerRequisitionController::class, 'attachment']);
+
         // ---------------------------------------------------------- separation
         Route::get('separations', [SeparationController::class, 'index']);
         Route::post('employees/{employee}/resignations', [SeparationController::class, 'storeResignation']);
@@ -263,20 +373,27 @@ Route::prefix('v1')->group(function () {
         // reason. Neither deletes the termination.
         Route::post('employees/{employee}/terminations/{termination}/finalise', [SeparationController::class, 'finaliseTermination']);
         Route::post('employees/{employee}/terminations/{termination}/withdraw', [SeparationController::class, 'withdrawTermination']);
+        // CDE's clearance after a finalised termination.
+        Route::put('employees/{employee}/terminations/{termination}/clearance', [SeparationController::class, 'updateTerminationClearance']);
         Route::get('employees/{employee}/terminations/{termination}/document', [SeparationController::class, 'terminationDocument']);
 
         // ----------------------------------------------------- archive + audit
+        // Records past the retention settings, for a person to review. Lists
+        // and records decisions only; nothing here archives or deletes.
+        Route::get('retention-reviews', [RetentionReviewController::class, 'index']);
+        Route::post('retention-reviews', [RetentionReviewController::class, 'store']);
+
         Route::get('archives', [ArchiveController::class, 'index']);
         Route::get('archives/{archive}', [ArchiveController::class, 'show']);
         Route::get('audit-logs', [ArchiveController::class, 'auditLogs']);
+        Route::get('audit-logs/facets', [ArchiveController::class, 'auditLogFacets']);
 
-        // ------------------------------------------------------- notifications
-        // Always scoped to the signed-in user; there is deliberately no route
-        // that reads somebody else's notifications.
-        Route::get('notifications', [NotificationController::class, 'index']);
-        Route::get('notifications/unread-count', [NotificationController::class, 'unreadCount']);
-        Route::post('notifications/{id}/read', [NotificationController::class, 'markRead']);
-        Route::post('notifications/read-all', [NotificationController::class, 'markAllRead']);
+        // ------------------------------------------- sign-in monitoring (admin)
+        // Every device signed in, and every sign-in attempt. Shows no token or
+        // password; a session is addressed by its row id only.
+        Route::get('security/sessions', [SessionMonitorController::class, 'sessions']);
+        Route::get('security/sign-ins', [SessionMonitorController::class, 'signIns']);
+        Route::delete('security/sessions/{token}', [SessionMonitorController::class, 'revoke']);
 
         // ------------------------------------------------------------- reports
         Route::get('reports', [ReportController::class, 'index']);
@@ -312,7 +429,7 @@ Route::prefix('v1')->group(function () {
     | company id, so there is nothing in the request for a coordinator to
     | change to reach another client.
     */
-    Route::middleware(['auth:sanctum', 'active', 'coordinator'])->prefix('coordinator')->group(function () {
+    Route::middleware(['auth:sanctum', 'active', 'password.current', 'coordinator'])->prefix('coordinator')->group(function () {
         Route::get('dashboard', [CoordinatorController::class, 'dashboard']);
         Route::get('company', [CoordinatorController::class, 'company']);
         Route::get('employees', [CoordinatorController::class, 'employees']);
@@ -322,13 +439,33 @@ Route::prefix('v1')->group(function () {
 
         Route::get('violation-reports/options', [CoordinatorReportController::class, 'options']);
         Route::get('violation-reports', [CoordinatorReportController::class, 'index']);
-        Route::post('violation-reports', [CoordinatorReportController::class, 'store'])->middleware('throttle:30,1');
+        Route::post('violation-reports', [CoordinatorReportController::class, 'store'])->middleware('throttle:violation-report');
         Route::get('violation-reports/{report}', [CoordinatorReportController::class, 'show']);
         // POST rather than PUT so an evidence file can travel with the edit.
         Route::post('violation-reports/{report}', [CoordinatorReportController::class, 'update']);
         Route::post('violation-reports/{report}/submit', [CoordinatorReportController::class, 'submit']);
         Route::delete('violation-reports/{report}', [CoordinatorReportController::class, 'destroy']);
         Route::get('violation-reports/{report}/evidence', [CoordinatorReportController::class, 'evidence']);
+
+        Route::get('incident-reports/options', [CoordinatorIncidentController::class, 'options']);
+        Route::get('incident-reports', [CoordinatorIncidentController::class, 'index']);
+        Route::post('incident-reports', [CoordinatorIncidentController::class, 'store'])->middleware('throttle:violation-report');
+        Route::get('incident-reports/{report}', [CoordinatorIncidentController::class, 'show']);
+        Route::post('incident-reports/{report}', [CoordinatorIncidentController::class, 'update']);
+        Route::post('incident-reports/{report}/submit', [CoordinatorIncidentController::class, 'submit']);
+        Route::post('incident-reports/{report}/notes', [CoordinatorIncidentController::class, 'addNote'])->middleware('throttle:violation-report');
+        Route::delete('incident-reports/{report}', [CoordinatorIncidentController::class, 'destroy']);
+        Route::get('incident-reports/{report}/evidence', [CoordinatorIncidentController::class, 'evidence']);
+
+        // Written on the provisional default form until CDE's own arrives.
+        Route::get('requisitions/options', [CoordinatorRequisitionController::class, 'options']);
+        Route::get('requisitions', [CoordinatorRequisitionController::class, 'index']);
+        Route::post('requisitions', [CoordinatorRequisitionController::class, 'store'])->middleware('throttle:violation-report');
+        Route::get('requisitions/{requisition}', [CoordinatorRequisitionController::class, 'show']);
+        Route::post('requisitions/{requisition}', [CoordinatorRequisitionController::class, 'update']);
+        Route::post('requisitions/{requisition}/submit', [CoordinatorRequisitionController::class, 'submit']);
+        Route::delete('requisitions/{requisition}', [CoordinatorRequisitionController::class, 'destroy']);
+        Route::get('requisitions/{requisition}/attachment', [CoordinatorRequisitionController::class, 'attachment']);
     });
 
     /*
@@ -341,7 +478,7 @@ Route::prefix('v1')->group(function () {
     | the applicant or employee from the signed-in user's own link, so there is
     | nothing in the URL for a curious user to change.
     */
-    Route::middleware(['auth:sanctum', 'active', 'portal'])->prefix('portal')->group(function () {
+    Route::middleware(['auth:sanctum', 'active', 'password.current', 'portal'])->prefix('portal')->group(function () {
         Route::get('/', [PortalController::class, 'overview']);
         Route::get('documents', [PortalController::class, 'documents']);
         Route::get('documents/{requirementType}/download', [PortalController::class, 'downloadDocument']);
@@ -350,23 +487,46 @@ Route::prefix('v1')->group(function () {
         // verification stays with HR against the physical original, so this
         // cannot make anybody deployable.
         Route::post('documents/{requirementType}/upload', [PortalController::class, 'uploadDocument'])
-            ->middleware('throttle:30,1');
+            ->middleware('throttle:portal-upload');
 
         // Reads a document without storing it, so the applicant can find out at
         // home that a photo is too blurred to use. Throttled hard: each call is
         // roughly forty seconds of CPU on the recognition service, which makes an
         // unthrottled endpoint a cheap way to wedge it.
         Route::post('documents/check-readable', [PortalController::class, 'checkReadable'])
-            ->middleware('throttle:10,60');
+            ->middleware('throttle:readability-check');
         Route::get('profile', [PortalController::class, 'profile']);
         Route::patch('profile', [PortalController::class, 'updateProfile']);
+
+        // The applicant's own picture. No identifier in the URL: it is always
+        // the signed-in applicant's, like everything else under /portal.
+        Route::post('profile/photo', [PortalController::class, 'uploadPhoto'])
+            ->middleware('throttle:profile-photo');
 
         // The applicant's own answer to an offer of work. Records what they
         // decided; it changes no status and cannot advance anybody - the client's
         // approval and the agency's decision are still separate acts.
         Route::post('placement-response', [PortalController::class, 'respondToPlacement']);
 
+        // The applicant's own training sessions. Read-only: attendance and
+        // completion are recorded by HR on the staff Training screen.
+        Route::get('training', [PortalController::class, 'training']);
+
         Route::get('employment', [PortalController::class, 'employment']);
-        Route::post('resignation', [PortalController::class, 'submitResignation']);
+
+        // The employee's own resignation request: sending it, withdrawing it
+        // before HR accepts it, answering HR's question about it, and opening
+        // the letter attached to it. A request, never the separation itself -
+        // only HR completes a resignation. No id in any of these: the request
+        // is always the signed-in employee's own.
+        Route::post('resignation', [PortalController::class, 'submitResignation'])
+            ->middleware('throttle:portal-upload');
+        Route::post('resignation/withdraw', [PortalController::class, 'withdrawResignation']);
+        Route::post('resignation/respond', [PortalController::class, 'respondToResignation']);
+        Route::get('resignation/letter', [PortalController::class, 'resignationLetter']);
+
+        // Confirms receipt of a termination notice. Not agreement with it, and
+        // nothing about the termination waits for it.
+        Route::post('separation-notice/acknowledge', [PortalController::class, 'acknowledgeNotice']);
     });
 });

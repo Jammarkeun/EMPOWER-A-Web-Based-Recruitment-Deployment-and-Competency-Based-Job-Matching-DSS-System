@@ -25,7 +25,7 @@ class DeploymentController extends Controller
         $filters = $request->validate([
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['nullable', 'integer', 'exists:client_departments,id'],
-            'deployment_status' => ['nullable', 'string'],
+            'deployment_status' => ['nullable', Rule::in(Deployment::STATUSES)],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
@@ -39,6 +39,7 @@ class DeploymentController extends Controller
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '<=', $v))
             ->orderByDesc('deployment_date')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(DeploymentResource::collection($deployments), 'Deployments retrieved');
@@ -63,7 +64,7 @@ class DeploymentController extends Controller
             'employee_number' => ['nullable', 'string', 'max:60', 'unique:employees,employee_number'],
             'biometric_number' => ['nullable', 'string', 'max:60'],
             'deployment_date' => ['required', 'date'],
-            'remarks' => ['nullable', 'string'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
         ]);
 
         $applicant = Applicant::findOrFail($data['applicant_id']);
@@ -81,7 +82,7 @@ class DeploymentController extends Controller
     {
         $this->authorize('view', $deployment);
 
-        $deployment->load(['employee.applicant', 'company', 'department', 'jobRequest', 'history']);
+        $deployment->load(['employee.applicant', 'company', 'department', 'jobRequest', ...Deployment::HISTORY_RELATIONS]);
 
         return ApiResponse::success(new DeploymentResource($deployment));
     }
@@ -91,17 +92,23 @@ class DeploymentController extends Controller
         $this->authorize('reassign', $deployment);
 
         $data = $request->validate([
-            'client_company_id' => ['required', 'integer', 'exists:client_companies,id'],
+            // Optional, and must be the current client when sent: a move to
+            // another client is a new deployment (DeploymentService::reassign).
+            'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['required', 'integer', 'exists:client_departments,id'],
             'position_title' => ['nullable', 'string', 'max:150'],
             'supervisor_name' => ['nullable', 'string', 'max:190'],
-            'change_type' => ['required', Rule::in(['reassignment', 'transfer', 'return'])],
+            'change_type' => ['nullable', Rule::in(['reassignment', 'transfer', 'return'])],
             'effective_date' => ['required', 'date'],
-            'remarks' => ['nullable', 'string'],
+            // Why the worker was moved: the history should be able to answer it.
+            'remarks' => ['required', 'string', 'max:1000'],
+        ], [
+            'remarks.required' => 'Give the reason for the reassignment.',
         ]);
 
         $deployment = $this->deployments->reassign($deployment, $data, $request->user());
+        $deployment->load(Deployment::HISTORY_RELATIONS);
 
-        return ApiResponse::success(new DeploymentResource($deployment), 'Employee reassigned');
+        return ApiResponse::success(new DeploymentResource($deployment), 'Reassignment recorded.');
     }
 }

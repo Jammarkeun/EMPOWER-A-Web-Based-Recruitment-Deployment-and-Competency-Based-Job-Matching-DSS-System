@@ -22,7 +22,9 @@ class Archive extends Model
     protected function casts(): array
     {
         return [
-            'snapshot_json' => 'array',
+            // Accented letters stored as themselves rather than as \u escapes,
+            // so a search for "Peña" can find them (see ArchiveController).
+            'snapshot_json' => 'json:unicode',
             'archived_at' => 'datetime',
         ];
     }

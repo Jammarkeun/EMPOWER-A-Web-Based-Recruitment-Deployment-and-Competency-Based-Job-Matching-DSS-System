@@ -12,12 +12,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field, FormGrid } from '@/components/ui/form'
 import { todayISO } from '@/lib/utils'
 
-export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
+/**
+ * `initial` pre-fills the form - used when HR records an approved coordinator
+ * requisition, whose id travels with it so the server links the two.
+ */
+export default function NewJobRequestDialog({ open, onOpenChange, onCreated, initial, sourceLabel }) {
   const [companies, setCompanies] = React.useState([])
   const [departments, setDepartments] = React.useState([])
   const [positions, setPositions] = React.useState([])
@@ -30,7 +34,7 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
   React.useEffect(() => {
     if (!open) return
 
-    setForm(emptyForm())
+    setForm({ ...emptyForm(), ...(initial ?? {}) })
     setErrors({})
     setDepartments([])
 
@@ -113,6 +117,14 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
             request once it exists.
           </DialogDescription>
         </DialogHeader>
+
+        {sourceLabel && (
+          <p className="rounded-row bg-inset px-3 py-2 text-xs text-muted-foreground">
+            Filled in from approved requisition <span className="font-mono text-foreground">{sourceLabel}</span>. Check
+            it against the client before recording; the requisition's Reason of Request, qualifications and remarks are
+            kept as the request's remarks, and the two are linked.
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <FormGrid>
@@ -210,9 +222,10 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
             )}
 
             <Field label="Workers needed" htmlFor="workers_needed" required error={errors.workers_needed?.[0]}>
-              <Input
-                type="number"
+              <NumberInput
                 min="1"
+                max="1000"
+                step="1"
                 value={form.workers_needed}
                 onChange={(e) => set('workers_needed', e.target.value)}
               />
@@ -230,6 +243,7 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
               <Input
                 type="date"
                 value={form.deployment_deadline}
+                min={form.date_requested || undefined}
                 onChange={(e) => set('deployment_deadline', e.target.value)}
               />
             </Field>
@@ -248,20 +262,21 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
               error={errors.required_experience_months?.[0]}
               hint="In months"
             >
-              <Input
-                type="number"
+              <NumberInput
                 min="0"
+                max="600"
+                step="1"
                 value={form.required_experience_months}
                 onChange={(e) => set('required_experience_months', e.target.value)}
               />
             </Field>
 
             <Field label="Minimum age" htmlFor="age_min" error={errors.age_min?.[0]}>
-              <Input type="number" value={form.age_min} onChange={(e) => set('age_min', e.target.value)} />
+              <NumberInput min="15" max="99" step="1" value={form.age_min} onChange={(e) => set('age_min', e.target.value)} />
             </Field>
 
             <Field label="Maximum age" htmlFor="age_max" error={errors.age_max?.[0]}>
-              <Input type="number" value={form.age_max} onChange={(e) => set('age_max', e.target.value)} />
+              <NumberInput min={form.age_min || '15'} max="99" step="1" value={form.age_max} onChange={(e) => set('age_max', e.target.value)} />
             </Field>
           </FormGrid>
 

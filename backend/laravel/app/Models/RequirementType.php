@@ -17,6 +17,8 @@ class RequirementType extends Model
         'requirement_group',
         'is_required',
         'has_expiry',
+        // pre_deployment_only | renew_while_employed | null; see DocumentCompliance.
+        'post_deployment_rule',
         'active_flag',
         'display_order',
     ];

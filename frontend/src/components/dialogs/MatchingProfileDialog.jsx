@@ -11,9 +11,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field, FormGrid } from '@/components/ui/form'
+import { latestBirthDate } from '@/lib/validation'
 
 const SCORED = ['sex', 'birth_date', 'height_cm', 'distance_km', 'availability_date', 'communication_rating', 'reliability_rating']
 
@@ -118,7 +119,7 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
 
       await put(`/applicants/${applicant.id}/qualifications`, {
         educations: form.educations.map((e) => ({ ...e, graduation_year: e.graduation_year || null, course_program: e.course_program || null })),
-        experiences: form.experiences.map((e) => ({ ...e, months_experience: Number(e.months_experience) || 0 })),
+        experiences: form.experiences.map((e) => ({ ...e, months_experience: e.months_experience === '' ? null : Number(e.months_experience) })),
         skills: form.skills,
         certifications: form.certifications.map((c) => ({
           ...c,
@@ -172,13 +173,13 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
                 </Select>
               </Field>
               <Field label="Date of birth" htmlFor="mp_birth" error={err('birth_date')}>
-                <Input type="date" value={form.details.birth_date?.slice?.(0, 10) ?? ''} onChange={setDetail('birth_date')} />
+                <Input type="date" value={form.details.birth_date?.slice?.(0, 10) ?? ''} onChange={setDetail('birth_date')} max={latestBirthDate()} />
               </Field>
               <Field label="Height (cm)" htmlFor="mp_height" error={err('height_cm')}>
-                <Input type="number" min="100" max="250" value={form.details.height_cm} onChange={setDetail('height_cm')} />
+                <NumberInput min="100" max="250" step="0.01" value={form.details.height_cm} onChange={setDetail('height_cm')} />
               </Field>
               <Field label="Distance from worksite (km)" htmlFor="mp_distance" error={err('distance_km')}>
-                <Input type="number" min="0" step="0.1" value={form.details.distance_km} onChange={setDetail('distance_km')} />
+                <NumberInput min="0" max="9999" step="0.01" value={form.details.distance_km} onChange={setDetail('distance_km')} />
               </Field>
               <Field label="Available from" htmlFor="mp_available" error={err('availability_date')}>
                 <Input
@@ -189,10 +190,10 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
               </Field>
               <div />
               <Field label="Communication (interview, 0–5)" htmlFor="mp_comm" error={err('communication_rating')}>
-                <Input type="number" min="0" max="5" step="0.5" value={form.details.communication_rating} onChange={setDetail('communication_rating')} />
+                <NumberInput min="0" max="5" step="0.5" value={form.details.communication_rating} onChange={setDetail('communication_rating')} />
               </Field>
               <Field label="Reliability (interview, 0–5)" htmlFor="mp_rel" error={err('reliability_rating')}>
-                <Input type="number" min="0" max="5" step="0.5" value={form.details.reliability_rating} onChange={setDetail('reliability_rating')} />
+                <NumberInput min="0" max="5" step="0.5" value={form.details.reliability_rating} onChange={setDetail('reliability_rating')} />
               </Field>
             </FormGrid>
           </section>
@@ -217,7 +218,7 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
                 </Select>
                 <Input placeholder="School" value={row.school_name} onChange={(e) => setRow('educations', i, 'school_name', e.target.value)} aria-label="School" />
                 <Input placeholder="Course (optional)" value={row.course_program} onChange={(e) => setRow('educations', i, 'course_program', e.target.value)} aria-label="Course" />
-                <Input placeholder="Year" type="number" value={row.graduation_year} onChange={(e) => setRow('educations', i, 'graduation_year', e.target.value)} aria-label="Graduation year" />
+                <NumberInput placeholder="Year" min="1950" max={new Date().getFullYear() + 6} step="1" value={row.graduation_year} onChange={(e) => setRow('educations', i, 'graduation_year', e.target.value)} aria-label="Graduation year" />
                 <Button type="button" variant="ghost" size="icon" onClick={() => removeRow('educations', i)} aria-label="Remove education">
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -243,7 +244,7 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
               <div key={i} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[1fr_1fr_7rem_auto]">
                 <Input placeholder="Employer" value={row.company_name} onChange={(e) => setRow('experiences', i, 'company_name', e.target.value)} aria-label="Employer" />
                 <Input placeholder="Position" value={row.position_title} onChange={(e) => setRow('experiences', i, 'position_title', e.target.value)} aria-label="Position" />
-                <Input placeholder="Months" type="number" min="0" value={row.months_experience} onChange={(e) => setRow('experiences', i, 'months_experience', e.target.value)} aria-label="Months" />
+                <NumberInput placeholder="Months" min="0" max="600" step="1" value={row.months_experience} onChange={(e) => setRow('experiences', i, 'months_experience', e.target.value)} aria-label="Months" />
                 <Button type="button" variant="ghost" size="icon" onClick={() => removeRow('experiences', i)} aria-label="Remove experience">
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -325,7 +326,7 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
                 <Input list="cert-vocabulary" placeholder="Certificate" value={row.certification_name} onChange={(e) => setRow('certifications', i, 'certification_name', e.target.value)} aria-label="Certificate" />
                 <Input placeholder="Issuer" value={row.issuer} onChange={(e) => setRow('certifications', i, 'issuer', e.target.value)} aria-label="Issuer" />
                 <Input type="date" value={row.issued_at} onChange={(e) => setRow('certifications', i, 'issued_at', e.target.value)} aria-label="Issued" title="Issued" />
-                <Input type="date" value={row.expires_at} onChange={(e) => setRow('certifications', i, 'expires_at', e.target.value)} aria-label="Expires" title="Expires (an expired certificate does not count)" />
+                <Input type="date" value={row.expires_at} min={row.issued_at || undefined} onChange={(e) => setRow('certifications', i, 'expires_at', e.target.value)} aria-label="Expires" title="Expires (an expired certificate does not count)" />
                 <Button type="button" variant="ghost" size="icon" onClick={() => removeRow('certifications', i)} aria-label="Remove certificate">
                   <Trash2 className="h-4 w-4" />
                 </Button>

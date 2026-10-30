@@ -9,8 +9,9 @@ import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
-import { cn, formatDate } from '@/lib/utils'
-import { Pagination } from './Applicants'
+import { formatDate } from '@/lib/utils'
+import { ProgressTrack } from '@/components/ui/panel'
+import { Pagination, useClampPage } from '@/components/Pagination'
 import NewJobRequestDialog from '@/components/dialogs/NewJobRequestDialog'
 
 export default function JobRequests() {
@@ -24,7 +25,7 @@ export default function JobRequests() {
 
   const { data, meta, loading, error, refetch } = useApi('/job-requests', {
     request_status: status || undefined,
-    only_open: onlyOpen || undefined,
+    only_open: onlyOpen ? 1 : undefined,
     page,
     per_page: 20,
   })
@@ -40,6 +41,9 @@ export default function JobRequests() {
   function clearFilters() {
     setSearchParams(new URLSearchParams())
   }
+
+  const filtered = Boolean(status || onlyOpen)
+  useClampPage(meta, (p) => updateFilter('page', String(p)))
 
   return (
     <div className="space-y-4">
@@ -88,18 +92,28 @@ export default function JobRequests() {
       />
 
       {loading ? (
-        <Table>
+        // A loading placeholder, not table rows, so it sits in the table's
+        // panel rather than inside a <table>.
+        <div className="w-full rounded-panel bg-card p-3 sm:p-4">
           <SkeletonRows rows={6} columns={6} />
-        </Table>
+        </div>
       ) : error ? (
         <ErrorState message={error.message} onRetry={refetch} />
       ) : !data?.length ? (
         <EmptyState
           icon={ClipboardList}
-          title="No manpower requests found"
-          description="Record a request when a client company asks for workers."
+          title={filtered ? 'No manpower requests match these filters' : 'No manpower requests recorded yet'}
+          description={
+            filtered
+              ? 'Try another status, or show every request.'
+              : 'Record a request when a client company asks for workers.'
+          }
           action={
-            can('job_requests.create') ? (
+            filtered ? (
+              <Button size="sm" variant="outline" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            ) : can('job_requests.create') ? (
               <Button size="sm" onClick={() => setDialogOpen(true)}>
                 <Plus className="h-4 w-4" />
                 Record Request
@@ -197,25 +211,20 @@ export default function JobRequests() {
   )
 }
 
-/** Shows fill progress: primary text "X of Y filled", small 4px progress bar below. */
+/** Shows fill progress: "X of Y filled" and the percentage above a striped track. */
 export function FillBar({ filled, needed }) {
   const percentage = needed > 0 ? Math.min(100, (filled / needed) * 100) : 0
   const complete = filled >= needed
 
   return (
-    <div className="min-w-[120px] space-y-1">
-      <div className="flex items-center justify-between text-xs font-mono tabular-nums">
-        <span className="font-semibold text-foreground">
+    <div className="min-w-[140px] space-y-2">
+      <div className="flex items-center justify-between gap-3 text-xs tabular-nums">
+        <span className="font-medium text-foreground">
           {filled} of {needed} filled
         </span>
-        <span className="text-muted-foreground font-sans">{Math.round(percentage)}%</span>
+        <span className="text-muted-foreground">{Math.round(percentage)}%</span>
       </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn('h-full rounded-full transition-all duration-300', complete ? 'bg-status-success-text' : 'bg-brand')}
-          style={{ width: `${percentage}%` }}
-        />
-      </div>
+      <ProgressTrack value={percentage} tone={complete ? 'success' : 'default'} className="h-2" />
     </div>
   )
 }

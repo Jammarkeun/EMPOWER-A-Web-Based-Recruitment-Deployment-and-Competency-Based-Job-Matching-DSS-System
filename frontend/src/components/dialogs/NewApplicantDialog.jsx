@@ -13,10 +13,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, MobileInput, NameInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field, FormGrid } from '@/components/ui/form'
 import { todayISO } from '@/lib/utils'
+import { formProblems, latestBirthDate } from '@/lib/validation'
+import { READABLE_ACCEPT } from '@/lib/uploads'
 
 const EMPTY = {
   source_channel: 'walk_in',
@@ -152,7 +154,12 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
 
   async function handleSubmit(event) {
     event.preventDefault()
-    setErrors({})
+
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { mobiles: ['contact_number'], names: ['first_name', 'middle_name', 'last_name'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSubmitting(true)
 
     try {
@@ -215,7 +222,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
               error={errors.first_name?.[0]}
               hint={hintFor(scanned.first_name)}
             >
-              <Input value={form.first_name} onChange={(e) => set('first_name', e.target.value)} autoFocus />
+              <NameInput value={form.first_name} onChange={(e) => set('first_name', e.target.value)} autoFocus />
             </Field>
 
             <Field
@@ -225,7 +232,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
               error={errors.last_name?.[0]}
               hint={hintFor(scanned.last_name)}
             >
-              <Input value={form.last_name} onChange={(e) => set('last_name', e.target.value)} />
+              <NameInput value={form.last_name} onChange={(e) => set('last_name', e.target.value)} />
             </Field>
 
             <Field
@@ -234,7 +241,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
               error={errors.middle_name?.[0]}
               hint={hintFor(scanned.middle_name)}
             >
-              <Input value={form.middle_name} onChange={(e) => set('middle_name', e.target.value)} />
+              <NameInput value={form.middle_name} onChange={(e) => set('middle_name', e.target.value)} />
             </Field>
 
             <Field label="Sex" htmlFor="sex" error={errors.sex?.[0]}>
@@ -250,7 +257,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
               error={errors.birth_date?.[0]}
               hint="Used for the age criterion during matching"
             >
-              <Input type="date" value={form.birth_date} onChange={(e) => set('birth_date', e.target.value)} />
+              <Input type="date" value={form.birth_date} onChange={(e) => set('birth_date', e.target.value)} max={latestBirthDate()} />
             </Field>
 
             <Field label="How did they apply?" htmlFor="source_channel" required error={errors.source_channel?.[0]}>
@@ -262,7 +269,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
             </Field>
 
             <Field label="Contact number" htmlFor="contact_number" error={errors.contact_number?.[0]}>
-              <Input value={form.contact_number} onChange={(e) => set('contact_number', e.target.value)} placeholder="09XX XXX XXXX" />
+              <MobileInput value={form.contact_number} onChange={(e) => set('contact_number', e.target.value)} />
             </Field>
 
             <Field label="Email address" htmlFor="email" error={errors.email?.[0]}>
@@ -367,7 +374,7 @@ function ScanPanel({ scanning, onScan, meta, fieldCount, onClear }) {
             <input
               type="file"
               className="sr-only"
-              accept=".pdf,.jpg,.jpeg,.png,.webp"
+              accept={READABLE_ACCEPT}
               disabled={scanning}
               onChange={(e) => onScan(e.target.files?.[0])}
             />

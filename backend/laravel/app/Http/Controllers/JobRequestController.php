@@ -13,14 +13,19 @@ use App\Models\CriteriaCatalog;
 use App\Models\JobPosition;
 use App\Models\JobRequest;
 use App\Models\JobRequestMatch;
+use App\Models\ManpowerRequisition;
 use App\Models\RequestCriteria;
+use App\Rules\NotBelow;
 use App\Services\AuditService;
+use App\Services\JobRequestLifecycleService;
+use App\Services\ManpowerRequisitionService;
 use App\Services\Matching\CompetencyScoringService;
 use App\Services\ReferenceCodeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class JobRequestController extends Controller
 {
@@ -28,6 +33,8 @@ class JobRequestController extends Controller
         private readonly ReferenceCodeService $codes,
         private readonly CompetencyScoringService $scoring,
         private readonly AuditService $audit,
+        private readonly JobRequestLifecycleService $requests,
+        private readonly ManpowerRequisitionService $requisitions,
     ) {
     }
 
@@ -38,7 +45,7 @@ class JobRequestController extends Controller
         $filters = $request->validate([
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['nullable', 'integer', 'exists:client_departments,id'],
-            'request_status' => ['nullable', 'string'],
+            'request_status' => ['nullable', Rule::in(array_keys(config('empower.job_request_transitions', [])))],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'only_open' => ['nullable', 'boolean'],
@@ -55,6 +62,7 @@ class JobRequestController extends Controller
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('date_requested', '<=', $v))
             ->when($filters['only_open'] ?? false, fn ($q) => $q->open())
             ->orderByDesc('date_requested')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(JobRequestResource::collection($requests), 'Manpower requests retrieved');
@@ -74,18 +82,20 @@ class JobRequestController extends Controller
             'position_title' => ['required_without:job_position_id', 'string', 'max:150'],
             'required_education' => ['nullable', 'string', 'max:150'],
             'required_experience_months' => ['nullable', 'integer', 'min:0', 'max:600'],
-            'required_certifications' => ['nullable', 'string'],
+            'required_certifications' => ['nullable', 'string', 'max:5000'],
             'gender_preference' => ['nullable', Rule::in(['any', 'male', 'female'])],
             'age_min' => ['nullable', 'integer', 'between:15,99'],
-            'age_max' => ['nullable', 'integer', 'between:15,99', 'gte:age_min'],
-            'height_min_cm' => ['nullable', 'numeric', 'between:100,250'],
-            'physical_requirement' => ['nullable', 'string'],
+            'age_max' => ['nullable', 'integer', 'between:15,99', new NotBelow('age_min', 'minimum age')],
+            'height_min_cm' => ['nullable', 'numeric', 'decimal:0,2', 'between:100,250'],
+            'physical_requirement' => ['nullable', 'string', 'max:5000'],
             'availability_requirement' => ['nullable', 'string', 'max:120'],
             'workers_needed' => ['required', 'integer', 'min:1', 'max:1000'],
             'date_requested' => ['required', 'date'],
             'deployment_deadline' => ['nullable', 'date', 'after_or_equal:date_requested'],
             'request_source' => ['nullable', 'string', 'max:80'],
-            'remarks' => ['nullable', 'string'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
+            // The approved coordinator requisition this request records, if any.
+            'manpower_requisition_id' => ['nullable', 'integer', 'exists:manpower_requisitions,id'],
         ]);
 
         $company = ClientCompany::findOrFail($data['client_company_id']);
@@ -99,18 +109,38 @@ class JobRequestController extends Controller
             return ApiResponse::error('The selected department does not belong to that client company.', 422);
         }
 
-        $position = $this->resolvePosition($company, $data, $request->user()->id);
+        $requisition = isset($data['manpower_requisition_id'])
+            ? ManpowerRequisition::findOrFail($data['manpower_requisition_id'])
+            : null;
+        unset($data['manpower_requisition_id']);
 
-        $jobRequest = JobRequest::create(array_merge($data, [
-            'request_code' => $this->codes->jobRequest(),
-            'job_position_id' => $position->id,
-            // Kept in step with the position when one was chosen, so the two
-            // never disagree about what the job is called.
-            'position_title' => $position->position_title,
-            'created_by' => $request->user()->id,
+        if ($requisition) {
+            $this->requisitions->assertLinkable($requisition, $company->id);
+        }
+
+        // The request and its link to the requisition land together or not at all.
+        $jobRequest = DB::transaction(function () use ($company, $data, $request, $requisition) {
+            $position = $this->resolvePosition($company, $data, $request->user()->id);
+
+            $jobRequest = JobRequest::create(array_merge($data, [
+                'request_code' => $this->codes->jobRequest(),
+                'job_position_id' => $position->id,
+                // Kept in step with the position when one was chosen, so the two
+                // never disagree about what the job is called.
+                'position_title' => $position->position_title,
+                'created_by' => $request->user()->id,
+            ]));
+
+            if ($requisition) {
+                $this->requisitions->linkJobRequest($requisition, $jobRequest, $request->user());
+            }
+
+            return $jobRequest;
+        });
+
+        $this->audit->record('create', 'job_requests', JobRequest::class, $jobRequest->id, null, $data + array_filter([
+            'requisition' => $requisition?->requisition_code,
         ]));
-
-        $this->audit->record('create', 'job_requests', JobRequest::class, $jobRequest->id, null, $data);
 
         return ApiResponse::created(
             new JobRequestResource($jobRequest->load(['company', 'department'])),
@@ -178,7 +208,7 @@ class JobRequestController extends Controller
         $jobRequest->load(['company', 'department', 'criteria.criterion'])
             ->loadCount(['matches']);
 
-        return ApiResponse::success(new JobRequestResource($jobRequest));
+        return ApiResponse::success($this->presentWithHistory($jobRequest));
     }
 
     public function update(Request $request, JobRequest $jobRequest): JsonResponse
@@ -189,16 +219,16 @@ class JobRequestController extends Controller
             'position_title' => ['sometimes', 'string', 'max:150'],
             'required_education' => ['nullable', 'string', 'max:150'],
             'required_experience_months' => ['nullable', 'integer', 'min:0', 'max:600'],
-            'required_certifications' => ['nullable', 'string'],
+            'required_certifications' => ['nullable', 'string', 'max:5000'],
             'gender_preference' => ['nullable', Rule::in(['any', 'male', 'female'])],
             'age_min' => ['nullable', 'integer', 'between:15,99'],
-            'age_max' => ['nullable', 'integer', 'between:15,99', 'gte:age_min'],
-            'height_min_cm' => ['nullable', 'numeric', 'between:100,250'],
-            'physical_requirement' => ['nullable', 'string'],
+            'age_max' => ['nullable', 'integer', 'between:15,99', new NotBelow('age_min', 'minimum age', $jobRequest->age_min)],
+            'height_min_cm' => ['nullable', 'numeric', 'decimal:0,2', 'between:100,250'],
+            'physical_requirement' => ['nullable', 'string', 'max:5000'],
             'availability_requirement' => ['nullable', 'string', 'max:120'],
             'workers_needed' => ['sometimes', 'integer', 'min:1', 'max:1000'],
-            'deployment_deadline' => ['nullable', 'date'],
-            'remarks' => ['nullable', 'string'],
+            'deployment_deadline' => ['nullable', 'date', 'after_or_equal:'.$jobRequest->date_requested?->toDateString()],
+            'remarks' => ['nullable', 'string', 'max:5000'],
         ]);
 
         // Reducing the headcount below what has already been deployed would make
@@ -212,43 +242,66 @@ class JobRequestController extends Controller
         }
 
         $before = $jobRequest->only(array_keys($data));
-        $jobRequest->update($data);
+
+        DB::transaction(function () use ($jobRequest, $data, $before, $request) {
+            $jobRequest->update($data);
+
+            // A new headcount can fill a request, or reopen a filled one; the
+            // status follows the numbers rather than going stale beside them.
+            if (isset($data['workers_needed']) && (int) $data['workers_needed'] !== (int) ($before['workers_needed'] ?? 0)) {
+                $this->requests->syncToHeadcount(
+                    $jobRequest->fresh(),
+                    $request->user(),
+                    sprintf('Workers needed changed from %d to %d.', $before['workers_needed'], $data['workers_needed']),
+                    'headcount'
+                );
+            }
+        });
 
         $this->audit->recordUpdate('job_requests', JobRequest::class, $jobRequest->id, $before, $data);
 
         return ApiResponse::success(new JobRequestResource($jobRequest->fresh()), 'Manpower request updated');
     }
 
+    /**
+     * Change a request's status by hand (audit R-16).
+     *
+     * Only moves the transition map allows; closing, cancelling and reopening
+     * need a reason; every change is kept in the request's status history.
+     */
     public function changeStatus(Request $request, JobRequest $jobRequest): JsonResponse
     {
         $this->authorize('close', $jobRequest);
 
         $data = $request->validate([
-            'request_status' => ['required', Rule::in(['open', 'in_progress', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'])],
+            'request_status' => ['required', Rule::in(array_keys(config('empower.job_request_transitions')))],
             'reason' => ['nullable', 'string', 'max:255'],
         ]);
 
-        if ($data['request_status'] === 'fulfilled' && $jobRequest->workers_fulfilled < $jobRequest->workers_needed) {
-            return ApiResponse::error(sprintf(
-                'Only %d of %d positions are filled, so this request cannot be marked fulfilled. Use "closed" to end it early.',
-                $jobRequest->workers_fulfilled,
-                $jobRequest->workers_needed
-            ), 400);
-        }
+        $jobRequest = $this->requests->change($jobRequest, $data['request_status'], $request->user(), $data['reason'] ?? null);
 
-        $before = ['request_status' => $jobRequest->request_status];
-        $jobRequest->forceFill(['request_status' => $data['request_status']])->save();
+        return ApiResponse::success($this->presentWithHistory($jobRequest), 'Request status updated');
+    }
 
-        $this->audit->record(
-            'update',
-            'job_requests',
-            JobRequest::class,
-            $jobRequest->id,
-            $before,
-            ['request_status' => $data['request_status'], 'reason' => $data['reason'] ?? null]
-        );
+    /**
+     * The request, its status history, and the changes a person can make next.
+     */
+    private function presentWithHistory(JobRequest $jobRequest): array
+    {
+        $jobRequest->loadMissing(['company', 'department', 'statusHistory.changedBy']);
 
-        return ApiResponse::success(new JobRequestResource($jobRequest->fresh()), 'Request status updated');
+        return array_merge((new JobRequestResource($jobRequest))->resolve(), [
+            'status_history' => $jobRequest->statusHistory->map(fn ($h) => [
+                'id' => $h->id,
+                'from_status' => $h->from_status,
+                'to_status' => $h->to_status,
+                'reason' => $h->reason,
+                'source' => $h->source,
+                'changed_by' => $h->changedBy?->full_name,
+                'changed_at' => $h->changed_at?->toIso8601String(),
+            ])->values(),
+            'status_changes' => $this->requests->manualOptions($jobRequest),
+        ]);
     }
 
     // ------------------------------------------------------------------ criteria
@@ -272,8 +325,11 @@ class JobRequestController extends Controller
         $suggested = [];
 
         if ($configured->isEmpty() && $jobRequest->client_company_id) {
+            // A requirement switched off since the client set it is not
+            // proposed: a new request could not save it.
             $suggested = CompanyCriteria::with('criterion')
                 ->where('client_company_id', $jobRequest->client_company_id)
+                ->whereHas('criterion', fn ($q) => $q->where('is_active', true))
                 ->get()
                 ->map(fn (CompanyCriteria $c) => [
                     'criteria_code' => $c->criterion?->criteria_code,
@@ -295,7 +351,7 @@ class JobRequestController extends Controller
             : [[], []];
 
         return ApiResponse::success([
-            'catalog' => $this->catalogue(),
+            'catalog' => $this->catalogue($configured->pluck('criteria_id')),
             'configured' => RequestCriterionResource::collection($configured),
             'suggested_from_company' => $suggested,
             'suggested_from_request' => $fromRequest,
@@ -453,10 +509,15 @@ class JobRequestController extends Controller
      * Getting that wrong is not a validation error, which is exactly why it
      * needs solving in the form: an unrecognised value simply never matches, so
      * the criterion silently scores nobody and explains nothing.
+     *
+     * A criterion switched off in Settings is still listed for a request that
+     * already uses it (its `is_active` says so), so it can be seen and removed.
+     *
+     * @param  iterable<int>  $inUseIds
      */
-    private function catalogue()
+    private function catalogue(iterable $inUseIds = [])
     {
-        return CriteriaCatalog::active()
+        return CriteriaCatalog::activeOrInUse($inUseIds)
             ->orderBy('criteria_name')
             ->get()
             ->map(function (CriteriaCatalog $criterion) {
@@ -485,16 +546,40 @@ class JobRequestController extends Controller
 
         $data = $request->validate([
             'criteria' => ['required', 'array', 'min:1'],
-            'criteria.*.criteria_code' => ['required', 'string', 'exists:criteria_catalog,criteria_code'],
+            // Distinct: each criterion is one row per request, and a repeat
+            // would otherwise reach the unique index as a server error.
+            'criteria.*.criteria_code' => ['required', 'string', 'distinct', 'exists:criteria_catalog,criteria_code'],
             'criteria.*.mandatory_flag' => ['nullable', 'boolean'],
-            'criteria.*.weight_score' => ['nullable', 'numeric', 'min:0', 'max:1000'],
+            'criteria.*.weight_score' => ['nullable', 'numeric', 'decimal:0,2', 'min:0', 'max:1000'],
             'criteria.*.expected_value' => ['nullable', 'string', 'max:255'],
-            'criteria.*.min_value' => ['nullable', 'numeric'],
-            'criteria.*.max_value' => ['nullable', 'numeric', 'gte:criteria.*.min_value'],
+            'criteria.*.min_value' => ['nullable', 'numeric', 'decimal:0,2', 'between:-99999999.99,99999999.99'],
+            'criteria.*.max_value' => ['nullable', 'numeric', 'decimal:0,2', 'between:-99999999.99,99999999.99', new NotBelow('criteria.*.min_value', 'lower number')],
             'criteria.*.rubric_json' => ['nullable', 'array'],
+        ], [
+            'criteria.*.criteria_code.distinct' => 'This requirement is listed more than once.',
         ]);
 
-        $catalog = CriteriaCatalog::active()->get()->keyBy('criteria_code');
+        // Every criterion named, switched off or not: one this request already
+        // uses must still save (looking only among active ones failed with a
+        // server error), while one it does not use cannot be newly added.
+        $catalog = CriteriaCatalog::whereIn('criteria_code', collect($data['criteria'])->pluck('criteria_code'))
+            ->get()
+            ->keyBy('criteria_code');
+        $alreadyUsed = $jobRequest->criteria()->pluck('criteria_id')->all();
+
+        $withdrawn = collect($data['criteria'])
+            ->filter(fn ($c) => ! $catalog[$c['criteria_code']]->is_active
+                && ! in_array($catalog[$c['criteria_code']]->id, $alreadyUsed))
+            ->mapWithKeys(fn ($c, $i) => [
+                "criteria.{$i}.criteria_code" => sprintf(
+                    '%s has been turned off in Settings and can no longer be added.',
+                    $catalog[$c['criteria_code']]->criteria_name
+                ),
+            ]);
+
+        if ($withdrawn->isNotEmpty()) {
+            throw ValidationException::withMessages($withdrawn->all());
+        }
 
         // At least one scored criterion must carry weight, otherwise every
         // candidate scores zero and the ranking is meaningless.
@@ -511,6 +596,12 @@ class JobRequestController extends Controller
         }
 
         DB::transaction(function () use ($jobRequest, $data, $catalog, $request) {
+            // The lock an evaluation holds while it runs, so criteria are
+            // never replaced under a run in progress; the version tells every
+            // result scored before this save that it is out of date (audit
+            // S-02).
+            JobRequest::query()->whereKey($jobRequest->id)->lockForUpdate()->firstOrFail();
+
             $jobRequest->criteria()->delete();
 
             foreach ($data['criteria'] as $criterion) {
@@ -526,6 +617,8 @@ class JobRequestController extends Controller
                     'created_by' => $request->user()->id,
                 ]);
             }
+
+            JobRequest::query()->whereKey($jobRequest->id)->increment('criteria_version');
         });
 
         $this->audit->record(
@@ -554,7 +647,9 @@ class JobRequestController extends Controller
         $this->authorize('evaluate', $jobRequest);
 
         $options = $request->validate([
-            'candidate_scope' => ['nullable', 'string'],
+            // Only a status the pool can contain; anything else used to run an
+            // evaluation of nobody and report it as done.
+            'candidate_scope' => ['nullable', 'string', Rule::in(config('empower.evaluable_applicant_statuses'))],
             'limit' => ['nullable', 'integer', 'between:1,500'],
         ]);
 
@@ -564,14 +659,16 @@ class JobRequestController extends Controller
             'job_request_id' => $jobRequest->id,
             'evaluated_candidates' => count($scores),
             'qualified_candidates' => count(array_filter($scores, fn ($s) => $s->passedAllGates)),
-            'ranked' => MatchResource::collection($this->orderedMatches($jobRequest)),
+            // Re-read: criteria saved while this request waited for the lock
+            // would otherwise make the fresh results look out of date.
+            'ranked' => MatchResource::collection($this->orderedMatches($jobRequest->fresh())),
             'notice' => 'These are recommendations. Deployment requires explicit HR action.',
         ], 'Evaluation completed');
     }
 
     public function rankings(Request $request, JobRequest $jobRequest): JsonResponse
     {
-        $this->authorize('view', $jobRequest);
+        $this->authorize('viewRankings', $jobRequest);
 
         $filters = $request->validate([
             'only_qualified' => ['nullable', 'boolean'],

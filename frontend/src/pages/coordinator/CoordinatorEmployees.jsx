@@ -3,12 +3,13 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { IdCard, ChevronRight, AlertTriangle } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { PageHeader } from '@/components/PageHeader'
+import PersonAvatar from '@/components/PersonAvatar'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
-import { Pagination } from '@/pages/Applicants'
+import { Pagination, useClampPage } from '@/components/Pagination'
 
 /**
  * The workers CDE has placed at the coordinator's client.
@@ -41,6 +42,8 @@ export default function CoordinatorEmployees() {
     if (key !== 'page') next.delete('page')
     setSearchParams(next)
   }
+
+  useClampPage(meta, (p) => update('page', String(p)))
 
   return (
     <div className="space-y-4">
@@ -78,7 +81,7 @@ export default function CoordinatorEmployees() {
       />
 
       {loading ? (
-        <div className="rounded-panel border bg-card">
+        <div className="rounded-panel bg-card">
           <SkeletonRows rows={6} columns={5} />
         </div>
       ) : error ? (
@@ -102,12 +105,15 @@ export default function CoordinatorEmployees() {
               {data.map((employee) => (
                 <TableRow key={employee.id} className="group">
                   <TableCell>
-                    <Link to={`/coordinator/employees/${employee.id}`} className="block">
-                      <p className="font-semibold text-foreground group-hover:text-brand">{employee.full_name}</p>
-                      <p className="font-mono text-xs text-muted-foreground">
-                        {employee.employee_number}
-                        {employee.biometric_number && ` · BIO ${employee.biometric_number}`}
-                      </p>
+                    <Link to={`/coordinator/employees/${employee.id}`} className="flex items-center gap-3">
+                      <PersonAvatar src={employee.photo_url} name={employee.full_name} size="sm" />
+                      <div className="min-w-0">
+                        <p className="font-semibold text-foreground group-hover:text-brand">{employee.full_name}</p>
+                        <p className="font-mono text-xs text-muted-foreground">
+                          {employee.employee_number}
+                          {employee.biometric_number && ` · BIO ${employee.biometric_number}`}
+                        </p>
+                      </div>
                     </Link>
                   </TableCell>
                   <TableCell className="text-sm">

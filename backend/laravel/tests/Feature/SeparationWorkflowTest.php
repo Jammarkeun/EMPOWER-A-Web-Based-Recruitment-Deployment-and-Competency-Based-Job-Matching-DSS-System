@@ -336,7 +336,8 @@ class SeparationWorkflowTest extends TestCase
         // Filing through the portal is theirs to do.
         $this->postJson('/api/v1/portal/resignation', [
             'reason' => 'Family reasons',
-            'filing_date' => now()->toDateString(),
+            'requested_exit_date' => now()->addDays(30)->toDateString(),
+            'acknowledged' => true,
         ])->assertCreated();
 
         $resignation = $employee->resignations()->first();
@@ -379,8 +380,9 @@ class SeparationWorkflowTest extends TestCase
         $this->assertNull($fresh->height_cm);
 
         // Their own contact details remain theirs to correct, through the portal.
+        // Written with spaces, stored in the standard 11-digit form.
         $this->patchJson('/api/v1/portal/profile', ['contact_number' => '0917 555 0101'])->assertOk();
-        $this->assertSame('0917 555 0101', $applicant->fresh()->contact_number);
+        $this->assertSame('09175550101', $applicant->fresh()->contact_number);
     }
 
     public function test_the_employee_record_reports_what_can_be_done_with_each_case(): void

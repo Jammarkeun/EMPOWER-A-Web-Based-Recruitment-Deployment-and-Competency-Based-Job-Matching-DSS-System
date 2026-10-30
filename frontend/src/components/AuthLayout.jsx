@@ -171,6 +171,6 @@ function BrandPanel({ points }) {
 /** A plain card wrapper matching the form styling on both auth screens. */
 export function AuthCard({ className, children }) {
   return (
-    <div className={cn('rounded-xl border bg-card p-5 shadow-sm', className)}>{children}</div>
+    <div className={cn('rounded-panel bg-card p-6', className)}>{children}</div>
   )
 }

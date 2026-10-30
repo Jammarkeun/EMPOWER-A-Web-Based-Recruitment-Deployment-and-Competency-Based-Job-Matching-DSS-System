@@ -50,7 +50,22 @@ return [
     |
     */
 
-    'expiration' => null,
+    /*
+     * Audit R-08 / security audit V-02. Minutes from signing in after which a
+     * token stops working, however active the person is. Unset or empty means
+     * 720 (12 hours, the audit's proposal - a working day with room to spare);
+     * 0 turns the limit off. Provisional until CDE answers client question 20.4.
+     */
+    'expiration' => filled(env('SANCTUM_EXPIRATION')) ? (int) env('SANCTUM_EXPIRATION') : 720,
+
+    /*
+     * Not a Sanctum option: EMPOWER's own idle limit, enforced by
+     * App\Services\SessionLifetime. Minutes since the account last made a
+     * request of its own (background polls do not count) after which it is
+     * signed out. Unset or empty means 60; 0 turns it off. Also provisional
+     * until client question 20.4 is answered.
+     */
+    'idle_timeout' => filled(env('SANCTUM_IDLE_TIMEOUT')) ? (int) env('SANCTUM_IDLE_TIMEOUT') : 60,
 
     /*
     |--------------------------------------------------------------------------
