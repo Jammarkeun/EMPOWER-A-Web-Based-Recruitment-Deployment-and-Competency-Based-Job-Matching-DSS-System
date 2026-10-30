@@ -44,7 +44,11 @@ class RequirementController extends Controller
             'requirements.requirementType',
             'requirements.verifier',
             'requirements.firstViewer',
+            'requirements.history.verifier',
+            'requirements.history.replacer',
         ]);
+        // Whether an expiry matters depends on whether they are deployed yet.
+        $applicant->requirements->each->setRelation('applicant', $applicant);
 
         return ApiResponse::success([
             'requirements' => ApplicantRequirementResource::collection($applicant->requirements),

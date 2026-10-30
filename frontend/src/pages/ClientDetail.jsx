@@ -17,12 +17,22 @@ import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, NumberInput, PhoneInput } from '@/components/ui/input'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Field, FormGrid } from '@/components/ui/form'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import ApplicantDocuments from '@/components/ApplicantDocuments'
 import CriteriaValueEditor from '@/components/CriteriaValueEditor'
+import RangeSummary from '@/components/RangeSummary'
+import { formProblems } from '@/lib/validation'
+import {
+  directionBadge,
+  importanceProblem,
+  isMustHave,
+  rangeLabels,
+  rangeProblem,
+  unitFor,
+} from '@/lib/requirementRange'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
@@ -679,8 +689,11 @@ function CompanyPositions({ clientId, canEdit }) {
   )
 }
 
+/** The most importance one client requirement can carry, as the server allows. */
+const IMPORTANCE_LIMIT = 100
+
 /**
- * Adjust Criteria — what this client asks for as standard.
+ * Requirements — what this client asks for as standard.
  *
  * The whole catalogue is shown with a tick beside what is in use, rather than
  * only the chosen entries: otherwise you would have to already know a
@@ -703,7 +716,26 @@ function CompanyRequirements({ clientId, onSaved }) {
 
   const mayEdit = can('clients.update')
   const inUse = rows.filter((r) => r.in_use)
-  const totalWeight = inUse.reduce((sum, r) => sum + (Number(r.weight_score) || 0), 0)
+  const totalWeight = inUse
+    .filter((r) => !isMustHave(r.mandatory_flag, r.criteria_type))
+    .reduce((sum, r) => sum + (Number(r.weight_score) || 0), 0)
+
+  // The same limits the server applies, shown beside the field instead of as
+  // one rejected save.
+  const problems = {}
+  for (const row of inUse) {
+    const mustHave = isMustHave(row.mandatory_flag, row.criteria_type)
+    const labels = rangeLabels({ mustHave, lowerIsBetter: row.score_direction === 'lower_better' })
+    const weight = mustHave ? null : importanceProblem(row.weight_score, IMPORTANCE_LIMIT)
+    const range = row.value_type === 'number' ? rangeProblem(row.min_value, row.max_value, labels, unitFor(row.code)) : null
+
+    if (weight || range) problems[row.criteria_id] = { weight, range }
+  }
+  const hasProblems = Object.keys(problems).length > 0
+
+  // Edits here are made in place with no dialog to cancel, so unsaved ones
+  // are said to be unsaved, and can be thrown away.
+  const dirty = JSON.stringify(rows) !== JSON.stringify(data?.criteria ?? [])
 
   function update(id, changes) {
     setRows((current) => current.map((r) => (r.criteria_id === id ? { ...r, ...changes } : r)))
@@ -730,7 +762,7 @@ function CompanyRequirements({ clientId, onSaved }) {
       refetch()
     } catch (err) {
       if (err.isValidation) {
-        toast.error('Check the values', 'Some requirements need correcting.')
+        toast.error('Some values need correcting', 'Check the numbers you entered, then save again.')
       } else {
         toast.error('Could not save requirements', err.message)
       }
@@ -746,15 +778,23 @@ function CompanyRequirements({ clientId, onSaved }) {
           <div>
             <CardTitle className="text-base">What this client requires</CardTitle>
             <CardDescription>
-              Tick what matters to this client and set how much each is worth. New requests for
+              Tick what matters to this client and set how important each one is. New requests for
               them start from these instead of a blank form.
             </CardDescription>
           </div>
           {mayEdit && (
-            <Button onClick={save} disabled={saving}>
-              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              Save requirements
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {dirty && <span className="text-xs font-medium text-warning">Unsaved changes</span>}
+              {dirty && (
+                <Button variant="outline" onClick={() => setRows(data.criteria)} disabled={saving}>
+                  Discard changes
+                </Button>
+              )}
+              <Button onClick={save} disabled={saving || hasProblems || !dirty}>
+                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                Save requirements
+              </Button>
+            </div>
           )}
         </div>
       </CardHeader>
@@ -762,120 +802,186 @@ function CompanyRequirements({ clientId, onSaved }) {
       <CardContent className="space-y-3">
         {inUse.length > 0 && (
           <p className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            {inUse.length} in use, {totalWeight} points allocated. Points are relative — what
-            matters is how they compare, not that they add to a particular total.
+            {inUse.length} in use, {totalWeight} importance points in total. Points are relative —
+            what matters is how they compare with each other, not the total.
           </p>
         )}
 
-        {rows.map((row) => (
-          <div
-            key={row.criteria_id}
-            className={cn(
-              'rounded-lg border p-3 transition-colors',
-              row.in_use ? 'border-primary/30 bg-primary/[0.03]' : 'bg-card'
-            )}
-          >
-            <label className="flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={!!row.in_use}
-                disabled={!mayEdit}
-                onChange={(e) => update(row.criteria_id, { in_use: e.target.checked })}
-                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded border-input accent-primary"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-medium">{row.name}</p>
-                  {row.criteria_type === 'hard_filter' && (
-                    <Badge tone="warning" className="text-[10px]">
-                      Must meet
-                    </Badge>
-                  )}
-                </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">{row.description}</p>
-              </div>
-            </label>
+        {rows.map((row) => {
+          const mustHave = isMustHave(row.mandatory_flag, row.criteria_type)
+          const lowerIsBetter = row.score_direction === 'lower_better'
+          const labels = rangeLabels({ mustHave, lowerIsBetter })
+          const unit = unitFor(row.code)
+          const problem = problems[row.criteria_id] ?? {}
 
-            {row.in_use && (
-              <div className="mt-3 grid gap-3 border-t pt-3 sm:grid-cols-2 lg:grid-cols-4">
-                {row.criteria_type !== 'hard_filter' && (
-                  <Field label="Points" htmlFor={`w-${row.criteria_id}`}>
-                    <Input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={row.weight_score ?? 0}
-                      disabled={!mayEdit}
-                      onChange={(e) => update(row.criteria_id, { weight_score: e.target.value })}
-                    />
-                  </Field>
-                )}
-
-                {row.value_type === 'number' && (
-                  <>
-                    <Field label="Minimum" htmlFor={`min-${row.criteria_id}`}>
-                      <Input
-                        type="number"
-                        value={row.min_value ?? ''}
-                        disabled={!mayEdit}
-                        onChange={(e) => update(row.criteria_id, { min_value: e.target.value })}
-                      />
-                    </Field>
-                    <Field label="Maximum" htmlFor={`max-${row.criteria_id}`}>
-                      <Input
-                        type="number"
-                        value={row.max_value ?? ''}
-                        disabled={!mayEdit}
-                        onChange={(e) => update(row.criteria_id, { max_value: e.target.value })}
-                      />
-                    </Field>
-                  </>
-                )}
-
-                {/*
-                  The same editor the request form uses, rather than a text box
-                  asking the officer to type "high_school" exactly. An
-                  unrecognised value is not rejected — it simply never matches —
-                  so guessing the spelling produced a criterion that scored
-                  nobody and gave no reason.
-                */}
-                {row.accepts && row.accepts !== 'none' && (
-                  <div className={row.accepts === 'list' ? 'sm:col-span-2' : undefined}>
-                    <CriteriaValueEditor
-                      accepts={mayEdit ? row.accepts : 'none'}
-                      options={row.options}
-                      listMatch={row.list_match}
-                      value={row.expected_value ?? ''}
-                      onChange={(next) => update(row.criteria_id, { expected_value: next ?? '' })}
-                      label={row.accepts === 'list' ? 'What this client requires' : 'Required level'}
-                    />
-
-                    {/* Read-only for anyone without edit rights: the values
-                        still matter to them, the controls do not. */}
-                    {!mayEdit && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {row.expected_value || 'Nothing set'}
-                      </p>
+          return (
+            <div
+              key={row.criteria_id}
+              className={cn(
+                'rounded-lg border p-3 transition-colors',
+                row.in_use ? 'border-primary/30 bg-primary/[0.03]' : 'bg-card'
+              )}
+            >
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={!!row.in_use}
+                  disabled={!mayEdit}
+                  onChange={(e) => update(row.criteria_id, { in_use: e.target.checked })}
+                  className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded border-input accent-primary"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium">{row.name}</p>
+                    {row.criteria_type === 'hard_filter' && (
+                      <Badge tone="warning" className="text-[10px]">
+                        Always Must Have
+                      </Badge>
+                    )}
+                    {/* Direction only matters where points are at stake. */}
+                    {lowerIsBetter && !mustHave && (
+                      <Badge tone="muted" className="text-[10px]">
+                        {directionBadge(row.code)}
+                      </Badge>
+                    )}
+                    {row.is_active === false && (
+                      <Badge tone="muted" className="text-[10px]">
+                        Turned off
+                      </Badge>
                     )}
                   </div>
-                )}
+                  <p className="mt-0.5 text-xs text-muted-foreground">{row.description}</p>
+                  {/* Listed only because this client already uses it. */}
+                  {row.is_active === false && (
+                    <p className="mt-1 text-xs text-warning">
+                      Turned off in Settings. It stays here until you untick it and save; once
+                      removed, it cannot be added back.
+                    </p>
+                  )}
+                </div>
+              </label>
 
-                <Field
-                  label="Why"
-                  htmlFor={`note-${row.criteria_id}`}
-                  className="sm:col-span-2 lg:col-span-1"
-                >
-                  <Input
-                    value={row.note ?? ''}
-                    disabled={!mayEdit}
-                    placeholder="Optional note"
-                    onChange={(e) => update(row.criteria_id, { note: e.target.value })}
-                  />
-                </Field>
-              </div>
-            )}
-          </div>
-        ))}
+              {row.in_use && (
+                <div className="mt-3 space-y-3 border-t pt-3">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {!mustHave && (
+                      <Field
+                        label="Importance (points)"
+                        htmlFor={`w-${row.criteria_id}`}
+                        error={problem.weight}
+                        hint={
+                          totalWeight > 0 && Number(row.weight_score) > 0
+                            ? `The most points this can add: ${Math.round(((Number(row.weight_score) || 0) / totalWeight) * 100)}% of the match score.`
+                            : 'The most points this can add to the match score.'
+                        }
+                      >
+                        <NumberInput
+                          min="0"
+                          max={IMPORTANCE_LIMIT}
+                          step="0.01"
+                          value={row.weight_score ?? 0}
+                          disabled={!mayEdit}
+                          onChange={(e) => update(row.criteria_id, { weight_score: e.target.value })}
+                        />
+                      </Field>
+                    )}
+
+                    {row.value_type === 'number' && (
+                      <>
+                        <Field
+                          label={unit ? `${labels.min.label} (${unit})` : labels.min.label}
+                          htmlFor={`min-${row.criteria_id}`}
+                          error={problem.range?.min}
+                          hint={labels.min.hint}
+                        >
+                          <NumberInput
+                            min={unit ? '0' : undefined}
+                            step="0.01"
+                            value={row.min_value ?? ''}
+                            placeholder={labels.min.placeholder}
+                            disabled={!mayEdit}
+                            onChange={(e) => update(row.criteria_id, { min_value: e.target.value })}
+                          />
+                        </Field>
+                        <Field
+                          label={unit ? `${labels.max.label} (${unit})` : labels.max.label}
+                          htmlFor={`max-${row.criteria_id}`}
+                          error={problem.range?.max}
+                          hint={labels.max.hint}
+                        >
+                          <NumberInput
+                            min={unit ? '0' : undefined}
+                            step="0.01"
+                            value={row.max_value ?? ''}
+                            placeholder={labels.max.placeholder}
+                            disabled={!mayEdit}
+                            onChange={(e) => update(row.criteria_id, { max_value: e.target.value })}
+                          />
+                        </Field>
+                      </>
+                    )}
+
+                    {/*
+                      The same editor the request form uses, rather than a text box
+                      asking the officer to type "high_school" exactly. An
+                      unrecognised value is not rejected — it simply never matches —
+                      so guessing the spelling produced a criterion that scored
+                      nobody and gave no reason.
+                    */}
+                    {row.accepts && row.accepts !== 'none' && (
+                      <div className={row.accepts === 'list' ? 'sm:col-span-2' : undefined}>
+                        <CriteriaValueEditor
+                          accepts={mayEdit ? row.accepts : 'none'}
+                          options={row.options}
+                          listMatch={row.list_match}
+                          value={row.expected_value ?? ''}
+                          onChange={(next) => update(row.criteria_id, { expected_value: next ?? '' })}
+                          label={
+                            row.accepts === 'list'
+                              ? 'What this client requires'
+                              : row.code === 'education'
+                                ? 'Minimum Required'
+                                : 'Required value'
+                          }
+                          hint={row.code === 'education' ? 'Applicants at this level or higher meet it.' : undefined}
+                          placeholder={row.code === 'certifications' ? 'e.g. TESDA NC II' : undefined}
+                        />
+
+                        {/* Read-only for anyone without edit rights: the values
+                            still matter to them, the controls do not. */}
+                        {!mayEdit && (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {row.expected_value || 'Nothing set'}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <Field
+                      label="Reason (optional)"
+                      htmlFor={`note-${row.criteria_id}`}
+                      className="sm:col-span-2 lg:col-span-1"
+                    >
+                      <Input
+                        value={row.note ?? ''}
+                        disabled={!mayEdit}
+                        placeholder="Why the client needs this"
+                        onChange={(e) => update(row.criteria_id, { note: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+
+                  {row.value_type === 'number' && !problem.range && (
+                    <RangeSummary
+                      rule={{ min: row.min_value, max: row.max_value, mustHave, lowerIsBetter, unit, code: row.code }}
+                      weight={row.weight_score}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </CardContent>
     </Card>
   )
@@ -954,9 +1060,8 @@ function DepartmentDialog({ open, onOpenChange, clientId, department, onSaved })
             <Field
               label="Short code"
               htmlFor="department_code"
-              required
               error={errors.department_code?.[0]}
-              hint="Used on request codes"
+              hint={editing ? 'A label only' : 'Optional label. Left blank, one is made from the name.'}
             >
               <Input
                 value={form.department_code}
@@ -1025,8 +1130,12 @@ function EditCompanyDialog({ open, onOpenChange, company, onSaved }) {
   const deactivating = company?.status === 'active' && form.status === 'inactive'
 
   async function save() {
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { phones: ['contact_number'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSaving(true)
-    setErrors({})
     try {
       await put(`/clients/${company.id}`, {
         ...form,
@@ -1077,7 +1186,7 @@ function EditCompanyDialog({ open, onOpenChange, company, onSaved }) {
                 <Input value={form.contact_person} onChange={set('contact_person')} />
               </Field>
               <Field label="Contact number" htmlFor="contact_number" error={errors.contact_number?.[0]}>
-                <Input value={form.contact_number} onChange={set('contact_number')} />
+                <PhoneInput value={form.contact_number} onChange={set('contact_number')} />
               </Field>
               <Field label="Email" htmlFor="company_email" error={errors.email?.[0]}>
                 <Input type="email" value={form.email} onChange={set('email')} />

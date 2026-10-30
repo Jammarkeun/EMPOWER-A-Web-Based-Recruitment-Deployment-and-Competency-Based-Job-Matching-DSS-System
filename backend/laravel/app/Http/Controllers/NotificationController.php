@@ -77,10 +77,54 @@ class NotificationController extends Controller
             ->groupBy(fn ($notification) => $notification->data['category'] ?? 'general')
             ->map->count();
 
+        /*
+         * Where each unread notification leads, so the sidebar can put the
+         * number on the page it opens. Grouping by category alone left new
+         * pages without a badge and sent requisition and incident news to
+         * "Violation Reports"; a notification whose page is not in someone's
+         * sidebar still falls back to its category there. Same notifications,
+         * same total.
+         */
+        $byDestination = $unread
+            ->groupBy(fn ($notification) => json_encode([
+                $this->section($notification->data['link'] ?? null),
+                $notification->data['category'] ?? 'general',
+            ]))
+            ->map(function ($group, $key) {
+                [$path, $category] = json_decode($key, true);
+
+                return ['path' => $path, 'category' => $category, 'count' => $group->count()];
+            })
+            ->values();
+
         return ApiResponse::success([
             'unread_count' => $unread->count(),
             'by_category' => $byCategory,
+            'by_destination' => $byDestination,
         ]);
+    }
+
+    /**
+     * The sidebar section a link belongs to: its first path segment, or its
+     * first two inside the coordinator workspace and the portal, whose pages
+     * all sit under one prefix. "/requisitions/5" is "/requisitions";
+     * "/coordinator/incidents/3?x=1" is "/coordinator/incidents".
+     */
+    private function section(?string $link): ?string
+    {
+        if (blank($link)) {
+            return null;
+        }
+
+        $segments = array_values(array_filter(explode('/', (string) strtok($link, '?#'))));
+
+        if ($segments === []) {
+            return '/';
+        }
+
+        $depth = in_array($segments[0], ['coordinator', 'portal'], true) ? 2 : 1;
+
+        return '/'.implode('/', array_slice($segments, 0, $depth));
     }
 
     public function markRead(Request $request, string $id): JsonResponse
@@ -93,6 +137,42 @@ class NotificationController extends Controller
         $notification->markAsRead();
 
         return ApiResponse::success(null, 'Notification marked as read');
+    }
+
+    /**
+     * Marks read what the sidebar counted on a page the person has opened.
+     *
+     * The screen sends the destinations it attributed to that sidebar item
+     * (page and category, as by_destination reported them), so exactly the
+     * notifications behind the number are cleared and nothing else. Only the
+     * signed-in login's own notifications are ever touched.
+     */
+    public function markDestinationsRead(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'destinations' => ['required', 'array', 'max:50'],
+            'destinations.*.path' => ['nullable', 'string', 'max:190'],
+            'destinations.*.category' => ['required', 'string', 'max:60'],
+        ]);
+
+        $wanted = collect($data['destinations'])
+            ->map(fn ($d) => json_encode([$d['path'] ?? null, $d['category']]))
+            ->flip();
+
+        $ids = $this->own($request)
+            ->whereNull('read_at')
+            ->get(['id', 'data'])
+            ->filter(fn ($notification) => $wanted->has(json_encode([
+                $this->section($notification->data['link'] ?? null),
+                $notification->data['category'] ?? 'general',
+            ])))
+            ->modelKeys();
+
+        if ($ids !== []) {
+            $this->own($request)->whereKey($ids)->update(['read_at' => now()]);
+        }
+
+        return ApiResponse::success(['marked' => count($ids)], 'Notifications marked as read');
     }
 
     public function markAllRead(Request $request): JsonResponse

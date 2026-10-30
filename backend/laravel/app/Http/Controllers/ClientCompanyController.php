@@ -12,7 +12,10 @@ use App\Models\ClientDepartment;
 use App\Models\CompanyCriteria;
 use App\Models\CriteriaCatalog;
 use App\Models\Deployment;
+use App\Models\DeploymentHistory;
 use App\Models\Employee;
+use App\Rules\NotBelow;
+use App\Rules\PhoneNumber;
 use App\Services\AuditService;
 use App\Services\Matching\CompetencyScoringService;
 use App\Services\ReferenceCodeService;
@@ -20,6 +23,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ClientCompanyController extends Controller
 {
@@ -40,18 +44,20 @@ class ClientCompanyController extends Controller
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
-        $operator = ClientCompany::query()->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-
         $companies = ClientCompany::query()
-            ->withCount(['departments', 'jobRequests', 'employees'])
-            ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(function ($sub) use ($v, $operator) {
-                $sub->where('company_name', $operator, "%{$v}%")
-                    ->orWhere('company_code', $operator, "%{$v}%")
-                    ->orWhere('contact_person', $operator, "%{$v}%");
+            // Deployed means placed there today - the active deployments the
+            // company page and the dashboard count - not everyone whose last
+            // client this was, which counted people who had left.
+            ->withCount(['departments', 'jobRequests', 'deployments as deployed_count' => fn ($q) => $q->active()])
+            ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(function ($sub) use ($v) {
+                $sub->whereContains('company_name', $v)
+                    ->orWhereContains('company_code', $v)
+                    ->orWhereContains('contact_person', $v);
             }))
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['business_type'] ?? null, fn ($q, $v) => $q->where('business_type', $v))
             ->orderBy('company_name')
+            ->orderBy('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(ClientCompanyResource::collection($companies), 'Client companies retrieved');
@@ -65,11 +71,11 @@ class ClientCompanyController extends Controller
             'company_name' => ['required', 'string', 'max:190', 'unique:client_companies,company_name'],
             'business_type' => ['required', 'string', 'max:120'],
             'contact_person' => ['nullable', 'string', 'max:190'],
-            'contact_number' => ['nullable', 'string', 'max:40'],
-            'email' => ['nullable', 'email', 'max:190'],
+            'contact_number' => ['nullable', 'string', 'max:40', new PhoneNumber()],
+            'email' => ['nullable', 'email:rfc,filter', 'max:190'],
             'office_address' => ['required', 'string', 'max:255'],
             'status' => ['nullable', Rule::in(['active', 'inactive'])],
-            'notes' => ['nullable', 'string'],
+            'notes' => ['nullable', 'string', 'max:5000'],
         ]);
 
         $company = ClientCompany::create(array_merge($data, [
@@ -101,11 +107,11 @@ class ClientCompanyController extends Controller
             'company_name' => ['sometimes', 'string', 'max:190', Rule::unique('client_companies', 'company_name')->ignore($client->id)],
             'business_type' => ['sometimes', 'string', 'max:120'],
             'contact_person' => ['nullable', 'string', 'max:190'],
-            'contact_number' => ['nullable', 'string', 'max:40'],
-            'email' => ['nullable', 'email', 'max:190'],
+            'contact_number' => ['nullable', 'string', 'max:40', new PhoneNumber()],
+            'email' => ['nullable', 'email:rfc,filter', 'max:190'],
             'office_address' => ['sometimes', 'string', 'max:255'],
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
-            'notes' => ['nullable', 'string'],
+            'notes' => ['nullable', 'string', 'max:5000'],
         ]);
 
         $before = $client->only(array_keys($data));
@@ -181,6 +187,7 @@ class ClientCompanyController extends Controller
             ->orderBy(
                 Applicant::select('last_name')->whereColumn('applicants.id', 'employees.applicant_id')
             )
+            ->orderBy('employees.id')
             ->paginate($filters['per_page'] ?? 50);
 
         /*
@@ -191,10 +198,40 @@ class ClientCompanyController extends Controller
          * around. Sending both means one request answers "which department is
          * this, and who is in it".
          */
+        /*
+         * Who moved into and out of this department, newest first.
+         *
+         * The people list shows where workers are now; this answers "who was
+         * here before, and when did they leave" from the reassignment history,
+         * which is never rewritten.
+         */
+        $moves = DeploymentHistory::query()
+            ->with(['deployment.employee.applicant', 'fromDepartment', 'toDepartment', 'changedBy'])
+            ->where(fn ($q) => $q->where('from_department_id', $department->id)->orWhere('to_department_id', $department->id))
+            ->orderByDesc('effective_date')
+            ->orderByDesc('id')
+            ->limit(50)
+            ->get()
+            ->map(fn (DeploymentHistory $move) => [
+                'id' => $move->id,
+                'employee' => [
+                    'id' => $move->deployment?->employee_id,
+                    'full_name' => $move->deployment?->employee?->full_name,
+                ],
+                'direction' => (int) $move->to_department_id === (int) $department->id ? 'in' : 'out',
+                'from_department' => $move->fromDepartment?->department_name,
+                'to_department' => $move->toDepartment?->department_name,
+                'change_type' => $move->change_type,
+                'effective_date' => $move->effective_date?->toDateString(),
+                'remarks' => $move->remarks,
+                'changed_by' => $move->changedBy?->full_name,
+            ]);
+
         return ApiResponse::success([
             'department' => new ClientDepartmentResource(
                 $department->loadCount(['employees', 'activeEmployees', 'jobRequests'])
             ),
+            'moves' => $moves,
             'company' => [
                 'id' => $client->id,
                 'company_name' => $client->company_name,
@@ -214,7 +251,9 @@ class ClientCompanyController extends Controller
 
         $data = $request->validate([
             'department_code' => [
-                'required', 'string', 'max:40',
+                // Optional: CDE called the short code "just a label" (26
+                // October 2026). Left blank, one is made from the name.
+                'nullable', 'string', 'max:40',
                 // Codes and names are unique per company, not globally:
                 // "Packaging" legitimately exists at several clients at once.
                 Rule::unique('client_departments', 'department_code')
@@ -227,6 +266,10 @@ class ClientCompanyController extends Controller
             ],
             'status' => ['nullable', Rule::in(['active', 'inactive'])],
         ]);
+
+        $data['department_code'] = filled($data['department_code'] ?? null)
+            ? $data['department_code']
+            : $this->codeFor($client, $data['department_name']);
 
         $department = $client->departments()->create(array_merge($data, [
             'status' => $data['status'] ?? 'active',
@@ -246,7 +289,8 @@ class ClientCompanyController extends Controller
 
         $data = $request->validate([
             'department_code' => [
-                'sometimes', 'string', 'max:40',
+                // Clearing it keeps the code it has; it is only a label.
+                'sometimes', 'nullable', 'string', 'max:40',
                 Rule::unique('client_departments', 'department_code')
                     ->where('client_company_id', $client->id)->ignore($department->id),
             ],
@@ -258,12 +302,58 @@ class ClientCompanyController extends Controller
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
         ]);
 
+        if (array_key_exists('department_code', $data) && blank($data['department_code'])) {
+            unset($data['department_code']);
+        }
+
+        /*
+         * A department with people in it is not switched off around them.
+         *
+         * Reassignment only moves workers into an active department, so
+         * deactivating one with workers still placed there would leave them in
+         * a department nobody can move them out of in the ordinary way, and
+         * coordinators would report against a department marked closed. They
+         * are reassigned first - which records each move - then it can go.
+         */
+        if (($data['status'] ?? null) === 'inactive' && $department->status !== 'inactive') {
+            $placed = $department->activeEmployees()->count();
+
+            if ($placed > 0) {
+                return ApiResponse::error(sprintf(
+                    '%d active employee(s) are still placed in %s. Reassign them to another department first.',
+                    $placed,
+                    $department->department_name
+                ), 409);
+            }
+        }
+
         $before = $department->only(array_keys($data));
         $department->update(array_merge($data, ['updated_by' => $request->user()->id]));
 
         $this->audit->recordUpdate('clients', ClientDepartment::class, $department->id, $before, $data);
 
         return ApiResponse::success(new ClientDepartmentResource($department->fresh()), 'Department updated');
+    }
+
+    /**
+     * A short code made from the department's name - "Shake Department" gives
+     * SD - kept unique within the client by a number when needed (SD2).
+     */
+    private function codeFor(ClientCompany $client, string $name): string
+    {
+        $words = preg_split('/[^\pL\pN]+/u', mb_strtoupper($name), -1, PREG_SPLIT_NO_EMPTY) ?: ['DEPT'];
+        $base = count($words) === 1
+            ? mb_substr($words[0], 0, 4)
+            : mb_substr(implode('', array_map(fn ($w) => mb_substr($w, 0, 1), $words)), 0, 6);
+
+        $code = $base;
+        $n = 1;
+
+        while ($client->departments()->where('department_code', $code)->exists()) {
+            $code = $base.(++$n);
+        }
+
+        return $code;
     }
 
     /**
@@ -298,9 +388,13 @@ class ClientCompanyController extends Controller
             'summary' => [
                 // Counted rather than derived from the trimmed lists above,
                 // which are only the most recent ten.
-                'open_requests' => $client->jobRequests()->whereIn('request_status', ['open', 'partially_fulfilled'])->count(),
+                // The same "open" as the request list's filter and the
+                // dashboard (JobRequest::scopeOpen): "in progress" still needs
+                // workers, and leaving it out made this figure disagree with
+                // the list it sits above.
+                'open_requests' => $client->jobRequests()->open()->count(),
                 'positions_to_fill' => (int) $client->jobRequests()
-                    ->whereIn('request_status', ['open', 'partially_fulfilled'])
+                    ->open()
                     ->selectRaw('COALESCE(SUM(workers_needed - workers_fulfilled), 0) AS total')
                     ->value('total'),
                 'deployed_staff' => Deployment::where('client_company_id', $client->id)
@@ -349,7 +443,10 @@ class ClientCompanyController extends Controller
             ->get()
             ->keyBy('criteria_id');
 
-        $catalogue = CriteriaCatalog::where('is_active', true)->orderBy('criteria_name')->get();
+        // One switched off in Settings stays listed while this client uses it,
+        // so it can be seen and taken off instead of being dropped unseen on
+        // the next save.
+        $catalogue = CriteriaCatalog::activeOrInUse($configured->keys())->orderBy('criteria_name')->get();
 
         return ApiResponse::success([
             'company' => ['id' => $client->id, 'company_name' => $client->company_name],
@@ -363,6 +460,11 @@ class ClientCompanyController extends Controller
                     'description' => $criterion->description,
                     'criteria_type' => $criterion->criteria_type,
                     'value_type' => $criterion->value_type,
+
+                    // Which end of a number range earns the points, so the
+                    // form can label the two numbers for what they do.
+                    'score_direction' => $criterion->score_direction,
+                    'is_active' => (bool) $criterion->is_active,
 
                     // What this criterion's expected value accepts, published
                     // the same way as on a request so both forms offer the same
@@ -404,14 +506,32 @@ class ClientCompanyController extends Controller
 
         $data = $request->validate([
             'criteria' => ['present', 'array'],
-            'criteria.*.criteria_id' => ['required', 'integer', 'exists:criteria_catalog,id'],
+            // Distinct: one row per criterion per client, enforced by a unique
+            // index that would otherwise answer a repeat with a server error.
+            'criteria.*.criteria_id' => ['required', 'integer', 'distinct', 'exists:criteria_catalog,id'],
             'criteria.*.mandatory_flag' => ['boolean'],
-            'criteria.*.weight_score' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'criteria.*.weight_score' => ['nullable', 'numeric', 'decimal:0,2', 'min:0', 'max:100'],
             'criteria.*.expected_value' => ['nullable', 'string', 'max:255'],
-            'criteria.*.min_value' => ['nullable', 'numeric'],
-            'criteria.*.max_value' => ['nullable', 'numeric', 'gte:criteria.*.min_value'],
+            'criteria.*.min_value' => ['nullable', 'numeric', 'decimal:0,2', 'between:-99999999.99,99999999.99'],
+            'criteria.*.max_value' => ['nullable', 'numeric', 'decimal:0,2', 'between:-99999999.99,99999999.99', new NotBelow('criteria.*.min_value', 'lower number')],
             'criteria.*.note' => ['nullable', 'string', 'max:255'],
+        ], [
+            'criteria.*.criteria_id.distinct' => 'This requirement is listed more than once.',
         ]);
+
+        // A criterion switched off in Settings may stay where this client
+        // already uses it, but cannot be newly added.
+        $alreadyUsed = CompanyCriteria::where('client_company_id', $client->id)->pluck('criteria_id')->all();
+        $withdrawn = CriteriaCatalog::whereIn('id', collect($data['criteria'])->pluck('criteria_id'))
+            ->where('is_active', false)
+            ->whereNotIn('id', $alreadyUsed)
+            ->get();
+
+        if ($withdrawn->isNotEmpty()) {
+            throw ValidationException::withMessages([
+                'criteria' => $withdrawn->map(fn (CriteriaCatalog $c) => "{$c->criteria_name} has been turned off in Settings and can no longer be added.")->all(),
+            ]);
+        }
 
         DB::transaction(function () use ($data, $client, $request) {
             CompanyCriteria::where('client_company_id', $client->id)->delete();

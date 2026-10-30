@@ -1,11 +1,11 @@
 import * as React from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
-import { LogOut, FileText, Home, Briefcase, UserRound, SlidersHorizontal } from 'lucide-react'
+import { LogOut, FileText, Home, Briefcase, UserRound, SlidersHorizontal, GraduationCap } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import NotificationBell from '@/components/NotificationBell'
 import ThemeToggle from '@/components/ThemeToggle'
-import { useNotifications } from '@/contexts/NotificationsContext'
+import { useNotifications, useMarkSeenOnVisit } from '@/contexts/NotificationsContext'
 import { LoadingState } from '@/components/ui/states'
 import {
   ShellFrame,
@@ -39,7 +39,7 @@ const SIDEBAR_KEY = 'empower.portal.sidebar.collapsed'
 
 export default function PortalLayout() {
   const { user, logout, renewPhoto } = useAuth()
-  const { countFor } = useNotifications()
+  const { countsFor } = useNotifications()
   const navigate = useNavigate()
   const toast = useToast()
   const [mobileOpen, setMobileOpen] = React.useState(false)
@@ -48,30 +48,34 @@ export default function PortalLayout() {
 
   useEscapeToClose(mobileOpen, closeMobile)
 
-  const isEmployee = user?.user_type === 'employee'
+  // From the employment record behind the login, not the account type: a login
+  // made at registration stays "applicant" after its owner is deployed.
+  const isEmployee = Boolean(user?.employment?.has_record) || user?.user_type === 'employee'
 
   /*
    * Each section carries its own unread count, not the global one.
    *
-   * The categories are named here rather than in the notifications context
-   * because this is where the mapping is a judgement about navigation: a
-   * section is not a category. "My application" covers both status changes and
-   * deployment news, because to somebody waiting to hear about their
-   * application those are the same subject. Profile has none — nothing in the
-   * system notifies about it, and a badge that could never appear is worse than
-   * no badge at all.
+   * A notification is counted on the section for the page it opens (see
+   * countsFor), so news about documents shows on "My documents" and a
+   * placement on "My employment" once there is one - before then it lands on
+   * "My application", which covers every portal page beneath it. The
+   * categories are the fallback for a notification with no page.
    */
   const links = [
     { to: '/portal', label: 'My application', icon: Home, end: true, categories: ['application', 'deployment'] },
     { to: '/portal/documents', label: 'My documents', icon: FileText, categories: ['requirements'] },
+    { to: '/portal/training', label: 'My training', icon: GraduationCap, categories: ['training'] },
     ...(isEmployee
-      ? [{ to: '/portal/employment', label: 'My employment', icon: Briefcase, categories: [] }]
+      ? [{ to: '/portal/employment', label: 'My employment', icon: Briefcase, categories: ['employment'] }]
       : []),
     { to: '/portal/profile', label: 'Profile', icon: UserRound, categories: [] },
   ]
 
   const settingsLink = { to: '/portal/settings', label: 'Settings', icon: SlidersHorizontal }
   const role = isEmployee ? 'Employee' : 'Applicant'
+  const unreadByLink = countsFor(links)
+  // Opening a section's page clears its number: it has been seen.
+  useMarkSeenOnVisit(links)
 
   async function handleLogout() {
     await logout()
@@ -109,7 +113,7 @@ export default function PortalLayout() {
               <SidebarLink
                 key={link.to}
                 {...link}
-                unread={countFor(link.categories)}
+                unread={unreadByLink.get(link.to) ?? 0}
                 collapsed={collapsed}
                 onNavigate={closeMobile}
               />

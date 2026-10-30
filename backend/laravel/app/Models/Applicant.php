@@ -272,32 +272,26 @@ class Applicant extends Model
             return $query;
         }
 
-        // PostgreSQL's LIKE is case-sensitive, so searching "santos" would miss
-        // "Santos". ILIKE fixes that but does not exist in SQLite, which the
-        // test suite uses, hence the driver check.
-        $operator = $query->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-
         /*
          * Word by word (audit UX-06). The whole phrase used to be compared with
          * each column on its own, so "Juan Cruz" - a first name and a last name
          * - matched no single column and found nobody. Now every word has to
          * appear somewhere in the record: "Juan Cruz" finds Juan Dela Cruz, and
          * "Cruz 0917" narrows that to the one with that number. Capped at six
-         * words, which is more than any name or code needs.
+         * words, which is more than any name or code needs. Each word is
+         * matched as typed, % and _ included (see TextSearch).
          */
         $words = array_slice(preg_split('/\s+/', trim($term), -1, PREG_SPLIT_NO_EMPTY), 0, 6);
 
         foreach ($words as $word) {
-            $like = '%'.str_replace(['%', '_'], ['\%', '\_'], $word).'%';
-
-            $query->where(function (Builder $q) use ($like, $operator) {
-                $q->where('first_name', $operator, $like)
-                    ->orWhere('last_name', $operator, $like)
-                    ->orWhere('middle_name', $operator, $like)
-                    ->orWhere('applicant_code', $operator, $like)
-                    ->orWhere('contact_number', $operator, $like)
-                    ->orWhere('email', $operator, $like)
-                    ->orWhere('preferred_position', $operator, $like);
+            $query->where(function (Builder $q) use ($word) {
+                $q->whereContains('first_name', $word)
+                    ->orWhereContains('last_name', $word)
+                    ->orWhereContains('middle_name', $word)
+                    ->orWhereContains('applicant_code', $word)
+                    ->orWhereContains('contact_number', $word)
+                    ->orWhereContains('email', $word)
+                    ->orWhereContains('preferred_position', $word);
             });
         }
 
@@ -307,5 +301,68 @@ class Applicant extends Model
     public function scopeEvaluable(Builder $query): Builder
     {
         return $query->whereIn('current_status', config('empower.evaluable_applicant_statuses'));
+    }
+
+    /**
+     * Applicants whose employment record shows them placed today.
+     *
+     * This, not the status column, is what "deployed" means in a filter.
+     * Deployment walks the applicant through "deployed" and on to "active" in
+     * the same transaction, so nobody ever rests at "deployed" - filtering the
+     * column for it always came back empty. A status can also disagree with the
+     * employment record (some were moved by hand before those statuses became
+     * workflow-owned), and the employment record is the one that says whether
+     * somebody is working. EXISTS rather than a join, so an applicant with
+     * several deployments is still one row.
+     */
+    public function scopeCurrentlyDeployed(Builder $query): Builder
+    {
+        return $query->whereHas('employee', fn (Builder $employee) => $employee->currentlyDeployed());
+    }
+
+    /** Everyone the scope above leaves out, never-employed and former workers included. */
+    public function scopeNotCurrentlyDeployed(Builder $query): Builder
+    {
+        return $query->whereDoesntHave('employee', fn (Builder $employee) => $employee->currentlyDeployed());
+    }
+
+    /**
+     * Applicants in any of the given statuses, with "deployed" read from the
+     * employment record as above and every other status from the column.
+     */
+    public function scopeInStatuses(Builder $query, array $statuses): Builder
+    {
+        $stored = array_values(array_diff($statuses, ['deployed']));
+        $deployed = in_array('deployed', $statuses, true);
+
+        return $query->where(function (Builder $either) use ($stored, $deployed) {
+            if ($stored !== []) {
+                $either->whereIn('current_status', $stored);
+            }
+
+            if ($deployed) {
+                $either->orWhere(fn (Builder $placed) => $placed->currentlyDeployed());
+            }
+        });
+    }
+
+    /**
+     * Adds `currently_deployed` and `deployed_company` to each row, so a list
+     * can show placement beside the status from the same rule the filter uses.
+     * Correlated subqueries rather than a join, so no applicant is repeated.
+     */
+    public function scopeWithPlacement(Builder $query): Builder
+    {
+        return $query
+            ->withExists(['employee as currently_deployed' => fn (Builder $employee) => $employee->currentlyDeployed()])
+            ->addSelect(['deployed_company' => ClientCompany::query()
+                ->select('client_companies.company_name')
+                ->join('deployments', 'deployments.client_company_id', '=', 'client_companies.id')
+                ->join('employees', 'employees.id', '=', 'deployments.employee_id')
+                ->whereColumn('employees.applicant_id', 'applicants.id')
+                ->where('employees.employment_status', 'active')
+                ->where('deployments.deployment_status', 'active')
+                ->limit(1),
+            ]);
     }
 }

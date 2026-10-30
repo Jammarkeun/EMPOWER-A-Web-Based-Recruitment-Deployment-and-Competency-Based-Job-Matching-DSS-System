@@ -6,9 +6,11 @@ use App\Http\Responses\ApiResponse;
 use App\Models\Applicant;
 use App\Models\Training;
 use App\Models\TrainingEnrollment;
+use App\Notifications\TrainingSessionNotice;
 use App\Services\ApplicantLifecycleService;
 use App\Services\AuditService;
 use App\Services\ReferenceCodeService;
+use App\Services\TrainingProgressService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -28,16 +30,26 @@ use RuntimeException;
  *
  * Attendance and completion are separate facts. Being present does not mean
  * the training was completed, and nothing here infers one from the other.
+ *
+ * The applicant hears about each roster event that concerns them - enrolled,
+ * session moved or cancelled, taken off, completion recorded or withdrawn -
+ * through one TrainingSessionNotice naming the session. The status moves made
+ * here therefore skip the generic status notice, which named no session and
+ * would otherwise arrive alongside it.
  */
 class TrainingController extends Controller
 {
     /** Where an applicant may be in the lifecycle to be put on a roster. */
     private const ENROLLABLE_STATUSES = ['ready_for_deployment', 'training_scheduled', 'approved'];
 
+    /** The applicant is told about the session, not the status word. */
+    private const QUIET = ['notify' => false];
+
     public function __construct(
         private readonly ReferenceCodeService $codes,
         private readonly ApplicantLifecycleService $lifecycle,
         private readonly AuditService $audit,
+        private readonly TrainingProgressService $progress,
     ) {
     }
 
@@ -62,6 +74,7 @@ class TrainingController extends Controller
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '<=', $v))
             ->orderByDesc('training_date')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated($trainings, 'Training sessions retrieved');
@@ -76,7 +89,7 @@ class TrainingController extends Controller
             'training_date' => ['required', 'date'],
             'location' => ['required', 'string', 'max:190'],
             'trainer_name' => ['required', 'string', 'max:190'],
-            'remarks' => ['nullable', 'string'],
+            'remarks' => ['nullable', 'string', 'max:2000'],
         ]);
 
         $training = Training::create(array_merge($data, [
@@ -145,7 +158,10 @@ class TrainingController extends Controller
             ->map(fn ($value) => $value instanceof \DateTimeInterface ? $value->format('Y-m-d') : $value)
             ->all();
 
-        DB::transaction(function () use ($training, $data, $cancelling, $request) {
+        // Read before the update: a new day or place is news to the roster.
+        $rescheduling = ! $cancelling && $this->movesSession($training, $data);
+
+        DB::transaction(function () use ($training, $data, $cancelling, $rescheduling, $request) {
             $training->update($data);
 
             // Applicants scheduled only for this session are no longer
@@ -158,6 +174,18 @@ class TrainingController extends Controller
                         "Training session {$training->training_code} was cancelled.",
                         $training->id
                     );
+                    $this->tell($enrollment->applicant, $training, 'cancelled');
+                }
+            }
+
+            // Only those still due to attend. Anybody with attendance or a
+            // completion recorded is past the point where a new date concerns
+            // them - for them it is a correction to the record.
+            if ($rescheduling && $training->acceptsEnrolment()) {
+                foreach ($training->enrollments()->with('applicant')->get() as $enrollment) {
+                    if ($enrollment->isUntouched()) {
+                        $this->tell($enrollment->applicant, $training, 'rescheduled');
+                    }
                 }
             }
         });
@@ -336,6 +364,8 @@ class TrainingController extends Controller
                     'applicant_code' => $applicant->applicant_code,
                 ]);
 
+                $required = $this->progress->stillRequiredFor($applicant);
+
                 // Enrolling is what schedules somebody for training; the status
                 // follows the roster rather than being typed beside it.
                 if ($this->lifecycle->canTransition($applicant->current_status, 'training_scheduled')) {
@@ -343,9 +373,16 @@ class TrainingController extends Controller
                         $applicant,
                         'training_scheduled',
                         $request->user(),
-                        "Enrolled in {$training->training_title} ({$training->training_code})."
+                        "Enrolled in {$training->training_title} ({$training->training_code}).",
+                        [],
+                        self::QUIET
                     );
                 }
+
+                // Every enrolment is told, not only the one that moved the
+                // status: a second session is news too. Somebody already on
+                // this roster was skipped above, so nobody hears it twice.
+                $this->tell($applicant, $training, 'enrolled', $required);
 
                 $enrolled[] = ['applicant_id' => $applicant->id, 'full_name' => $applicant->full_name];
             }
@@ -432,6 +469,7 @@ class TrainingController extends Controller
 
             if ($withdrawing) {
                 $this->withdrawCompletion($applicant, $training, $actor);
+                $this->tell($applicant, $training, 'completion_withdrawn');
             }
 
             // Completing training moves the applicant forward, so the record
@@ -441,8 +479,14 @@ class TrainingController extends Controller
                     $applicant,
                     'training_completed',
                     $actor,
-                    "Completed {$training->training_title} ({$training->training_code})."
+                    "Completed {$training->training_title} ({$training->training_code}).",
+                    [],
+                    self::QUIET
                 );
+            }
+
+            if ($completing) {
+                $this->tell($applicant, $training, 'completed');
             }
         });
 
@@ -492,6 +536,12 @@ class TrainingController extends Controller
             if ($applicant) {
                 $this->releaseFromSchedule($applicant, $request->user(), "Removed from {$training->training_title} ({$training->training_code}).", $training->id);
             }
+
+            // Only while they might still turn up for it. Somebody on a session
+            // that is over, or already told it was cancelled, has nothing to act on.
+            if ($training->acceptsEnrolment()) {
+                $this->tell($applicant, $training, 'removed');
+            }
         });
 
         return ApiResponse::success(null, 'Removed from the roster.');
@@ -515,9 +565,36 @@ class TrainingController extends Controller
             ->whereHas('training', fn ($q) => $q->whereIn('status', ['scheduled', 'ongoing']))
             ->exists();
 
+        // Quietly: the caller tells the applicant why. The status notice for
+        // this move says "You are ready for deployment", which is not the news.
         if (! $stillScheduled && $this->lifecycle->canTransition('training_scheduled', 'ready_for_deployment')) {
-            $this->lifecycle->transition($applicant, 'ready_for_deployment', $actor, $reason);
+            $this->lifecycle->transition($applicant, 'ready_for_deployment', $actor, $reason, [], self::QUIET);
         }
+    }
+
+    /** Whether a change gives the session a different day or place. */
+    private function movesSession(Training $training, array $data): bool
+    {
+        $movesDate = isset($data['training_date'])
+            && $training->training_date?->toDateString() !== Carbon::parse($data['training_date'])->toDateString();
+        $movesPlace = isset($data['location']) && $data['location'] !== $training->location;
+
+        return $movesDate || $movesPlace;
+    }
+
+    /**
+     * Tells the applicant about a roster event once it is saved, so a change
+     * that is refused or rolled back never announces anything. The session is
+     * read when the notice is written, after the change, so it carries the
+     * new date and place.
+     */
+    private function tell(?Applicant $applicant, Training $training, string $event, bool $required = false): void
+    {
+        if (! $applicant) {
+            return;
+        }
+
+        DB::afterCommit(fn () => $applicant->notify(new TrainingSessionNotice($training, $event, $required)));
     }
 
     /**
@@ -537,7 +614,9 @@ class TrainingController extends Controller
                 'training_scheduled',
                 $actor,
                 "Completion of {$training->training_title} ({$training->training_code}) withdrawn.",
-                ['training_completed']
+                ['training_completed'],
+                [],
+                self::QUIET
             );
 
             return;

@@ -7,10 +7,11 @@ import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Input } from '@/components/ui/input'
+import { Input, NameInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
+import { formProblems } from '@/lib/validation'
 import { Field, FormGrid } from '@/components/ui/form'
 import { EmptyState, ErrorState, SkeletonRows, LoadingState } from '@/components/ui/states'
 import {
@@ -22,20 +23,30 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
+import { Pagination, useClampPage } from '@/components/Pagination'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
 import { TemporaryPassword } from '@/components/TemporaryPassword'
 
 export default function Users() {
   const [search, setSearch] = React.useState('')
   const [userType, setUserType] = React.useState('')
+  const [page, setPage] = React.useState(1)
   const [createOpen, setCreateOpen] = React.useState(false)
   const debouncedSearch = useDebounced(search)
 
-  const { data, loading, error, refetch } = useApi('/users', {
+  // Paged like every other list. It used to ask for one page of fifty with
+  // no way to reach the next: sorted by account type, the applicant logins
+  // filled it and every HR and coordinator account fell off the end.
+  React.useEffect(() => setPage(1), [debouncedSearch, userType])
+
+  const { data, meta, loading, error, refetch } = useApi('/users', {
     search: debouncedSearch || undefined,
     user_type: userType || undefined,
+    page,
     per_page: 50,
   })
+
+  useClampPage(meta, setPage)
 
   return (
     <>
@@ -82,6 +93,11 @@ export default function Users() {
                 <option value="applicant">Applicant portal</option>
                 <option value="employee">Employee portal</option>
               </Select>
+              {meta?.total !== undefined && (
+                <span className="self-center whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+                  {meta.total} account{meta.total === 1 ? '' : 's'}
+                </span>
+              )}
             </CardContent>
           </Card>
 
@@ -93,6 +109,7 @@ export default function Users() {
             ) : !data?.length ? (
               <EmptyState icon={UserCog} title="No accounts match" />
             ) : (
+              <>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -111,6 +128,10 @@ export default function Users() {
                   ))}
                 </TableBody>
               </Table>
+              <div className="px-4 pb-3">
+                <Pagination meta={meta} onPage={setPage} />
+              </div>
+              </>
             )}
           </Card>
         </TabsContent>
@@ -152,7 +173,10 @@ function UserRow({ user, onChanged }) {
         <TableCell className="font-medium">{user.full_name}</TableCell>
         <TableCell className="text-sm text-muted-foreground">{user.email}</TableCell>
         <TableCell>
-          <Badge tone={user.user_type === 'admin' ? 'info' : 'muted'}>{humanise(user.user_type)}</Badge>
+          {/* A portal login is named by the portal it opens: one made at
+              registration still says "applicant" after deployment, and opens
+              onto the person's employment. */}
+          <Badge tone={user.user_type === 'admin' ? 'info' : 'muted'}>{humanise(user.portal_access ?? user.user_type)}</Badge>
           {/* A coordinator's client is their whole scope, so it is shown
               wherever the account is. */}
           {isCoordinator && (
@@ -366,7 +390,12 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
 
   async function handleSubmit(event) {
     event.preventDefault()
-    setErrors({})
+
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { names: ['first_name', 'last_name'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSubmitting(true)
 
     try {
@@ -400,10 +429,10 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <FormGrid>
             <Field label="First name" htmlFor="first_name" required error={errors.first_name?.[0]}>
-              <Input value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} autoFocus />
+              <NameInput value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} autoFocus />
             </Field>
             <Field label="Last name" htmlFor="last_name" required error={errors.last_name?.[0]}>
-              <Input value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+              <NameInput value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
             </Field>
           </FormGrid>
 

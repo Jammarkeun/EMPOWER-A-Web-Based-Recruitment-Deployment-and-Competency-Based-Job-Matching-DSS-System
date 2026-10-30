@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
-import { formatMinutes } from '@/components/AttendancePanel'
+import { formatMinutes } from '@/lib/attendance'
 import { cn, formatDate } from '@/lib/utils'
 
 /**
@@ -94,16 +94,17 @@ export default function CoordinatorEmployeeDetail() {
               Attendance this month
             </CardTitle>
             <CardDescription>
-              {attendance.schedule ? `Schedule: ${attendance.schedule}` : 'No schedule set by HR.'} HR encodes the DTR.
+              {attendance.schedule ? `Schedule: ${attendance.schedule}.` : 'No schedule set by HR.'} The DTR comes from the
+              client's records and is checked by HR; a day with nothing on file is not counted as an absence.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
-                ['Absent', attendance.summary.days_absent, 'destructive'],
-                ['Late', attendance.summary.days_late, 'warning', attendance.summary.late_minutes],
-                ['Left early', attendance.summary.days_undertime, 'warning', attendance.summary.undertime_minutes],
-                ['Missing punches', attendance.summary.incomplete_records, 'destructive'],
+                ['Late', attendance.summary.late_days, 'warning', attendance.summary.late_minutes],
+                ['Early departure', attendance.summary.early_departure_days, 'warning', attendance.summary.early_departure_minutes],
+                ['Missing punches', attendance.summary.missing_punch_days, 'destructive'],
+                ['Awaiting DTR', attendance.summary.awaiting_dtr_days],
               ].map(([label, value, tone, minutes]) => (
                 <div key={label} className="rounded-md border px-3 py-2">
                   <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt>
@@ -246,6 +247,11 @@ const REPORT_TONES = {
   returned: 'warning',
   validated: 'success',
   dismissed: 'muted',
+  // Incident reports and requisitions share the badge.
+  resolved: 'success',
+  approved: 'success',
+  fulfilled: 'success',
+  rejected: 'muted',
 }
 
 export function ReportStatus({ status, label }) {

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Applicant;
 use App\Models\RequirementType;
+use App\Support\DocumentCompliance;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -60,7 +61,9 @@ class FolderCategoryService
 
     public function determine(Applicant $applicant): string
     {
-        return $this->categoryFor($this->requiredTypes(), $this->verifiedTypeIds($applicant));
+        $required = $this->requiredTypes();
+
+        return $this->categoryFor($required, $this->verifiedTypeIds($applicant, $required));
     }
 
     /**
@@ -102,7 +105,7 @@ class FolderCategoryService
     public function explain(Applicant $applicant): array
     {
         $required = $this->requiredTypes();
-        $verified = $this->verifiedTypeIds($applicant);
+        $verified = $this->verifiedTypeIds($applicant, $required);
 
         $missing = fn (string $group) => $required
             ->where('requirement_group', $group)
@@ -150,15 +153,25 @@ class FolderCategoryService
      * Type IDs the applicant has genuinely satisfied. Expired documents are
      * excluded: a police clearance that lapsed while the applicant waited for a
      * posting no longer proves anything.
+     *
+     * Once deployed, only a lapse the worker must renew while employed counts
+     * (DocumentCompliance): the clearance they were placed on lapsing later
+     * does not refile them. Only required types decide a folder, so their
+     * rules are the ones needed.
+     *
+     * @param  Collection<int, RequirementType>  $required
      */
-    private function verifiedTypeIds(Applicant $applicant): Collection
+    private function verifiedTypeIds(Applicant $applicant, Collection $required): Collection
     {
         $requirements = $applicant->relationLoaded('requirements')
             ? $applicant->requirements
             : $applicant->requirements()->get();
 
+        $stage = DocumentCompliance::stage($applicant->current_status);
+        $rules = $required->pluck('post_deployment_rule', 'id');
+
         return $requirements
-            ->filter(fn ($r) => $r->countsAsComplete())
+            ->filter(fn ($r) => $r->countsAsComplete($rules->get($r->requirement_type_id), $stage))
             ->pluck('requirement_type_id');
     }
 }

@@ -115,6 +115,8 @@ export function statusTone(status) {
     // Separations. A termination awaiting review is the one that needs
     // somebody's attention; a withdrawn one is history that ended quietly.
     filed: 'info',
+    // Waiting on the employee, not on HR.
+    info_requested: 'warning',
     accepted: 'info',
     completed: 'muted',
     withdrawn: 'muted',

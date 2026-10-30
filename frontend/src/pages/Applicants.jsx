@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Users, UserCheck, ChevronRight, X, AlertTriangle } from 'lucide-react'
+import { Plus, Users, UserCheck, ChevronRight, X, AlertTriangle, Briefcase } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { useApplicantStatuses } from '@/hooks/useApplicantStatuses'
 import { useAuth } from '@/contexts/AuthContext'
@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
-import { Pagination } from '@/components/Pagination'
+import { Pagination, useClampPage } from '@/components/Pagination'
 import { formatDate } from '@/lib/utils'
 import NewApplicantDialog from '@/components/dialogs/NewApplicantDialog'
 
@@ -24,6 +24,7 @@ const FILTER_KEYS = [
   'preferred_position_id',
   'awaiting_identity_check',
   'documents_lapsed',
+  'exclude_deployed',
 ]
 
 /**
@@ -44,11 +45,16 @@ export default function Applicants() {
   const value = (key) => searchParams.get(key) ?? ''
   const search = value('search')
   const status = value('current_status')
+  // Several statuses, comma-separated, when a dashboard figure opens the list.
+  const statusValues = status.split(',').filter(Boolean)
   const folder = value('folder_category')
   const client = value('client_company_id')
   const position = value('preferred_position_id')
   const awaiting = value('awaiting_identity_check') === '1'
   const lapsed = value('documents_lapsed') === '1'
+  // Leaves out anyone working under an active deployment; the dashboard's
+  // "ready for deployment" figure opens the list with it on.
+  const notDeployed = value('exclude_deployed') === '1'
   const page = Number(searchParams.get('page') ?? 1)
 
   const debouncedSearch = useDebounced(search)
@@ -64,11 +70,15 @@ export default function Applicants() {
     preferred_position_id: position || undefined,
     awaiting_identity_check: awaiting ? 1 : undefined,
     documents_lapsed: lapsed ? 1 : undefined,
+    exclude_deployed: notDeployed ? 1 : undefined,
     page,
     per_page: 20,
   })
 
   const filtered = FILTER_KEYS.some((key) => searchParams.get(key))
+  const statusLabel = (key) => statuses.find((s) => s.value === key)?.label ?? key
+
+  useClampPage(meta, (p) => updateFilter('page', String(p)))
 
   function updateFilter(key, next) {
     const params = new URLSearchParams(searchParams)
@@ -120,6 +130,7 @@ export default function Applicants() {
             onChange: (val) => updateFilter('current_status', val),
             options: [
               { value: '', label: 'All statuses' },
+              ...(statusValues.length > 1 ? [{ value: status, label: `${statusValues.length} statuses` }] : []),
               ...statuses.map((s) => ({ value: s.value, label: s.label })),
             ],
           },
@@ -137,12 +148,13 @@ export default function Applicants() {
           },
           {
             id: 'client_company_id',
-            label: 'All clients',
+            label: 'Applied to any client',
             value: client,
             onChange: (val) => updateFilter('client_company_id', val),
             options: [
-              { value: '', label: 'All clients' },
-              ...(clients ?? []).map((c) => ({ value: String(c.id), label: c.company_name })),
+              // Whose positions the applicant applied for, not where anyone works.
+              { value: '', label: 'Applied to any client' },
+              ...(clients ?? []).map((c) => ({ value: String(c.id), label: `Applied to ${c.company_name}` })),
             ],
           },
           {
@@ -172,11 +184,35 @@ export default function Applicants() {
             active: lapsed,
             onToggle: () => updateFilter('documents_lapsed', lapsed ? '' : '1'),
           },
+          {
+            id: 'exclude_deployed',
+            label: 'Not deployed',
+            active: notDeployed,
+            onToggle: () => updateFilter('exclude_deployed', notDeployed ? '' : '1'),
+          },
         ]}
         resultCount={meta?.total}
         resultLabel="applicants"
         onClearFilters={clearFilters}
       />
+
+      {statusValues.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>
+            Showing applicants in{' '}
+            <span className="font-medium text-foreground">{statusValues.map(statusLabel).join(', ')}</span>
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            onClick={() => updateFilter('current_status', '')}
+          >
+            <X className="h-3 w-3" />
+            Show every status
+          </Button>
+        </div>
+      )}
 
       {position && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -290,6 +326,7 @@ export default function Applicants() {
                   <TableCell>
                     <div className="flex flex-col items-start gap-1">
                       <StatusBadge status={applicant.current_status} label={applicant.status_label} />
+                      <PlacementNote placement={applicant.placement} />
                       {applicant.documents_lapsed && (
                         <Badge tone="warning" title="The status was reached with every document verified; the folder now says one has lapsed or been rejected.">
                           <AlertTriangle className="h-3 w-3" aria-hidden="true" />
@@ -324,5 +361,38 @@ export default function Applicants() {
 
       <NewApplicantDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreated={refetch} />
     </div>
+  )
+}
+
+/**
+ * Where somebody works today, from the employment record - the same rule as
+ * the Deployed filter - and any disagreement between that record and the
+ * status. Shown, never corrected: the status and the employment record are
+ * changed only by their own workflows.
+ */
+function PlacementNote({ placement }) {
+  if (!placement) return null
+
+  return (
+    <>
+      {placement.deployed && (
+        <Badge tone="info" title="An active employee with an active deployment.">
+          <Briefcase className="h-3 w-3" aria-hidden="true" />
+          {placement.company ? `Deployed · ${placement.company}` : 'Deployed'}
+        </Badge>
+      )}
+      {placement.mismatch === 'status_not_updated' && (
+        <Badge tone="warning" title="The employment record shows an active deployment, but the applicant status was not moved on.">
+          <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+          Status not updated
+        </Badge>
+      )}
+      {placement.mismatch === 'no_active_deployment' && (
+        <Badge tone="warning" title="The status says employed, but no active deployment is on record.">
+          <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+          No active deployment
+        </Badge>
+      )}
+    </>
   )
 }

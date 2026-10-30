@@ -9,6 +9,7 @@ use App\Models\RequirementType;
 use App\Services\AuditService;
 use App\Services\FolderRecalculationService;
 use App\Services\SettingsService;
+use App\Support\DocumentCompliance;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -30,9 +31,11 @@ class SettingsController extends Controller
      * The fields of a requirement type that decide folders. A change to any of
      * them changes the rule for every applicant at once, so stored folders are
      * recalculated straight after it (audit R-17). Its name and whether it
-     * carries an expiry date do not affect anybody's folder.
+     * carries an expiry date do not affect anybody's folder. Its rule after
+     * deployment does, for deployed workers whose copy has lapsed
+     * (DocumentCompliance).
      */
-    private const FOLDER_FIELDS = ['is_required', 'requirement_group', 'active_flag'];
+    private const FOLDER_FIELDS = ['is_required', 'requirement_group', 'active_flag', 'post_deployment_rule'];
 
     public function __construct(
         private readonly SettingsService $settings,
@@ -50,7 +53,11 @@ class SettingsController extends Controller
             'requirement_types' => RequirementType::orderBy('requirement_group')
                 ->orderBy('display_order')
                 ->get(),
-            'criteria' => CriteriaCatalog::orderBy('criteria_name')->get(),
+            // With how many requests and clients use each one, so editing or
+            // switching one off can say what it will affect.
+            'criteria' => CriteriaCatalog::withCount(['requestCriteria', 'companyCriteria'])
+                ->orderBy('criteria_name')
+                ->get(),
             // Lets the screen render read-only for HR rather than showing
             // controls that would be refused on submit.
             'can_edit' => $request->user()->can('settings.update'),
@@ -156,6 +163,8 @@ class SettingsController extends Controller
             'requirement_group' => ['required', Rule::in(['primary', 'final'])],
             'is_required' => ['required', 'boolean'],
             'has_expiry' => ['required', 'boolean'],
+            // Blank means CDE has not said; see DocumentCompliance.
+            'post_deployment_rule' => ['nullable', Rule::in(DocumentCompliance::RULES)],
         ]);
 
         $type = RequirementType::create($data + [
@@ -192,6 +201,7 @@ class SettingsController extends Controller
             'is_required' => ['sometimes', 'boolean'],
             'has_expiry' => ['sometimes', 'boolean'],
             'active_flag' => ['sometimes', 'boolean'],
+            'post_deployment_rule' => ['sometimes', 'nullable', Rule::in(DocumentCompliance::RULES)],
         ]);
 
         $before = $requirementType->only(array_keys($data));
@@ -250,43 +260,61 @@ class SettingsController extends Controller
 
         $data = $request->validate([
             'criteria_code' => ['required', 'string', 'max:60', 'unique:criteria_catalog,criteria_code', 'regex:/^[a-z_]+$/'],
-            'criteria_name' => ['required', 'string', 'max:120'],
+            // Two requirements with the same name could not be told apart on
+            // any screen that offers them.
+            'criteria_name' => ['required', 'string', 'max:120', Rule::unique('criteria_catalog', 'criteria_name')],
             'criteria_type' => ['required', Rule::in(['hard_filter', 'weighted_binary', 'weighted_scale'])],
             'value_type' => ['required', Rule::in(['boolean', 'number', 'text', 'enum'])],
             'score_direction' => ['required', Rule::in(['higher_better', 'lower_better'])],
             'description' => ['required', 'string', 'max:255'],
         ], [
             'criteria_code.regex' => 'The code may only contain lowercase letters and underscores.',
+            'criteria_code.unique' => 'Another requirement already uses this code.',
+            'criteria_name.unique' => 'Another requirement already has this name.',
         ]);
 
         $criterion = CriteriaCatalog::create($data + ['is_active' => true]);
 
         $this->audit->record('create', 'settings', CriteriaCatalog::class, $criterion->id, null, $data);
 
-        return ApiResponse::created($criterion, 'Criterion added');
+        return ApiResponse::created($criterion, 'Requirement added');
     }
 
+    /**
+     * Edit a requirement in place, or switch it off or on.
+     *
+     * The code and value type are fixed once created: the code names the
+     * applicant field the requirement reads, and every value already saved
+     * against it was entered in its value type. Anything else sent is ignored.
+     */
     public function updateCriterion(Request $request, CriteriaCatalog $criterion): JsonResponse
     {
         $this->authorize('manageSettings');
 
         $data = $request->validate([
-            'criteria_name' => ['sometimes', 'string', 'max:120'],
-            'criteria_type' => ['sometimes', Rule::in(['hard_filter', 'weighted_binary', 'weighted_scale'])],
-            'score_direction' => ['sometimes', Rule::in(['higher_better', 'lower_better'])],
-            'description' => ['sometimes', 'string', 'max:255'],
+            'criteria_name' => [
+                'sometimes', 'required', 'string', 'max:120',
+                Rule::unique('criteria_catalog', 'criteria_name')->ignore($criterion->id),
+            ],
+            'criteria_type' => ['sometimes', 'required', Rule::in(['hard_filter', 'weighted_binary', 'weighted_scale'])],
+            'score_direction' => ['sometimes', 'required', Rule::in(['higher_better', 'lower_better'])],
+            'description' => ['sometimes', 'required', 'string', 'max:255'],
             'is_active' => ['sometimes', 'boolean'],
+        ], [
+            'criteria_name.unique' => 'Another requirement already has this name.',
         ]);
 
-        // Deactivating is allowed, but a criterion already attached to a request
+        // Switching off is allowed, but a criterion already attached to a request
         // must keep working there — existing evaluations reference it, and
         // removing it would make a past ranking unexplainable.
-        if (array_key_exists('is_active', $data) && ! $data['is_active']) {
+        if (array_key_exists('is_active', $data) && $data['is_active'] !== (bool) $criterion->is_active) {
             $inUse = $criterion->requestCriteria()->count();
-            if ($inUse > 0) {
-                $data['is_active'] = false;
-                $message = "Criterion deactivated. It remains on {$inUse} existing request(s) so their rankings stay explainable.";
-            }
+
+            $message = match (true) {
+                (bool) $data['is_active'] => 'Requirement turned on. HR can add it to requests again.',
+                $inUse > 0 => "Requirement turned off. It stays on the {$inUse} request(s) that already use it, so their rankings can still be explained.",
+                default => 'Requirement turned off. HR can no longer add it to requests.',
+            };
         }
 
         $before = $criterion->only(array_keys($data));
@@ -294,7 +322,7 @@ class SettingsController extends Controller
 
         $this->audit->recordUpdate('settings', CriteriaCatalog::class, $criterion->id, $before, $data);
 
-        return ApiResponse::success($criterion->fresh(), $message ?? 'Criterion updated');
+        return ApiResponse::success($criterion->fresh(), $message ?? 'Requirement updated');
     }
 
     /**

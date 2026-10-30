@@ -6,7 +6,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Select } from '@/components/ui/select'
-import { Input } from '@/components/ui/input'
+import { Input, NumberInput } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
@@ -158,10 +158,9 @@ export default function AuditLogs() {
             ))}
           </Select>
 
-          <Input
-            type="number"
+          <NumberInput
             min="1"
-            inputMode="numeric"
+            step="1"
             value={filters.record_id}
             onChange={(e) => update('record_id', e.target.value)}
             placeholder="Record number"

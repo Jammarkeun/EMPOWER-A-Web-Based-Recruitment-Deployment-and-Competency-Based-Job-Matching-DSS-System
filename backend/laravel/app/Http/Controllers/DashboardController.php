@@ -11,6 +11,8 @@ use App\Models\EmployeeViolation;
 use App\Models\JobRequest;
 use App\Models\Resignation;
 use App\Models\Termination;
+use App\Support\ApplicantStatuses;
+use App\Support\DocumentCompliance;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -48,6 +50,7 @@ class DashboardController extends Controller
             'violations_by_type' => $this->groupCount(EmployeeViolation::query(), 'violation_type'),
             'monthly_trend' => $this->monthlyTrend($since),
             'open_requests' => $this->openRequests(),
+            'links' => $this->links(),
             'generated_at' => now()->toIso8601String(),
             ]
         );
@@ -110,21 +113,33 @@ class DashboardController extends Controller
     {
         $inactive = config('empower.inactive_applicant_statuses');
 
+        // Somebody working under an active deployment is not waiting for one,
+        // whatever their status says (some statuses were reset by hand after
+        // the person was deployed). The rule the applicant list uses.
+        $placed = Employee::query()
+            ->currentlyDeployed()
+            ->whereColumn('employees.applicant_id', 'applicants.id')
+            ->toBase();
+
         return $this->applicantAggregate ??= Applicant::query()
             ->selectRaw('COUNT(*) AS total')
             ->selectRaw(
                 'COUNT(CASE WHEN current_status NOT IN ('.$this->placeholders($inactive).') THEN 1 END) AS active',
                 $inactive
             )
+            // The status lists are the ones the applicant list is opened on
+            // (see links()), so each figure and its list are the same people.
             ->selectRaw(
                 "COUNT(CASE WHEN folder_category = 'folder_1'
-                    AND current_status IN ('ready_for_deployment', 'approved', 'client_evaluation')
-                 THEN 1 END) AS ready"
+                    AND current_status IN (".$this->placeholders(ApplicantStatuses::READY_FOR_PLACEMENT).')
+                    AND NOT EXISTS ('.$placed->toSql().')
+                 THEN 1 END) AS ready',
+                [...ApplicantStatuses::READY_FOR_PLACEMENT, ...$placed->getBindings()]
             )
             ->selectRaw(
-                "COUNT(CASE WHEN current_status IN
-                    ('initial_screening', 'incomplete_requirements', 'pending_final_requirements')
-                 THEN 1 END) AS needing_documents"
+                'COUNT(CASE WHEN current_status IN ('.$this->placeholders(ApplicantStatuses::AWAITING_DOCUMENTS).')
+                 THEN 1 END) AS needing_documents',
+                ApplicantStatuses::AWAITING_DOCUMENTS
             )
             ->first();
     }
@@ -152,10 +167,15 @@ class DashboardController extends Controller
                 "COUNT(CASE WHEN status = 'completed' AND exit_date BETWEEN ? AND ? THEN 1 END) AS this_month",
                 [now()->startOfMonth(), now()->endOfMonth()]
             )
+            // HR's queue and the employee's are counted apart. A resignation
+            // waiting on the employee's answer is open but nothing HR can
+            // clear, so it is neither hidden nor counted as HR's work.
             ->selectRaw(
-                "COUNT(CASE WHEN status IN ('filed', 'accepted') AND clearance_status <> 'cleared'
-                 THEN 1 END) AS pending_clearance"
+                'COUNT(CASE WHEN status IN ('.$this->placeholders(Resignation::AWAITING_HR).") AND clearance_status <> 'cleared'
+                 THEN 1 END) AS pending_clearance",
+                Resignation::AWAITING_HR
             )
+            ->selectRaw("COUNT(CASE WHEN status = 'info_requested' THEN 1 END) AS awaiting_employee")
             ->first();
     }
 
@@ -172,6 +192,36 @@ class DashboardController extends Controller
             ->first();
     }
 
+    /**
+     * The list filters behind each figure.
+     *
+     * The ready figure used to open every Folder 1 applicant, deployed
+     * employees and closed records included, and the documents figure counted
+     * three statuses but opened one. Published here so the screen does not
+     * keep its own copy of the lists.
+     */
+    private function links(): array
+    {
+        return [
+            'ready_for_deployment' => [
+                'folder_category' => 'folder_1',
+                'current_status' => implode(',', ApplicantStatuses::READY_FOR_PLACEMENT),
+                'exclude_deployed' => 1,
+            ],
+            'incomplete_requirements' => [
+                'current_status' => implode(',', ApplicantStatuses::AWAITING_DOCUMENTS),
+            ],
+            'pending_clearance' => [
+                'type' => 'resignation',
+                'status' => 'awaiting_clearance',
+            ],
+            'resignations_awaiting_employee' => [
+                'type' => 'resignation',
+                'status' => 'info_requested',
+            ],
+        ];
+    }
+
     /** Comma-separated placeholders for an IN clause inside a raw expression. */
     private function placeholders(array $values): string
     {
@@ -182,6 +232,26 @@ class DashboardController extends Controller
      * The queue of things that need a person to act, which is what HR actually
      * opens the dashboard to find out.
      */
+    /**
+     * Verified documents past their expiry date - marked expired by the daily
+     * check or not yet - of current applicants and employees, for document
+     * types still in use. Callers narrow it by lifecycle stage.
+     */
+    private function lapsedDocuments()
+    {
+        return DB::table('applicant_requirements')
+            ->join('applicants', 'applicants.id', '=', 'applicant_requirements.applicant_id')
+            ->join('requirement_types', 'requirement_types.id', '=', 'applicant_requirements.requirement_type_id')
+            ->whereNull('applicants.deleted_at')
+            ->where('requirement_types.active_flag', true)
+            ->whereNotNull('applicant_requirements.expiry_date')
+            ->where(fn ($q) => $q
+                ->where('applicant_requirements.status', 'expired')
+                ->orWhere(fn ($v) => $v
+                    ->where('applicant_requirements.status', 'verified')
+                    ->whereDate('applicant_requirements.expiry_date', '<', now())));
+    }
+
     private function attention(): array
     {
         return [
@@ -194,16 +264,31 @@ class DashboardController extends Controller
             'overdue_requests' => (int) $this->requestAggregate()->overdue,
 
             // Documents that have lapsed while the applicant waited for a
-            // posting. These silently make someone undeployable.
-            'expired_documents' => DB::table('applicant_requirements')
-                ->where('status', 'verified')
-                ->whereNotNull('expiry_date')
-                ->whereDate('expiry_date', '<', now())
+            // posting. These silently make someone undeployable. Counted
+            // whether or not the daily check has marked them yet - it used to
+            // count only the unmarked ones, so the figure fell to zero every
+            // night while the documents stayed lapsed. A deployed worker's
+            // clearance is not counted (CDE: it only matters upon employment).
+            'expired_documents' => $this->lapsedDocuments()
+                ->whereNotIn('applicants.current_status', [
+                    ...DocumentCompliance::EMPLOYED_STATUSES,
+                    ...DocumentCompliance::CLOSED_STATUSES,
+                ])
+                ->count(),
+
+            // Deployed workers whose annual medical or health card has lapsed:
+            // renewed while employed, so it needs following up. Informational
+            // only - nothing about their employment changes.
+            'employee_renewals_overdue' => $this->lapsedDocuments()
+                ->whereIn('applicants.current_status', DocumentCompliance::EMPLOYED_STATUSES)
+                ->where('requirement_types.post_deployment_rule', DocumentCompliance::RENEW_WHILE_EMPLOYED)
                 ->count(),
 
             'open_violations' => EmployeeViolation::open()->count(),
 
             'pending_clearance' => (int) $this->resignationAggregate()->pending_clearance,
+
+            'resignations_awaiting_employee' => (int) $this->resignationAggregate()->awaiting_employee,
 
             'terminations_for_review' => (int) $this->terminationAggregate()->for_review,
         ];
@@ -232,10 +317,12 @@ class DashboardController extends Controller
                 $headline['active_applicants'],
                 Applicant::whereNotIn('current_status', $inactive)->count(),
             ],
+            // Counted with the applicant list's own filter, as the link opens it.
             'ready_for_deployment' => [
                 $headline['ready_for_deployment'],
                 Applicant::where('folder_category', 'folder_1')
-                    ->whereIn('current_status', ['ready_for_deployment', 'approved', 'client_evaluation'])
+                    ->inStatuses(ApplicantStatuses::READY_FOR_PLACEMENT)
+                    ->notCurrentlyDeployed()
                     ->count(),
             ],
             'open_requests' => [$headline['open_requests'], JobRequest::open()->count()],
@@ -247,9 +334,7 @@ class DashboardController extends Controller
             ],
             'incomplete_requirements' => [
                 $this->attention()['incomplete_requirements'],
-                Applicant::whereIn('current_status', [
-                    'initial_screening', 'incomplete_requirements', 'pending_final_requirements',
-                ])->count(),
+                Applicant::query()->inStatuses(ApplicantStatuses::AWAITING_DOCUMENTS)->count(),
             ],
             'overdue_requests' => [
                 $this->attention()['overdue_requests'],
@@ -258,8 +343,12 @@ class DashboardController extends Controller
             ],
             'pending_clearance' => [
                 $this->attention()['pending_clearance'],
-                Resignation::whereIn('status', ['filed', 'accepted'])
+                Resignation::whereIn('status', Resignation::AWAITING_HR)
                     ->where('clearance_status', '!=', 'cleared')->count(),
+            ],
+            'resignations_awaiting_employee' => [
+                $this->attention()['resignations_awaiting_employee'],
+                Resignation::where('status', 'info_requested')->count(),
             ],
             'terminations_for_review' => [
                 $this->attention()['terminations_for_review'],

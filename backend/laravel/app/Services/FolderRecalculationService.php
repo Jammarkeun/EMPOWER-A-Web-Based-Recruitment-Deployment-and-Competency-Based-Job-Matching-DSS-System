@@ -7,6 +7,7 @@ use App\Models\ApplicantRequirement;
 use App\Models\FolderRecalculation;
 use App\Models\RequirementType;
 use App\Models\User;
+use App\Support\DocumentCompliance;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -183,16 +184,23 @@ class FolderRecalculationService
                 ->whereIn('id', $ids)
                 ->orderBy('id')
                 ->lockForUpdate()
-                ->get(['id', 'folder_category']);
+                ->get(['id', 'folder_category', 'current_status']);
 
             // Read inside the batch, not once per run: a second Settings change
             // made while a long run is going is picked up from the next batch.
             $required = $this->folders->requiredTypes();
+            $rules = $required->pluck('post_deployment_rule', 'id');
+            // Judged by the same rule as a single recalculation, including
+            // whether the person is deployed yet (DocumentCompliance).
+            $stages = $applicants->mapWithKeys(fn (Applicant $a) => [$a->id => DocumentCompliance::stage($a->current_status)]);
 
             $verified = ApplicantRequirement::query()
                 ->whereIn('applicant_id', $ids)
-                ->get(['id', 'applicant_id', 'requirement_type_id', 'status', 'expiry_date'])
-                ->filter(fn (ApplicantRequirement $r) => $r->countsAsComplete())
+                ->get(['id', 'applicant_id', 'requirement_type_id', 'status', 'expiry_date', 'verified_at'])
+                ->filter(fn (ApplicantRequirement $r) => $r->countsAsComplete(
+                    $rules->get($r->requirement_type_id),
+                    $stages->get($r->applicant_id, DocumentCompliance::STAGE_PRE_DEPLOYMENT),
+                ))
                 ->groupBy('applicant_id')
                 ->map(fn (Collection $rows) => $rows->pluck('requirement_type_id'));
 

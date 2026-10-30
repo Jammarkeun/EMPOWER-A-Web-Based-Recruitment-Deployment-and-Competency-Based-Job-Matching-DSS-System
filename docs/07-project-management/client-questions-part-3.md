@@ -244,8 +244,25 @@ message, so we will only add it if CDE wants it.)
 
 **21.1 [IMPORTANT]** Can the client's biometric system **export** its DTR — for
 example as an Excel or CSV file? If so, could CDE share a sample file with names
-removed? At present HR types the DTR into the system by hand.
+removed? At present HR types the DTR in by hand, or imports a file after choosing
+which column is which; no layout is built in until we have seen a real one.
 `[File upload or Long answer]`
+
+**21.1a [IMPORTANT]** In that export, is each **day** one row (time-in and
+time-out side by side), or is each **punch** its own row? The import reads one
+row per day; a punch-by-punch file needs your rule for which punch is the
+time-in and which the time-out.
+`[Short answer]`
+
+**21.1b [IMPORTANT]** How does the client tell CDE about **approved leave,
+holidays, and days the plant does not operate**? The system can record them so
+those days are not flagged, but only if someone tells HR.
+`[Long answer]`
+
+**21.1c [OPTIONAL]** Should the **coordinator** see more than this month's
+attendance summary for their client's workers — for example the day-by-day DTR?
+At present they see the summary only.
+`[Short answer]`
 
 **21.2 [IMPORTANT]** Is there a **grace period** before a worker counts as late
 (for example 5 or 15 minutes)? At present lateness counts from the first minute.

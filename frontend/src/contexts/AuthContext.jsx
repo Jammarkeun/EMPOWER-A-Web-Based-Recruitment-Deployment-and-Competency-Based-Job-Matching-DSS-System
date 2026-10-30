@@ -19,6 +19,14 @@ export function AuthProvider({ children }) {
   const [user, setUser] = React.useState(null)
   const [loading, setLoading] = React.useState(true)
 
+  // Whoever was signed in last in this tab, kept after they sign out. The
+  // sign-in page uses it to tell that person coming back to the page they were
+  // on apart from another account taking over the computer.
+  const previousUserId = React.useRef(null)
+  React.useEffect(() => {
+    if (user) previousUserId.current = user.id
+  }, [user])
+
   // Restore the session on load. A stored token may have been revoked server
   // side, so it is verified rather than trusted.
   React.useEffect(() => {
@@ -145,6 +153,7 @@ export function AuthProvider({ children }) {
       mergeUser,
       renewPhoto,
       isAuthenticated: !!user,
+      signedOutUserId: user ? null : previousUserId.current,
     }),
     [user, loading, login, register, logout, can, hasRole, refreshUser, mergeUser, renewPhoto]
   )

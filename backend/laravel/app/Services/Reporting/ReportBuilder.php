@@ -91,13 +91,15 @@ class ReportBuilder
     {
         // No relations are loaded: every column below is on the applicant row.
         return Applicant::query()
-            ->when($filters['current_status'] ?? null, fn ($q, $v) => $q->where('current_status', $v))
+            // "Deployed" is read from the employment record, as on the list.
+            ->when($filters['current_status'] ?? null, fn ($q, $v) => $q->inStatuses([$v]))
             ->when($filters['folder_category'] ?? null, fn ($q, $v) => $q->where('folder_category', $v))
             ->when($filters['source_channel'] ?? null, fn ($q, $v) => $q->where('source_channel', $v))
             ->when($filters['position_title'] ?? null, fn ($q, $v) => $q->where('preferred_position', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '<=', $v))
-            ->orderByDesc('application_date');
+            ->orderByDesc('application_date')
+            ->orderByDesc('id');
     }
 
     private function buildApplicants(array $filters): array
@@ -145,7 +147,8 @@ class ReportBuilder
             // Hire date, which is the only date an employee record carries.
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('hire_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('hire_date', '<=', $v))
-            ->orderBy('employee_number');
+            ->orderBy('employee_number')
+            ->orderBy('id');
     }
 
     private function buildEmployees(array $filters): array
@@ -191,7 +194,8 @@ class ReportBuilder
             ->when($filters['deployment_status'] ?? null, fn ($q, $v) => $q->where('deployment_status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '<=', $v))
-            ->orderByDesc('deployment_date');
+            ->orderByDesc('deployment_date')
+            ->orderByDesc('id');
     }
 
     private function buildDeployments(array $filters): array
@@ -234,7 +238,8 @@ class ReportBuilder
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('violation_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('violation_date', '<=', $v))
-            ->orderByDesc('violation_date');
+            ->orderByDesc('violation_date')
+            ->orderByDesc('id');
     }
 
     private function buildViolations(array $filters): array
@@ -273,7 +278,8 @@ class ReportBuilder
         return ClientCompany::query()
             ->withCount(['departments', 'jobRequests', 'employees'])
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
-            ->orderBy('company_name');
+            ->orderBy('company_name')
+            ->orderBy('id');
     }
 
     private function buildClients(array $filters): array
@@ -318,7 +324,8 @@ class ReportBuilder
             ->when($filters['request_status'] ?? null, fn ($q, $v) => $q->where('request_status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('date_requested', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('date_requested', '<=', $v))
-            ->orderByDesc('date_requested');
+            ->orderByDesc('date_requested')
+            ->orderByDesc('id');
     }
 
     private function buildJobRequests(array $filters): array
@@ -366,7 +373,8 @@ class ReportBuilder
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '<=', $v))
-            ->orderByDesc('training_date');
+            ->orderByDesc('training_date')
+            ->orderByDesc('id');
     }
 
     private function buildTraining(array $filters): array
@@ -408,7 +416,8 @@ class ReportBuilder
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('filing_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('filing_date', '<=', $v))
-            ->orderByDesc('filing_date');
+            ->orderByDesc('filing_date')
+            ->orderByDesc('id');
     }
 
     private function buildResignations(array $filters): array
@@ -448,7 +457,8 @@ class ReportBuilder
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('termination_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('termination_date', '<=', $v))
-            ->orderByDesc('termination_date');
+            ->orderByDesc('termination_date')
+            ->orderByDesc('id');
     }
 
     private function buildTerminations(array $filters): array

@@ -15,9 +15,12 @@ use Illuminate\Support\Facades\URL;
 use League\Flysystem\Filesystem as Flysystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
 use Laravel\Sanctum\Sanctum;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use RuntimeException;
 use Tests\Support\SeedsDomainData;
 use Tests\TestCase;
+use ZipArchive;
 
 /**
  * Audit R-01 and R-02: documents are private, links are signed and short-lived,
@@ -376,5 +379,187 @@ class DocumentStorageSecurityTest extends TestCase
         $this->assertStringNotContainsString('..', $requirement->file_path);
         $this->assertStringNotContainsString('/', $requirement->file_name);
         $this->assertStringNotContainsString('<', $requirement->file_name);
+    }
+
+    // ------------------------------------------------- everyday document types
+
+    /** A zip with these entries, uploaded under the given name. */
+    private function zipUpload(string $name, array $entries): UploadedFile
+    {
+        $path = tempnam(sys_get_temp_dir(), 'upl');
+        $zip = new ZipArchive();
+        $zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+        foreach ($entries as $entry => $body) {
+            $zip->addFromString($entry, $body);
+        }
+        $zip->close();
+
+        return new UploadedFile($path, $name, null, null, true);
+    }
+
+    /** The parts of a minimal Word document. */
+    private function wordParts(): array
+    {
+        return [
+            '[Content_Types].xml' => '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+            '_rels/.rels' => '<Relationships/>',
+            'word/document.xml' => '<w:document/>',
+        ];
+    }
+
+    /**
+     * The same document, saved in an order finfo does not recognise - as
+     * tools other than Word often save one - so it is seen only as a zip.
+     */
+    private function wordSeenAsZip(string $name): UploadedFile
+    {
+        $parts = $this->wordParts();
+        $file = $this->zipUpload($name, ['docProps/app.xml' => '<Properties/>']
+            + array_diff_key($parts, ['[Content_Types].xml' => true])
+            + ['[Content_Types].xml' => $parts['[Content_Types].xml']]);
+
+        $this->assertSame('application/zip', $file->getMimeType(), 'The fixture must be one finfo cannot identify');
+
+        return $file;
+    }
+
+    /** A spreadsheet saved by PhpSpreadsheet in the given format, uploaded under the given name. */
+    private function spreadsheetUpload(string $name, string $writer): UploadedFile
+    {
+        $sheet = new Spreadsheet();
+        $sheet->getActiveSheet()->setCellValue('A1', 'Clearance no.');
+        $path = tempnam(sys_get_temp_dir(), 'upl');
+        IOFactory::createWriter($sheet, $writer)->save($path);
+
+        return new UploadedFile($path, $name, null, null, true);
+    }
+
+    public function test_office_documents_and_other_everyday_formats_are_accepted(): void
+    {
+        Storage::fake('documents');
+        $hr = $this->hrUser();
+        $applicant = $this->applicant($hr);
+        $type = $this->plainRequirementType();
+        Sanctum::actingAs($this->portalUserFor($applicant));
+
+        $source = UploadedFile::fake()->image('source.jpg', 200, 200);
+        $jpeg = file_get_contents($source->getRealPath());
+
+        // Name => [the file, the extension it must be stored under, the type recorded].
+        $cases = [
+            'Word' => [$this->zipUpload('Resume.docx', $this->wordParts()), 'docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+            // Saved by something other than Word, so finfo sees only a zip:
+            // accepted because its insides are those of a Word document.
+            'Word, seen as a zip' => [
+                $this->wordSeenAsZip('From Google Docs.docx'),
+                'docx',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            ],
+            // Stored as what it is, as a photo named "scan.pdf" is.
+            'Word, named as Excel' => [$this->zipUpload('Resume.xlsx', $this->wordParts()), 'docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+            'Excel' => [$this->spreadsheetUpload('Clearances.xlsx', 'Xlsx'), 'xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+            'Excel 97-2003' => [$this->spreadsheetUpload('Clearances.xls', 'Xls'), 'xls', 'application/vnd.ms-excel'],
+            'OpenDocument' => [$this->spreadsheetUpload('Clearances.ods', 'Ods'), 'ods', 'application/vnd.oasis.opendocument.spreadsheet'],
+            'Text' => [$this->realUpload('notes.txt', "Reference no. 12345\n"), 'txt', 'text/plain'],
+            'CSV' => [$this->realUpload('list.csv', "name,age\nAna,24\nBen,31\n"), 'csv', 'text/csv'],
+            // Windows saves a photo from the browser as .jfif.
+            'JFIF photo' => [$this->realUpload('Saved from Chrome.jfif', $jpeg), 'jpg', 'image/jpeg'],
+            'JPE photo' => [$this->realUpload('Old camera.jpe', $jpeg), 'jpg', 'image/jpeg'],
+            'GIF' => [UploadedFile::fake()->image('scan.gif', 120, 80), 'gif', 'image/gif'],
+        ];
+
+        foreach ($cases as $label => [$file, $extension, $mime]) {
+            $this->post("/api/v1/portal/documents/{$type->id}/upload", ['file' => $file], ['Accept' => 'application/json'])
+                ->assertOk();
+
+            $requirement = ApplicantRequirement::where('applicant_id', $applicant->id)
+                ->where('requirement_type_id', $type->id)->firstOrFail();
+
+            $this->assertMatchesRegularExpression(
+                '#^requirements/'.$applicant->id.'/[0-9a-f-]{36}\.'.$extension.'$#',
+                $requirement->file_path,
+                "{$label} stored under the wrong extension"
+            );
+            $this->assertSame($mime, $requirement->file_mime, "{$label} recorded as the wrong type");
+            Storage::disk('documents')->assertExists($requirement->file_path);
+        }
+    }
+
+    public function test_archives_and_disguised_files_are_still_refused_on_the_field(): void
+    {
+        Storage::fake('documents');
+        $hr = $this->hrUser();
+        $applicant = $this->applicant($hr);
+        $type = $this->plainRequirementType();
+        Sanctum::actingAs($this->portalUserFor($applicant));
+
+        $cases = [
+            // An archive can hold anything, and nobody can see what until it is opened.
+            'Zip archive' => $this->zipUpload('documents.zip', $this->wordParts()),
+            'Zip renamed to .docx' => $this->zipUpload('letter.docx', ['payload.exe' => "MZ\x90\x00"]),
+            // finfo sees only a zip, so the name is all that says "Excel" -
+            // and the insides are not a spreadsheet's.
+            'Unrecognised zip named .xlsx' => $this->wordSeenAsZip('book.xlsx'),
+            'Zip renamed to .odt' => $this->zipUpload('letter.odt', ['mimetype' => 'text/html', 'content.xml' => '<x/>']),
+            'Web page renamed to .txt' => $this->realUpload('notes.txt', '<html><body><script>alert(1)</script></body></html>'),
+            'Macro-enabled Word' => $this->zipUpload('letter.docm', $this->wordParts()),
+            'No extension' => $this->realUpload('document', $this->pdfBytes()),
+        ];
+
+        foreach ($cases as $label => $file) {
+            $response = $this->post("/api/v1/portal/documents/{$type->id}/upload", ['file' => $file], ['Accept' => 'application/json']);
+
+            // A validation message on the field, before anything is written.
+            $this->assertSame(422, $response->status(), "{$label} should be refused, got {$response->status()}");
+            $response->assertJsonValidationErrors('file');
+        }
+
+        $this->assertSame([], Storage::disk('documents')->allFiles());
+        $this->assertNull(ApplicantRequirement::where('applicant_id', $applicant->id)
+            ->where('requirement_type_id', $type->id)->value('file_path'));
+    }
+
+    public function test_a_document_a_browser_cannot_show_is_sent_as_a_download(): void
+    {
+        $this->useRealDocumentsDisk();
+        Storage::disk('documents')->put('requirements/7/letter.docx', 'PK-word-bytes');
+        Storage::disk('documents')->put('requirements/7/photo.gif', 'GIF89a');
+
+        $sign = fn (string $path) => $this->relative(URL::temporarySignedRoute(
+            'documents.file', now()->addMinutes(5), ['path' => $path], absolute: false
+        ));
+
+        $word = $this->get($sign('requirements/7/letter.docx'))->assertOk();
+        $word->assertHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        $word->assertHeader('X-Content-Type-Options', 'nosniff');
+        $this->assertStringStartsWith('attachment', $word->headers->get('Content-Disposition'));
+        $this->assertStringContainsString('sandbox', $word->headers->get('Content-Security-Policy'));
+
+        // An image a browser can show still opens in the tab.
+        $gif = $this->get($sign('requirements/7/photo.gif'))->assertOk();
+        $gif->assertHeader('Content-Type', 'image/gif');
+        $this->assertStringStartsWith('inline', $gif->headers->get('Content-Disposition'));
+    }
+
+    public function test_document_reading_still_takes_only_pdfs_and_photos(): void
+    {
+        $hr = $this->hrUser();
+        $applicant = $this->applicant($hr);
+
+        // The applicant's "can it be read?" check.
+        Sanctum::actingAs($this->portalUserFor($applicant));
+        $this->post('/api/v1/portal/documents/check-readable', [
+            'file' => $this->zipUpload('Resume.docx', $this->wordParts()),
+        ], ['Accept' => 'application/json'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['file' => 'Only PDF, JPG, PNG or WEBP files can be used here.']);
+
+        // HR's "read from a document" on a new applicant.
+        Sanctum::actingAs($hr);
+        $this->post('/api/v1/document-scan', [
+            'file' => $this->spreadsheetUpload('Applicants.xlsx', 'Xlsx'),
+        ], ['Accept' => 'application/json'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['file' => 'Only PDF, JPG, PNG or WEBP files can be used here.']);
     }
 }

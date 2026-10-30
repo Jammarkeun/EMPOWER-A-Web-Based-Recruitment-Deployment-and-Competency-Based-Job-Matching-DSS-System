@@ -5,7 +5,8 @@ import { patch } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Input, MobileInput } from '@/components/ui/input'
+import { formProblems } from '@/lib/validation'
 import { Field } from '@/components/ui/form'
 import { LoadingState, ErrorState } from '@/components/ui/states'
 import { formatDate } from '@/lib/utils'
@@ -150,8 +151,12 @@ function ContactForm({ values, onSaved, toast }) {
 
     if (saving) return
 
+    // Named beside the field before sending; the server checks again.
+    const problems = formProblems(form, { mobiles: ['contact_number'] })
+    setErrors(problems)
+    if (Object.keys(problems).length) return
+
     setSaving(true)
-    setErrors({})
 
     const payload = {
       contact_number: form.contact_number || null,
@@ -193,13 +198,10 @@ function ContactForm({ values, onSaved, toast }) {
               error={errors.contact_number?.[0]}
               hint="The number we will call about a placement."
             >
-              <Input
+              <MobileInput
                 id="contact_number"
-                type="tel"
                 value={form.contact_number}
                 onChange={(e) => set('contact_number', e.target.value)}
-                autoComplete="tel"
-                placeholder="09XX XXX XXXX"
               />
             </Field>
 

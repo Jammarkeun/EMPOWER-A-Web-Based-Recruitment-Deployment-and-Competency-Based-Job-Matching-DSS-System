@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Applicant;
+use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -10,8 +11,13 @@ use RuntimeException;
 use Throwable;
 
 /**
- * An applicant's profile picture: storing it, replacing it, and handing out a
- * link to whoever is allowed to see it.
+ * A profile picture: storing it, replacing it, and handing out a link to
+ * whoever is allowed to see it.
+ *
+ * Two kinds of owner. An applicant's picture is on their applicant record, set
+ * from the portal. A staff account's - administrator, HR, or coordinator - is
+ * on the account itself, set from Settings, because staff have no person
+ * record to hold it.
  *
  * The picture goes on the same disk as applicant documents, through the same
  * storage service, under its own `profile-photos/` prefix. That keeps one
@@ -27,6 +33,12 @@ use Throwable;
 class ProfilePhotoService
 {
     public const FOLDER = 'profile-photos';
+
+    /**
+     * Staff pictures, kept apart from applicants' because the two are numbered
+     * separately: user 7 and applicant 7 are different people.
+     */
+    public const STAFF_FOLDER = self::FOLDER.'/staff';
 
     /**
      * Content types accepted, keyed to the extension the stored file is given.
@@ -78,42 +90,45 @@ class ProfilePhotoService
     }
 
     /**
-     * Replaces the applicant's picture with the uploaded one.
+     * Replaces the applicant's or staff account's picture with the uploaded one.
      *
-     * Ordered so a failure at any step leaves the applicant with a working
+     * Ordered so a failure at any step leaves the owner with a working
      * picture: the new file is stored first, the record is pointed at it second,
      * and only then is the old file removed. If the record cannot be updated,
      * the new file is removed instead, so nothing is left orphaned and the old
      * picture is still the one on file.
      */
-    public function replace(Applicant $applicant, UploadedFile $file, string $field = 'photo'): Applicant
+    public function replace(Applicant|User $owner, UploadedFile $file, string $field = 'photo'): Applicant|User
     {
         $this->assertDecodableImage($file, $field);
 
+        $isApplicant = $owner instanceof Applicant;
+
         // Images only: the storage service checks the content again against this
         // narrower list and names the file by the detected type.
-        $stored = $this->storage->store($file, self::FOLDER, $applicant->id, self::TYPES);
-        $previous = $applicant->profile_photo_path;
+        $stored = $this->storage->store($file, $isApplicant ? self::FOLDER : self::STAFF_FOLDER, $owner->id, self::TYPES);
+        $previous = $owner->profile_photo_path;
 
         try {
-            DB::transaction(function () use ($applicant, $stored, $previous) {
+            DB::transaction(function () use ($owner, $isApplicant, $stored, $previous) {
                 // Set directly rather than mass-assigned: the column is not
-                // fillable, so no staff edit form or profile update can reach it.
-                $applicant->forceFill(['profile_photo_path' => $stored['file_path']])->save();
+                // fillable on either model, so no edit form or profile update
+                // can reach it.
+                $owner->forceFill(['profile_photo_path' => $stored['file_path']])->save();
 
                 $this->audit->record(
                     action: 'update',
-                    module: 'portal',
-                    recordType: Applicant::class,
-                    recordId: $applicant->id,
-                    newValues: [
+                    module: $isApplicant ? 'portal' : 'auth',
+                    recordType: $owner::class,
+                    recordId: $owner->id,
+                    newValues: array_filter([
                         'profile_photo' => $previous ? 'replaced' : 'added',
-                        'applicant_code' => $applicant->applicant_code,
-                    ],
+                        'applicant_code' => $isApplicant ? $owner->applicant_code : null,
+                    ]),
                 );
             });
         } catch (Throwable $exception) {
-            $applicant->forceFill(['profile_photo_path' => $previous]);
+            $owner->forceFill(['profile_photo_path' => $previous]);
             $this->deleteQuietly($stored['file_path']);
 
             // The cause is logged for whoever maintains the system; the
@@ -134,7 +149,7 @@ class ProfilePhotoService
             $this->deleteQuietly($previous);
         }
 
-        return $applicant;
+        return $owner;
     }
 
     /**

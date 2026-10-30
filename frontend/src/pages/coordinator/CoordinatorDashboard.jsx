@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
-import { Users, Truck, Flag, ClipboardList, AlertTriangle, CornerUpLeft, Plus, FileEdit } from 'lucide-react'
+import { Users, Truck, Flag, ClipboardList, AlertTriangle, CornerUpLeft, Plus, FileEdit, Siren, FilePlus2 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { PageHeader, StatTile } from '@/components/PageHeader'
 import { Card } from '@/components/ui/card'
@@ -37,12 +37,26 @@ export default function CoordinatorDashboard() {
           </>
         }
         actions={
-          <Button asChild>
-            <Link to="/coordinator/reports/new">
-              <Plus className="h-4 w-4" />
-              New violation report
-            </Link>
-          </Button>
+          <>
+            <Button asChild>
+              <Link to="/coordinator/reports/new">
+                <Plus className="h-4 w-4" />
+                New violation report
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link to="/coordinator/incidents/new">
+                <Siren className="h-4 w-4" />
+                New incident report
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link to="/coordinator/requisitions/new">
+                <FilePlus2 className="h-4 w-4" />
+                New requisition
+              </Link>
+            </Button>
+          </>
         }
       />
 
@@ -62,15 +76,24 @@ export default function CoordinatorDashboard() {
           hint={`${summary.positions_to_fill} workers still needed`}
           to="/coordinator/requests"
         />
-        <StatTile icon={Flag} label="Reports awaiting HR" value={summary.reports_pending ?? 0} to="/coordinator/reports?status=submitted" />
+        <StatTile icon={Flag} label="Reports awaiting HR" value={summary.reports_pending ?? 0} to="/coordinator/reports?status=pending" />
         <StatTile
           icon={CornerUpLeft}
           label="Returned to you"
           value={summary.reports_returned ?? 0}
           tone={summary.reports_returned ? 'warning' : 'default'}
-          to="/coordinator/reports?status=returned"
+          to="/coordinator/reports?status=returned&mine=1"
         />
         <StatTile icon={FileEdit} label="Your drafts" value={summary.reports_draft ?? 0} to="/coordinator/reports?status=draft" />
+        <StatTile icon={Siren} label="Open incident reports" value={summary.incidents_open ?? 0} to="/coordinator/incidents?status=open" />
+        <StatTile
+          icon={FilePlus2}
+          label="Requisitions awaiting HR"
+          value={summary.requisitions_pending ?? 0}
+          hint={summary.requisitions_returned ? `${summary.requisitions_returned} returned to you` : undefined}
+          tone={summary.requisitions_returned ? 'warning' : 'default'}
+          to={summary.requisitions_returned ? '/coordinator/requisitions?status=returned&mine=1' : '/coordinator/requisitions?status=pending'}
+        />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

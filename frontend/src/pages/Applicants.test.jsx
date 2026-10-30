@@ -35,7 +35,7 @@ const ROWS = [
   },
 ]
 
-function respond({ rows = ROWS } = {}) {
+function respond({ rows = ROWS, meta = { current_page: 1, last_page: 1, total: rows.length } } = {}) {
   api.get.mockImplementation((url) => {
     switch (url) {
       case '/applicant-statuses':
@@ -43,6 +43,9 @@ function respond({ rows = ROWS } = {}) {
           statuses: [
             { value: 'applied', label: 'Applied' },
             { value: 'ready_for_deployment', label: 'Ready For Deployment' },
+            { value: 'initial_screening', label: 'Initial Screening' },
+            { value: 'incomplete_requirements', label: 'Incomplete Requirements' },
+            { value: 'deployed', label: 'Deployed' },
           ],
           stages: [],
           deployable: [],
@@ -52,7 +55,7 @@ function respond({ rows = ROWS } = {}) {
       case '/positions':
         return ok({ positions: [{ id: 11, position_title: 'Production Helper', company: 'Best Tiwi' }] })
       case '/applicants':
-        return ok(rows, { meta: { current_page: 1, last_page: 1, total: rows.length } })
+        return ok(rows, { meta })
       default:
         return ok(null)
     }
@@ -103,7 +106,7 @@ describe('Applicants list', () => {
     await waitFor(() => expect(within(status).getByRole('option', { name: 'Ready For Deployment' })).toBeInTheDocument())
 
     await userEvent.selectOptions(status, 'ready_for_deployment')
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'All clients' }), '3')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Applied to any client' }), '3')
 
     await waitFor(() =>
       expect(lastApplicantQuery()).toMatchObject({ current_status: 'ready_for_deployment', client_company_id: '3', page: 1 })
@@ -125,5 +128,77 @@ describe('Applicants list', () => {
 
     expect(await screen.findByText('No applicants match these filters')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /clear filters/i })).toBeInTheDocument()
+  })
+
+  it('asks the server for Deployed and shows where each person works, flagging a status that disagrees', async () => {
+    respond({
+      rows: [
+        {
+          ...ROWS[1],
+          id: 21,
+          full_name: 'Ana Active',
+          current_status: 'active',
+          status_label: 'Active',
+          placement: { deployed: true, company: 'Best Tiwi Food Products Corporation', mismatch: null },
+        },
+        {
+          ...ROWS[1],
+          id: 22,
+          full_name: 'Stella Stale',
+          current_status: 'approved',
+          status_label: 'Approved',
+          placement: { deployed: true, company: 'Best Tiwi Food Products Corporation', mismatch: 'status_not_updated' },
+        },
+      ],
+    })
+    renderAt(<Applicants />, { path: '/applicants', route: '/applicants?current_status=deployed' })
+
+    const ana = (await screen.findByText('Ana Active')).closest('tr')
+    expect(lastApplicantQuery()).toMatchObject({ current_status: 'deployed' })
+    expect(within(ana).getByText('Deployed · Best Tiwi Food Products Corporation')).toBeInTheDocument()
+    expect(within(ana).queryByText('Status not updated')).not.toBeInTheDocument()
+
+    const stella = screen.getByText('Stella Stale').closest('tr')
+    expect(within(stella).getByText('Approved')).toBeInTheDocument()
+    expect(within(stella).getByText('Status not updated')).toBeInTheDocument()
+  })
+
+  it('opens on several statuses from a dashboard figure, names them, and can drop them', async () => {
+    renderAt(<Applicants />, {
+      path: '/applicants',
+      route: '/applicants?current_status=initial_screening,incomplete_requirements',
+    })
+    await screen.findByText('Juan Dela Cruz')
+
+    expect(lastApplicantQuery()).toMatchObject({ current_status: 'initial_screening,incomplete_requirements' })
+    await waitFor(() =>
+      expect(screen.getByText('Initial Screening, Incomplete Requirements')).toBeInTheDocument()
+    )
+    expect(within(screen.getByRole('combobox', { name: 'All statuses' })).getByRole('option', { name: '2 statuses' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /show every status/i }))
+    await waitFor(() => expect(lastApplicantQuery().current_status).toBeUndefined())
+  })
+
+  it('opens the ready figure with deployed workers left out, shown as a toggle that can be switched off', async () => {
+    renderAt(<Applicants />, {
+      path: '/applicants',
+      route: '/applicants?folder_category=folder_1&current_status=ready_for_deployment,client_evaluation,approved&exclude_deployed=1',
+    })
+    await screen.findByText('Juan Dela Cruz')
+
+    expect(lastApplicantQuery()).toMatchObject({ folder_category: 'folder_1', exclude_deployed: 1 })
+    const toggle = screen.getByRole('button', { name: 'Not deployed' })
+
+    await userEvent.click(toggle)
+    await waitFor(() => expect(lastApplicantQuery().exclude_deployed).toBeUndefined())
+    expect(lastApplicantQuery()).toMatchObject({ folder_category: 'folder_1' })
+  })
+
+  it('moves to the last page instead of showing an empty page past the end', async () => {
+    respond({ rows: [], meta: { current_page: 4, last_page: 2, total: 30 } })
+    renderAt(<Applicants />, { path: '/applicants', route: '/applicants?page=4' })
+
+    await waitFor(() => expect(lastApplicantQuery().page).toBe(2))
   })
 })

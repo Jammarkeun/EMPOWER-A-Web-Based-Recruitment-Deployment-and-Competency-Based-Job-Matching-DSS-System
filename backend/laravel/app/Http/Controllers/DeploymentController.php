@@ -25,7 +25,7 @@ class DeploymentController extends Controller
         $filters = $request->validate([
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['nullable', 'integer', 'exists:client_departments,id'],
-            'deployment_status' => ['nullable', 'string'],
+            'deployment_status' => ['nullable', Rule::in(Deployment::STATUSES)],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
@@ -39,6 +39,7 @@ class DeploymentController extends Controller
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '<=', $v))
             ->orderByDesc('deployment_date')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(DeploymentResource::collection($deployments), 'Deployments retrieved');
@@ -63,7 +64,7 @@ class DeploymentController extends Controller
             'employee_number' => ['nullable', 'string', 'max:60', 'unique:employees,employee_number'],
             'biometric_number' => ['nullable', 'string', 'max:60'],
             'deployment_date' => ['required', 'date'],
-            'remarks' => ['nullable', 'string'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
         ]);
 
         $applicant = Applicant::findOrFail($data['applicant_id']);

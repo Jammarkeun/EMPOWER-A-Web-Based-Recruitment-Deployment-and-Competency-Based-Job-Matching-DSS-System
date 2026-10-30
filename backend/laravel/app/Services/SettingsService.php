@@ -115,7 +115,7 @@ class SettingsService
         'empower.violations.termination_threshold' => [
             'group' => 'policy',
             'label' => 'Flag for review at',
-            'help' => 'Offences within the active window at which an employee is raised for an administrator to review. Reaching it never terminates anybody by itself.',
+            'help' => 'Offences within the active window at which an employee is raised for an administrator to review. Reaching it never terminates anybody by itself. CDE said on 26 October 2026 that a new memo extends this to the seventh offence; change it here once the memo is received.',
             'type' => 'integer',
             'rules' => ['integer', 'between:1,20'],
             'unit' => 'offences',
@@ -142,6 +142,9 @@ class SettingsService
             'type' => 'boolean',
             'rules' => ['boolean'],
         ],
+
+        // The requisition form is CDE's own (received 29 October 2026), so its
+        // fields are fixed rather than switchable here.
 
         // --- retention ---
         'empower.retention.unhired_applicant_months' => [

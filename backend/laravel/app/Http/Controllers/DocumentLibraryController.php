@@ -88,6 +88,7 @@ class DocumentLibraryController extends Controller
             ->orderByDesc('awaiting_review_count')
             ->orderBy('last_name')
             ->orderBy('first_name')
+            ->orderBy('id')
             ->paginate($filters['per_page'] ?? 25);
 
         return ApiResponse::paginated(
@@ -163,6 +164,7 @@ class DocumentLibraryController extends Controller
             ->where('requirement_type_id', $requirementType->id)
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->orderByDesc('submitted_at')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 25);
 
         return ApiResponse::paginated(

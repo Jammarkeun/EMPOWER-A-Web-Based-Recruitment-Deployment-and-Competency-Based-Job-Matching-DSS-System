@@ -13,13 +13,19 @@ class Deployment extends Model
     use HasFactory;
 
     /**
+     * Active while the worker is placed; ended when a separation ends the
+     * placement. The deployments migration also lists "completed" and
+     * "transferred", but nothing has ever written either - a move within the
+     * client is a reassignment on the same deployment, a move to another
+     * client a new one - so they are not accepted as filters (2026-10-30).
+     */
+    public const STATUSES = ['active', 'ended'];
+
+    /**
      * What the placement history needs to be read in names rather than ids.
      * Prefix with the path to the deployment when loading it from elsewhere
      * (an employee's deployments, say).
      */
-    /** As the deployments migration documents them. */
-    public const STATUSES = ['active', 'completed', 'transferred', 'ended'];
-
     public const HISTORY_RELATIONS = [
         'history.fromDepartment',
         'history.toDepartment',

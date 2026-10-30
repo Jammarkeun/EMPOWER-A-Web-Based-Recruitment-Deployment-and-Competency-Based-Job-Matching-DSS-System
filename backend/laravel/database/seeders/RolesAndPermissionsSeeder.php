@@ -71,11 +71,20 @@ class RolesAndPermissionsSeeder extends Seeder
         ],
         'attendance' => [
             'view' => 'View schedules, daily time records, and the comparison between them',
-            'manage' => 'Set work schedules and encode daily time records',
+            'manage' => 'Set work schedules, encode or import daily time records, and record leave and holidays',
+            'review' => 'Review attendance discrepancies and link a verified one to a violation',
         ],
         'violation_reports' => [
             'view' => "View coordinators' violation reports",
             'review' => 'Review, return, validate, or dismiss violation reports',
+        ],
+        'incident_reports' => [
+            'view' => "View coordinators' incident reports",
+            'review' => 'Add management notes to incident reports and mark them pending or resolved',
+        ],
+        'requisitions' => [
+            'view' => "View coordinators' manpower requisitions",
+            'review' => 'Review, return, approve, reject, or mark fulfilled a manpower requisition',
         ],
         // The coordinator workspace. Held by the coordinator role only.
         'coordination' => [
@@ -112,6 +121,11 @@ class RolesAndPermissionsSeeder extends Seeder
         'audit' => [
             'view' => 'View the audit trail',
         ],
+        // Administrator only (CDE, 26 October 2026): every device signed in.
+        'sessions' => [
+            'view' => 'See who is signed in, from which device, and the sign-in history',
+            'revoke' => 'Sign a device out of the system',
+        ],
         'settings' => [
             'view' => 'View system configuration',
             'update' => 'Change competency scoring configuration and reference data',
@@ -132,9 +146,11 @@ class RolesAndPermissionsSeeder extends Seeder
         'training.view', 'training.create', 'training.update',
         'deployment.view', 'deployment.create', 'deployment.reassign',
         'employees.view', 'employees.update',
-        'attendance.view', 'attendance.manage',
+        'attendance.view', 'attendance.manage', 'attendance.review',
         'violations.view', 'violations.create', 'violations.update',
         'violation_reports.view', 'violation_reports.review',
+        'incident_reports.view', 'incident_reports.review',
+        'requisitions.view', 'requisitions.review',
         'separation.view', 'separation.create', 'separation.approve',
         'archives.view', 'archives.create',
         'reports.view', 'reports.export',

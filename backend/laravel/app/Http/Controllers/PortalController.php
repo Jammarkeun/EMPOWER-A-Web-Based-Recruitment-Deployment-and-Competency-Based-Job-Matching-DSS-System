@@ -8,18 +8,25 @@ use App\Models\Applicant;
 use App\Models\ApplicantRequirement;
 use App\Models\Employee;
 use App\Models\RequirementType;
+use App\Models\Resignation;
+use App\Rules\PhilippineMobileNumber;
 use App\Services\AuditService;
 use App\Services\DocumentStorageService;
+use App\Services\DocumentUploadPolicy;
 use App\Services\FolderCategoryService;
 use App\Services\OcrService;
 use App\Services\PlacementService;
 use App\Services\ProfilePhotoService;
+use App\Services\SeparationPresenter;
 use App\Services\SeparationService;
+use App\Services\TrainingProgressService;
 use App\Support\ApplicantStatuses;
+use App\Support\DocumentCompliance;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 /**
  * Self-service portal for applicants and employees.
@@ -38,6 +45,8 @@ class PortalController extends Controller
         private readonly SeparationService $separation,
         private readonly PlacementService $placements,
         private readonly AuditService $audit,
+        private readonly TrainingProgressService $progress,
+        private readonly SeparationPresenter $separations,
     ) {
     }
 
@@ -78,6 +87,13 @@ class PortalController extends Controller
                 // archived record is not "stage 6 of 6" (audit UX-05).
                 'stage_number' => ApplicantStatuses::stageNumber($applicant->current_status),
                 'total_stages' => count(ApplicantStatuses::STAGES),
+                // The path itself, from the same list the staff screen draws.
+                // The portal used to keep its own copy, which still named the
+                // fourth stage "Ready for placement" after training moved there.
+                'stages' => array_map(
+                    fn (array $stage) => ['key' => $stage['key'], 'label' => $stage['label']],
+                    ApplicantStatuses::stages()
+                ),
                 'record_closed' => ApplicantStatuses::isClosed($applicant->current_status),
 
                 // Someone who registered online is waiting on one thing only:
@@ -144,6 +160,11 @@ class PortalController extends Controller
              */
             'deployment' => $this->activePlacement($applicant, $employee),
 
+            // The Training step and the training reminder, both read from the
+            // roster. Nothing here marks a notification read: seeing the
+            // reminder is not the same as opening the notice.
+            'training' => $this->progress->forApplicant($applicant),
+
             'employment' => $employee ? [
                 'employee_number' => $employee->employee_number,
                 'position' => $employee->current_position_title,
@@ -153,14 +174,34 @@ class PortalController extends Controller
                 'hire_date' => $employee->hire_date?->toDateString(),
                 'status' => $employee->employment_status,
             ] : null,
+
+            // A pending resignation, or a termination notice, in one line with
+            // a way to the employment page where the detail is.
+            'separation' => $this->separations->portalSummary($employee, $request->user()),
+
             'timeline' => $applicant->statusHistory->take(8)->map(fn ($h) => [
                 'status' => ucwords(str_replace('_', ' ', $h->to_status)),
-                'reason' => $h->wasWrittenAutomaticallyAtDeployment()
-                    ? \App\Models\ApplicationStatusHistory::AUTO_WRITTEN_NOTE
-                    : $h->reason,
+                'reason' => match (true) {
+                    $h->wasWrittenAutomaticallyAtDeployment() => \App\Models\ApplicationStatusHistory::AUTO_WRITTEN_NOTE,
+                    // Termination entries used to carry the office's own reason,
+                    // which is not the employee's notice. Earlier rows included.
+                    $h->to_status === 'terminated' => 'Your employment record was closed following a formal decision. '
+                        .'The notice is under My employment.',
+                    default => $h->reason,
+                },
                 'occurred_at' => $h->changed_at?->toIso8601String(),
             ])->values(),
         ]);
+    }
+
+    /**
+     * The applicant's own training: every session they are on and where each
+     * stands. Resolved from the signed-in account like everything here, so
+     * nobody else's roster entry can be reached from it.
+     */
+    public function training(Request $request): JsonResponse
+    {
+        return ApiResponse::success($this->progress->forApplicant($this->applicant($request)));
     }
 
     /**
@@ -170,6 +211,8 @@ class PortalController extends Controller
     {
         $applicant = $this->applicant($request);
         $applicant->load(['requirements.requirementType']);
+        // A deployed worker sees "renewal due", not "expired", where it applies.
+        $applicant->requirements->each->setRelation('applicant', $applicant);
 
         return ApiResponse::success([
             'requirements' => ApplicantRequirementResource::collection($applicant->requirements),
@@ -215,7 +258,20 @@ class PortalController extends Controller
          * had already earned, by accident, with no one told. Corrections after
          * verification go through HR, who can see what changed and why.
          */
-        if ($existing && $existing->status === 'verified') {
+        /*
+         * The one exception: a deployed worker renewing what CDE renews while
+         * they work - the annual medical, the health card - once it is due.
+         * Their folder no longer decides anything, and the version on file is
+         * kept in the document's history rather than lost.
+         */
+        $renewal = $existing && $existing->status === 'verified'
+            && in_array(DocumentCompliance::assess(
+                $existing,
+                $requirementType->post_deployment_rule,
+                DocumentCompliance::stage($applicant->current_status),
+            )['state'], ['renewal_due', 'renewal_overdue'], true);
+
+        if ($existing && $existing->status === 'verified' && ! $renewal) {
             return ApiResponse::error(
                 'This document has already been accepted by the office. '
                 .'Contact HR if it needs replacing.',
@@ -223,13 +279,11 @@ class PortalController extends Controller
             );
         }
 
+        $previousWasVerified = $existing && $existing->verified_at !== null
+            && in_array($existing->status, ['verified', 'expired'], true);
+
         $data = $request->validate([
-            'file' => [
-                'required',
-                'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
+            'file' => DocumentUploadPolicy::rules(),
             'expiry_date' => [
                 // A clearance with no expiry recorded would count as valid
                 // forever, so the ones that lapse must say when.
@@ -286,7 +340,9 @@ class PortalController extends Controller
 
         // Removed only once the replacement is safely recorded, so a failure
         // part-way through never leaves the applicant with no document at all.
-        if ($previousKey && $previousKey !== $requirement->file_path) {
+        // A version the office had verified is kept: it is in the document's
+        // history now, and is what the person was deployed on.
+        if ($previousKey && $previousKey !== $requirement->file_path && ! $previousWasVerified) {
             $this->storage->delete($previousKey);
         }
 
@@ -294,7 +350,7 @@ class PortalController extends Controller
         $this->folders->recalculate($applicant);
 
         return ApiResponse::success(
-            new ApplicantRequirementResource($requirement->fresh()->load('requirementType')),
+            new ApplicantRequirementResource($requirement->fresh()->load('requirementType')->setRelation('applicant', $applicant)),
             'Sent. The office will check it against your original document when you visit.'
         );
     }
@@ -316,12 +372,9 @@ class PortalController extends Controller
         $this->applicant($request);
 
         $request->validate([
-            'file' => [
-                'required',
-                'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
+            // The reader takes PDFs and photos only; a Word file can still be
+            // sent, it just cannot be checked first.
+            'file' => DocumentUploadPolicy::rules(types: DocumentUploadPolicy::SCANNABLE),
         ]);
 
         if (! $ocr->isEnabled()) {
@@ -511,9 +564,11 @@ class PortalController extends Controller
     {
         $applicant = $this->applicant($request);
 
+        PhilippineMobileNumber::normalizeRequest($request, 'contact_number');
+
         $data = $request->validate([
-            'contact_number' => ['nullable', 'string', 'max:40'],
-            'email' => ['nullable', 'email', 'max:190'],
+            'contact_number' => ['nullable', 'string', 'max:40', new PhilippineMobileNumber()],
+            'email' => ['nullable', 'email:rfc,filter', 'max:190'],
             'availability_date' => ['nullable', 'date'],
         ]);
 
@@ -561,32 +616,152 @@ class PortalController extends Controller
     }
 
     /**
-     * Lets an employee file their own resignation.
+     * Lets an employee send their own resignation request.
      *
-     * The one separation action a person may start for themselves. It is filed
-     * for HR to process, not completed — employment ends when the agency clears
-     * them, not when they submit the form.
+     * The one separation action a person may start for themselves. It is a
+     * request for HR to process, not the separation: employment ends when the
+     * agency completes it after clearance, not when the form is sent, and the
+     * employee has to say they understand that before it is accepted.
+     *
+     * Who is resigning, and from which placement, comes from the signed-in
+     * account; the date it was made is today's, on the server. Neither is
+     * something the person sending it picks.
      */
     public function submitResignation(Request $request): JsonResponse
     {
         $employee = $this->employee($request);
+        $eligibility = $this->separations->eligibility($employee);
 
-        if (! $employee) {
-            return ApiResponse::error('Only deployed employees can file a resignation.', 403);
+        if (! $eligibility['can_request']) {
+            // 403 for someone with no employment at all; 409 for an employee
+            // whose record is not in a state to take a request.
+            return ApiResponse::error($eligibility['reason'], $employee ? 409 : 403);
         }
 
         $data = $request->validate([
+            'requested_exit_date' => [
+                'required', 'date', 'after_or_equal:today',
+                // A typo guard, not a policy: nobody gives a year's notice.
+                'before_or_equal:'.today()->addYear()->toDateString(),
+            ],
             'reason' => ['required', 'string', 'max:255'],
-            'filing_date' => ['required', 'date'],
-            'rendering_days' => ['nullable', 'integer', 'between:0,90'],
-            'exit_date' => ['nullable', 'date', 'after_or_equal:filing_date'],
+            'remarks' => ['nullable', 'string', 'max:2000'],
+            'letter' => DocumentUploadPolicy::rules(required: false),
+            'acknowledged' => ['accepted'],
+        ], [
+            'requested_exit_date.required' => 'Choose the last day you intend to work.',
+            'requested_exit_date.after_or_equal' => 'Your last working day cannot be in the past.',
+            'requested_exit_date.before_or_equal' => 'Choose a date within the next twelve months.',
+            'acknowledged.accepted' => 'Please confirm that you understand this request does not end your employment by itself.',
         ]);
 
-        $resignation = $this->separation->fileResignation($employee, $data, $request->user());
+        $letter = $request->hasFile('letter')
+            ? $this->storage->store($request->file('letter'), 'resignations', $employee->id)['file_path']
+            : null;
+
+        try {
+            $resignation = $this->separation->fileResignation($employee, [
+                'reason' => $data['reason'],
+                'filing_date' => today()->toDateString(),
+                'requested_exit_date' => $data['requested_exit_date'],
+                'employee_remarks' => $data['remarks'] ?? null,
+                'resignation_letter_path' => $letter,
+            ], $request->user(), 'portal');
+        } catch (Throwable $e) {
+            // A letter stored for a request that was then refused is removed,
+            // not left in storage with nothing pointing at it.
+            $this->storage->delete($letter);
+
+            throw $e;
+        }
 
         return ApiResponse::created(
-            ['id' => $resignation->id, 'status' => $resignation->status],
-            'Your resignation has been submitted. HR will contact you about clearance.'
+            $this->separations->forPortal($employee->fresh(), $request->user()),
+            'Your resignation request has been sent to HR. Keep reporting for work until HR confirms your last working day.'
+        );
+    }
+
+    /**
+     * Takes back the employee's own resignation request, while HR has not
+     * accepted it yet.
+     */
+    public function withdrawResignation(Request $request): JsonResponse
+    {
+        $resignation = $this->openResignation($request);
+
+        $data = $request->validate([
+            'reason' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $this->separation->withdrawResignationAsEmployee($resignation, $request->user(), $data['reason'] ?? null);
+
+        return ApiResponse::success(
+            $this->separations->forPortal($this->employee($request), $request->user()),
+            'Your resignation request has been withdrawn. Your employment continues.'
+        );
+    }
+
+    /**
+     * Answers HR's request for more information about the resignation.
+     */
+    public function respondToResignation(Request $request): JsonResponse
+    {
+        $resignation = $this->openResignation($request);
+
+        $data = $request->validate([
+            'message' => ['required', 'string', 'max:2000'],
+        ], [
+            'message.required' => 'Write your reply to HR.',
+        ]);
+
+        $this->separation->respondToInformationRequest($resignation, $request->user(), $data['message']);
+
+        return ApiResponse::success(
+            $this->separations->forPortal($this->employee($request), $request->user()),
+            'Your reply has been sent to HR.'
+        );
+    }
+
+    /**
+     * The letter the employee attached to their latest resignation request.
+     */
+    public function resignationLetter(Request $request): JsonResponse
+    {
+        $resignation = $this->employee($request)?->resignations()->latest('id')->first();
+
+        if (blank($resignation?->resignation_letter_path)) {
+            return ApiResponse::error('No resignation letter was attached.', 404);
+        }
+
+        return ApiResponse::success([
+            'url' => $this->storage->temporaryUrl($resignation->resignation_letter_path),
+            'expires_in_minutes' => config('empower.uploads.signed_url_ttl_minutes'),
+        ]);
+    }
+
+    /**
+     * The employee confirms they received and read their termination notice.
+     *
+     * Receipt only: it is not agreement with the decision, and nothing waits
+     * for it.
+     */
+    public function acknowledgeNotice(Request $request): JsonResponse
+    {
+        $termination = $this->employee($request)?->terminations()
+            ->where('status', 'finalized')
+            ->latest('finalized_at')
+            ->latest('id')
+            ->first();
+
+        if (! $termination) {
+            return ApiResponse::error('There is no notice to acknowledge.', 404);
+        }
+
+        $this->separation->acknowledgeNotice($termination, $request->user());
+
+        return ApiResponse::success(
+            $this->separations->forPortal($this->employee($request), $request->user()),
+            'Thank you. We have recorded that you received this notice.'
         );
     }
 
@@ -598,7 +773,15 @@ class PortalController extends Controller
             return ApiResponse::error('You do not have an employment record yet.', 404);
         }
 
-        $employee->load(['deployments.company', 'deployments.department', 'violations', 'resignation']);
+        // Opening this page is opening the notice, if there is one: recorded
+        // once, apart from the acknowledgment, which is the employee's own act.
+        $notice = $employee->terminations()->where('status', 'finalized')->latest('finalized_at')->latest('id')->first();
+
+        if ($notice) {
+            $this->separation->recordNoticeViewed($notice, $request->user());
+        }
+
+        $employee->load(['deployments.company', 'deployments.department', 'violations']);
 
         return ApiResponse::success([
             'employee_number' => $employee->employee_number,
@@ -630,12 +813,10 @@ class PortalController extends Controller
                 'penalty' => $v->penalty,
                 'status' => $v->status,
             ]),
-            'resignation' => $employee->resignation ? [
-                'filed_on' => $employee->resignation->filing_date?->toDateString(),
-                'exit_date' => $employee->resignation->exit_date?->toDateString(),
-                'clearance_status' => $employee->resignation->clearance_status,
-                'status' => $employee->resignation->status,
-            ] : null,
+            // The resignation request and its progress, whether one may be
+            // sent now, and any termination notice - as the employee may see
+            // them (SeparationPresenter).
+            'separation' => $this->separations->forPortal($employee, $request->user()),
         ]);
     }
 
@@ -670,10 +851,23 @@ class PortalController extends Controller
      */
     private function employee(Request $request): ?Employee
     {
-        $employee = $request->user()->employee
-            ?? $request->user()->applicant?->employee;
+        return $request->user()->portalEmployee()?->load(['currentCompany', 'currentDepartment']);
+    }
 
-        return $employee?->load(['currentCompany', 'currentDepartment']);
+    /**
+     * The employee's open resignation request, for the actions taken on it.
+     * Resolved from the signed-in account; the request has no id to send.
+     */
+    private function openResignation(Request $request): Resignation
+    {
+        $resignation = $this->employee($request)?->resignations()
+            ->whereIn('status', Resignation::OPEN_STATUSES)
+            ->latest('id')
+            ->first();
+
+        abort_unless($resignation, 409, 'You have no resignation request in progress.');
+
+        return $resignation;
     }
 
     /**
@@ -735,7 +929,7 @@ class PortalController extends Controller
             'primary_requirements_complete' => 'Your primary documents are complete. Medical requirements come next.',
             'pending_final_requirements' => 'Please complete your medical examination and submit the results at the office.',
             'ready_for_deployment' => 'All your requirements are verified. You will be contacted once a placement is available.',
-            'training_scheduled' => 'You have been scheduled for training. Details will be confirmed with you.',
+            'training_scheduled' => 'You have been scheduled for training. Your session details are shown below.',
             'training_completed' => 'You have completed training and are awaiting endorsement to a client company.',
             'client_evaluation' => 'Your profile has been endorsed to a client company for their evaluation.',
             'approved' => 'The client company has approved your application. Deployment details will follow.',

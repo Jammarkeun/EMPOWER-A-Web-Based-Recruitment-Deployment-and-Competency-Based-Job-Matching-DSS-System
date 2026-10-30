@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
+import { Input, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Field, FormGrid } from '@/components/ui/form'
@@ -25,10 +25,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn, formatDate, formatDateTime, humanise, todayISO } from '@/lib/utils'
+import { DOCUMENT_ACCEPT } from '@/lib/uploads'
 import SeparationPanel from '@/components/SeparationPanel'
 import AttendancePanel from '@/components/AttendancePanel'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
 import ReassignDialog from '@/components/dialogs/ReassignDialog'
+import ViolationDialog from '@/components/dialogs/ViolationDialog'
 
 const TABS = ['assignment', 'attendance', 'violations', 'history']
 
@@ -228,10 +230,7 @@ export default function EmployeeDetail() {
 
         {can('attendance.view') && (
           <TabsContent value="attendance">
-            <AttendancePanel
-              employee={employee}
-              onRecordViolation={(prefill) => setViolationPrefill(prefill)}
-            />
+            <AttendancePanel employee={employee} />
           </TabsContent>
         )}
 
@@ -345,114 +344,6 @@ export default function EmployeeDetail() {
         />
       )}
     </>
-  )
-}
-
-function ViolationDialog({ open, onOpenChange, employeeId, initial, onSaved }) {
-  const blank = () => ({
-    violation_date: todayISO(),
-    violation_type: 'late',
-    description: '',
-    penalty: '',
-  })
-  const [form, setForm] = React.useState(blank)
-  const [errors, setErrors] = React.useState({})
-  const [submitting, setSubmitting] = React.useState(false)
-  const toast = useToast()
-
-  // Opened from a DTR row, the facts arrive already written; opened from the
-  // header, it starts empty. Either way nothing is saved until somebody does.
-  React.useEffect(() => {
-    if (open) {
-      setForm({ ...blank(), ...(initial ?? {}) })
-      setErrors({})
-    }
-  }, [open, initial])
-
-  async function handleSubmit(event) {
-    event.preventDefault()
-    setErrors({})
-    setSubmitting(true)
-
-    try {
-      await post(`/employees/${employeeId}/violations`, form)
-      toast.success('Violation recorded', 'Added to the employee’s permanent file.')
-      onOpenChange(false)
-      onSaved()
-    } catch (error) {
-      if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not record violation', error.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Record violation</DialogTitle>
-          <DialogDescription>
-            This becomes part of the employee's permanent record and may later support a termination,
-            so describe what happened factually.
-            {initial?.violation_date && ' Filled in from the DTR — check it before saving.'}
-          </DialogDescription>
-        </DialogHeader>
-
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <FormGrid>
-            <Field label="Date" htmlFor="violation_date" required error={errors.violation_date?.[0]}>
-              <Input
-                type="date"
-                value={form.violation_date}
-                onChange={(e) => setForm({ ...form, violation_date: e.target.value })}
-                max={todayISO()}
-              />
-            </Field>
-
-            <Field label="Type" htmlFor="violation_type" required error={errors.violation_type?.[0]}>
-              <Select
-                value={form.violation_type}
-                onChange={(e) => setForm({ ...form, violation_type: e.target.value })}
-              >
-                <option value="late">Late</option>
-                <option value="absences">Absences</option>
-                <option value="awol">AWOL</option>
-                <option value="suspension">Suspension</option>
-                <option value="misconduct">Misconduct</option>
-                <option value="policy_violation">Policy violation</option>
-              </Select>
-            </Field>
-          </FormGrid>
-
-          <Field label="Description" htmlFor="description" required error={errors.description?.[0]}>
-            <Textarea
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              placeholder="What happened, when, and who reported it"
-            />
-          </Field>
-
-          <Field label="Penalty" htmlFor="penalty" error={errors.penalty?.[0]}>
-            <Input
-              value={form.penalty}
-              onChange={(e) => setForm({ ...form, penalty: e.target.value })}
-              placeholder="e.g. Written warning"
-            />
-          </Field>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={submitting}>
-              {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Record violation
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   )
 }
 
@@ -599,10 +490,10 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
                   error={errors.rendering_days?.[0]}
                   hint="Standard notice is 30 days"
                 >
-                  <Input
-                    type="number"
+                  <NumberInput
                     min="0"
                     max="90"
+                    step="1"
                     value={form.rendering_days}
                     onChange={(e) => setForm({ ...form, rendering_days: e.target.value })}
                   />
@@ -639,11 +530,11 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
               label={type === 'resignation' ? 'Resignation letter' : 'Supporting documents'}
               htmlFor="separation_file"
               error={errors.letter?.[0] ?? errors.documents?.[0]}
-              hint="Optional. PDF or image, up to 10 MB."
+              hint="Optional. PDF, photo or Office document, up to 10 MB."
             >
               <Input
                 type="file"
-                accept=".pdf,.jpg,.jpeg,.png,.webp"
+                accept={DOCUMENT_ACCEPT}
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />
             </Field>

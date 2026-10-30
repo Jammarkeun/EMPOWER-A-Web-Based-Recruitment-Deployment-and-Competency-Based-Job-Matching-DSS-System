@@ -52,12 +52,22 @@ const CoordinatorDeployments = React.lazy(() => import('@/pages/coordinator/Coor
 const CoordinatorReports = React.lazy(() => import('@/pages/coordinator/CoordinatorReports'))
 const CoordinatorReport = React.lazy(() => import('@/pages/coordinator/CoordinatorReport'))
 const CoordinatorRequests = React.lazy(() => import('@/pages/coordinator/CoordinatorRequests'))
+const CoordinatorIncidents = React.lazy(() => import('@/pages/coordinator/CoordinatorIncidents'))
+const CoordinatorIncident = React.lazy(() => import('@/pages/coordinator/CoordinatorIncident'))
+const CoordinatorRequisitions = React.lazy(() => import('@/pages/coordinator/CoordinatorRequisitions'))
+const CoordinatorRequisition = React.lazy(() => import('@/pages/coordinator/CoordinatorRequisition'))
+const IncidentReports = React.lazy(() => import('@/pages/IncidentReports'))
+const IncidentReportDetail = React.lazy(() => import('@/pages/IncidentReportDetail'))
+const Requisitions = React.lazy(() => import('@/pages/Requisitions'))
+const RequisitionDetail = React.lazy(() => import('@/pages/RequisitionDetail'))
+const SignInActivity = React.lazy(() => import('@/pages/SignInActivity'))
 const Users = React.lazy(() => import('@/pages/Users'))
 const Settings = React.lazy(() => import('@/pages/Settings'))
 
 const PortalLayout = React.lazy(() => import('@/pages/portal/PortalLayout'))
 const PortalOverview = React.lazy(() => import('@/pages/portal/PortalOverview'))
 const PortalDocuments = React.lazy(() => import('@/pages/portal/PortalDocuments'))
+const PortalTraining = React.lazy(() => import('@/pages/portal/PortalTraining'))
 const PortalEmployment = React.lazy(() => import('@/pages/portal/PortalEmployment'))
 const PortalProfile = React.lazy(() => import('@/pages/portal/PortalProfile'))
 const PortalSettings = React.lazy(() => import('@/pages/portal/PortalSettings'))
@@ -133,6 +143,7 @@ export default function App() {
       >
         <Route index element={<PortalOverview />} />
         <Route path="documents" element={<PortalDocuments />} />
+        <Route path="training" element={<PortalTraining />} />
         <Route path="employment" element={<PortalEmployment />} />
         <Route path="profile" element={<PortalProfile />} />
         <Route path="settings" element={<PortalSettings />} />
@@ -163,6 +174,12 @@ export default function App() {
         <Route path="/coordinator/reports/new" element={<Guard permission="coordination.access"><CoordinatorReport /></Guard>} />
         <Route path="/coordinator/reports/:id" element={<Guard permission="coordination.access"><CoordinatorReport /></Guard>} />
         <Route path="/coordinator/requests" element={<Guard permission="coordination.access"><CoordinatorRequests /></Guard>} />
+        <Route path="/coordinator/incidents" element={<Guard permission="coordination.access"><CoordinatorIncidents /></Guard>} />
+        <Route path="/coordinator/incidents/new" element={<Guard permission="coordination.access"><CoordinatorIncident /></Guard>} />
+        <Route path="/coordinator/incidents/:id" element={<Guard permission="coordination.access"><CoordinatorIncident /></Guard>} />
+        <Route path="/coordinator/requisitions" element={<Guard permission="coordination.access"><CoordinatorRequisitions /></Guard>} />
+        <Route path="/coordinator/requisitions/new" element={<Guard permission="coordination.access"><CoordinatorRequisition /></Guard>} />
+        <Route path="/coordinator/requisitions/:id" element={<Guard permission="coordination.access"><CoordinatorRequisition /></Guard>} />
 
         <Route path="/job-requests" element={<Guard permission="job_requests.view"><JobRequests /></Guard>} />
         <Route path="/job-requests/:id" element={<Guard permission="job_requests.view"><JobRequestDetail /></Guard>} />
@@ -179,6 +196,10 @@ export default function App() {
         <Route path="/attendance" element={<Guard permission="attendance.view"><Attendance /></Guard>} />
         <Route path="/violation-reports" element={<Guard permission="violation_reports.view"><ViolationReports /></Guard>} />
         <Route path="/violation-reports/:id" element={<Guard permission="violation_reports.view"><ViolationReportReview /></Guard>} />
+        <Route path="/incident-reports" element={<Guard permission="incident_reports.view"><IncidentReports /></Guard>} />
+        <Route path="/incident-reports/:id" element={<Guard permission="incident_reports.view"><IncidentReportDetail /></Guard>} />
+        <Route path="/requisitions" element={<Guard permission="requisitions.view"><Requisitions /></Guard>} />
+        <Route path="/requisitions/:id" element={<Guard permission="requisitions.view"><RequisitionDetail /></Guard>} />
         <Route path="/separations" element={<Guard permission="separation.view"><Separations /></Guard>} />
 
         <Route path="/clients" element={<Guard permission="clients.view"><Clients /></Guard>} />
@@ -203,6 +224,7 @@ export default function App() {
         <Route path="/archives" element={<Guard permission="archives.view"><Archives /></Guard>} />
         <Route path="/retention" element={<Guard permission="archives.view"><Retention /></Guard>} />
         <Route path="/audit-logs" element={<Guard permission="audit.view"><AuditLogs /></Guard>} />
+        <Route path="/sign-in-activity" element={<Guard permission="sessions.view"><SignInActivity /></Guard>} />
         <Route path="/users" element={<Guard permission="users.view"><Users /></Guard>} />
 
         {/* Settings is reachable by every signed-in user: the My Account tab
@@ -221,9 +243,13 @@ export default function App() {
 /**
  * Sends unauthenticated visitors to the login screen, remembering where they
  * were headed so they land there after signing in rather than on the dashboard.
+ *
+ * When the page belonged to someone who has just signed out, it is remembered
+ * as theirs: a different account signing in next starts at its own home
+ * instead of on a screen its role may not cover (see Login).
  */
 function RequireAuth({ children }) {
-  const { isAuthenticated, loading, user } = useAuth()
+  const { isAuthenticated, loading, user, signedOutUserId } = useAuth()
   const location = useLocation()
 
   if (loading) {
@@ -235,7 +261,7 @@ function RequireAuth({ children }) {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />
+    return <Navigate to="/login" state={{ from: location.pathname, fromUser: signedOutUserId }} replace />
   }
 
   // The API refuses everything else for this account until it is done.

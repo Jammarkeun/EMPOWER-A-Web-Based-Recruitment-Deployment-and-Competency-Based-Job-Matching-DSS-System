@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, IdCard, Users, ClipboardList, UserMinus } from 'lucide-react'
+import { ArrowLeft, IdCard, Users, ClipboardList, UserMinus, ArrowRightLeft } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { PageHeader, StatTile } from '@/components/PageHeader'
 import { Card } from '@/components/ui/card'
@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/states'
 import { formatDate } from '@/lib/utils'
+import { Pagination, useClampPage } from '@/components/Pagination'
 
 /**
  * Who is working in one of a client's departments.
@@ -27,9 +28,15 @@ import { formatDate } from '@/lib/utils'
 export default function DepartmentDetail() {
   const { id, departmentId } = useParams()
 
-  const { data, loading, error, refetch } = useApi(
-    `/clients/${id}/departments/${departmentId}/employees`
+  // The people come fifty to a page; without a pager everyone after the
+  // fiftieth was simply not shown.
+  const [page, setPage] = React.useState(1)
+  const { data, meta, loading, error, refetch } = useApi(
+    `/clients/${id}/departments/${departmentId}/employees`,
+    { page }
   )
+
+  useClampPage(meta, setPage)
 
   const backToDepartments = `/clients/${id}?tab=departments`
 
@@ -130,6 +137,7 @@ export default function DepartmentDetail() {
             }
           />
         ) : (
+          <>
           <Table>
             <TableHeader>
               <TableRow>
@@ -174,8 +182,50 @@ export default function DepartmentDetail() {
               ))}
             </TableBody>
           </Table>
+          <div className="px-4 pb-3">
+            <Pagination meta={meta} onPage={setPage} />
+          </div>
+          </>
         )}
       </Card>
+
+      {/* Reassignments into and out of this department, from the history
+          every move writes. Only shown once there has been one. */}
+      {data.moves?.length > 0 && (
+        <Card className="mt-5">
+          <div className="flex items-center gap-2 px-5 pt-5 text-base font-semibold">
+            <ArrowRightLeft className="h-4 w-4 text-muted-foreground" />
+            Moves in and out
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Employee</TableHead>
+                <TableHead>Move</TableHead>
+                <TableHead>Effective</TableHead>
+                <TableHead>Recorded by</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.moves.map((move) => (
+                <TableRow key={move.id}>
+                  <TableCell>
+                    <Link to={`/employees/${move.employee.id}`} className="font-medium text-primary hover:underline">
+                      {move.employee.full_name}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {move.direction === 'in' ? `In from ${move.from_department ?? '—'}` : `Out to ${move.to_department ?? '—'}`}
+                    {move.remarks && <p className="text-xs text-muted-foreground">{move.remarks}</p>}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{formatDate(move.effective_date)}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{move.changed_by ?? '—'}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
     </>
   )
 }

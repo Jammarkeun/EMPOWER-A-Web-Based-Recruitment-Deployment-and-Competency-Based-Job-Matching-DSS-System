@@ -50,6 +50,19 @@ function safeReturnPath(path) {
   return path
 }
 
+/**
+ * The page to go back to after signing in, if any.
+ *
+ * Only a path inside this app is honoured; anything that could leave the site
+ * ("//host", "/\host", a full URL) is ignored. So is a page another account
+ * was on when it signed out: the next person to sign in on the computer
+ * starts at their own home, not on a screen their role may not cover.
+ */
+function returnPathFor(state, user) {
+  if (state?.fromUser != null && state.fromUser !== user?.id) return null
+  return safeReturnPath(state?.from)
+}
+
 export default function Login() {
   const { login, isAuthenticated, loading, user } = useAuth()
   const navigate = useNavigate()
@@ -76,12 +89,8 @@ export default function Login() {
     )
   }
 
-  // Only a path inside this app is honoured as the place to return to; anything
-  // that could leave the site ("//host", "/\host", a full URL) is ignored.
-  const returnTo = safeReturnPath(location.state?.from)
-
   if (isAuthenticated) {
-    return <Navigate to={returnTo ?? destinationFor(user)} replace />
+    return <Navigate to={returnPathFor(location.state, user) ?? destinationFor(user)} replace />
   }
 
   async function handleSubmit(event) {
@@ -94,7 +103,7 @@ export default function Login() {
       // login() returns the signed-in user, which is what decides the
       // destination — the context state has not updated yet at this point.
       const signedIn = await login(email, password)
-      navigate(returnTo ?? destinationFor(signedIn), { replace: true })
+      navigate(returnPathFor(location.state, signedIn) ?? destinationFor(signedIn), { replace: true })
       toast.success(`Welcome back, ${signedIn.full_name.split(' ')[0]}`, 'You are signed in.')
     } catch (error) {
       if (error.isValidation) {

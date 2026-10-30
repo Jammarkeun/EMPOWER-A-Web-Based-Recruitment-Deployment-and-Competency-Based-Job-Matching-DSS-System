@@ -76,6 +76,11 @@ class ReportController extends Controller
             'truncated' => $report['rows']->count() > 100,
             'summary' => $report['summary'],
             'generated_at' => $report['generated_at'],
+            // The same letterhead as the PDF, for the printed preview.
+            'letterhead' => [
+                'agency' => config('empower.organisation.name'),
+                'address' => config('empower.organisation.address'),
+            ],
         ]);
     }
 
@@ -123,7 +128,7 @@ class ReportController extends Controller
 
         return match ($data['format']) {
             'pdf' => $this->toPdf($report, $filename, $request),
-            'xlsx' => Excel::download(new ReportExport($report), $filename),
+            'xlsx' => Excel::download(new ReportExport($report, $request->user()->full_name), $filename),
             'csv' => $this->toCsv($report, $filename),
         };
     }

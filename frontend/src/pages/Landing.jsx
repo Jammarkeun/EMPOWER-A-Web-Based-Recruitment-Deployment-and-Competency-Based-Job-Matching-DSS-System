@@ -19,6 +19,7 @@ import ThemeToggle from '@/components/ThemeToggle'
 import { LogoMark } from '@/components/Logo'
 import { cn } from '@/lib/utils'
 import { DEFAULT_BANDS, LANDING_EXAMPLE, scoreExample } from '@/lib/matchingExample'
+import landingBackground from '@/assets/landing-background.jpg'
 
 /**
  * The front door.
@@ -164,7 +165,21 @@ function SiteHeader() {
 
 function Hero() {
   return (
-    <section id="top" className="radial-fade border-b scroll-mt-20">
+    <section id="top" className="relative isolate overflow-hidden border-b scroll-mt-20">
+      {/* Decorative, so hidden from screen readers. The wash over it keeps the
+          headline and cards readable in both themes, and fades into the page
+          at the bottom so the hero does not end on a hard edge. */}
+      <img
+        src={landingBackground}
+        alt=""
+        aria-hidden="true"
+        className="absolute inset-0 -z-20 h-full w-full object-cover object-center"
+      />
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 -z-10 bg-gradient-to-b from-background/55 via-background/45 to-background/90 dark:from-background/80 dark:via-background/70 dark:to-background/95"
+      />
+
       <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
         <div className="mx-auto max-w-3xl text-center">
           <p className="mb-4 inline-flex items-center gap-1.5 rounded-full border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">

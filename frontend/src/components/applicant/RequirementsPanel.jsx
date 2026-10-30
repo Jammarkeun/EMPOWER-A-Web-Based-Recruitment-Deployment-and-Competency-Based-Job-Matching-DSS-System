@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Select } from '@/components/ui/select'
 import { formatDate, cn } from '@/lib/utils'
+import { expiryBadge } from '@/lib/documentExpiry'
 
 /**
  * Explains why the applicant sits in their current folder.
@@ -405,12 +406,43 @@ export function RequirementsPanel({ applicant, onChanged }) {
                             expires {formatDate(requirement.expiry_date)}
                           </span>
                         )}
+                        {/* Whether that expiry matters for this person now:
+                            once deployed, only what CDE renews while employed
+                            does (see lib/documentExpiry). */}
+                        {expiryBadge(requirement) && (
+                          <Badge
+                            tone={expiryBadge(requirement).tone}
+                            title={requirement.expiry_assessment?.rule_label}
+                          >
+                            {expiryBadge(requirement).label}
+                          </Badge>
+                        )}
                       </div>
 
                       {requirement.rejection_reason && (
                         <p className="mt-1 text-xs text-destructive">
                           {requirement.rejection_reason}
                         </p>
+                      )}
+
+                      {/* Versions a renewal replaced. Kept, never overwritten. */}
+                      {requirement.history?.length > 0 && (
+                        <details className="mt-1 text-xs text-muted-foreground">
+                          <summary className="cursor-pointer select-none">
+                            {requirement.history.length} earlier version{requirement.history.length === 1 ? '' : 's'}
+                          </summary>
+                          <ul className="mt-1 space-y-0.5 pl-3">
+                            {requirement.history.map((h) => (
+                              <li key={h.id}>
+                                {h.file_name ?? 'Checked in person'}
+                                {h.expiry_date && ` · expired ${formatDate(h.expiry_date)}`}
+                                {h.verified_by && ` · verified by ${h.verified_by}`}
+                                {` · replaced ${formatDate(h.replaced_at)}`}
+                                {h.replaced_by && ` by ${h.replaced_by}`}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
                       )}
                     </div>
 

@@ -42,7 +42,7 @@ class BuildReportExport implements ShouldQueue
             $report = $builder->build($export->report_type, $export->filter_json ?? []);
 
             if ($export->export_format === 'xlsx') {
-                Excel::store(new SpreadsheetExport($report), $filename, 'local');
+                Excel::store(new SpreadsheetExport($report, $export->requester?->full_name), $filename, 'local');
             } elseif ($export->export_format === 'pdf') {
                 $pdf = Pdf::loadView('reports.document', array_merge($report, [
                     'prepared_by' => $export->requester?->full_name ?? 'EMPOWER',

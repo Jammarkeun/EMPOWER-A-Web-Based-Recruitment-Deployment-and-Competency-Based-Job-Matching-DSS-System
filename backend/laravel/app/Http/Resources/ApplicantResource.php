@@ -81,6 +81,16 @@ class ApplicantResource extends JsonResource
             // The status says every document was verified; the folder says one
             // has lapsed or been rejected since. Shown, never acted on (WF-06).
             'documents_lapsed' => ApplicantStatuses::documentsLapsed((string) $this->current_status, $this->folder_category),
+            // Placed today, by the employment record, when the list asked for
+            // it (Applicant::scopeWithPlacement).
+            'placement' => $this->when(
+                array_key_exists('currently_deployed', $this->resource->getAttributes()),
+                fn () => ApplicantStatuses::placement(
+                    $this->current_status,
+                    (bool) $this->resource->getAttribute('currently_deployed'),
+                    $this->resource->getAttribute('deployed_company'),
+                )
+            ),
             'folder_category' => $this->folder_category,
             'folder_label' => config("empower.folders.{$this->folder_category}.label"),
             'remarks' => $this->remarks,

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Check, FileText, UserCheck, ClipboardCheck, Info } from 'lucide-react'
+import { Bell, Briefcase, Check, FileText, UserCheck, ClipboardCheck, GraduationCap, Info } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -10,7 +10,9 @@ import { useNotifications } from '@/contexts/NotificationsContext'
 const CATEGORY_ICONS = {
   requirements: FileText,
   application: ClipboardCheck,
+  training: GraduationCap,
   deployment: UserCheck,
+  employment: Briefcase,
   general: Info,
 }
 

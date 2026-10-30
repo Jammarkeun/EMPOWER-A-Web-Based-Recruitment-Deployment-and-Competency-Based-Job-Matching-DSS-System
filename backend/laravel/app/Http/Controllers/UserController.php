@@ -10,6 +10,8 @@ use App\Models\Employee;
 use App\Models\User;
 use App\Notifications\PasswordChanged;
 use App\Rules\PasswordPolicy;
+use App\Rules\PersonName;
+use App\Rules\PhilippineMobileNumber;
 use App\Services\AuditService;
 use App\Services\CoordinatorAssignmentService;
 use Illuminate\Support\Facades\DB;
@@ -49,19 +51,30 @@ class UserController extends Controller
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
+        // A login made at registration keeps user_type "applicant" after its
+        // owner is deployed, and the portal shows them their employment
+        // through the applicant record (User::portalEmployee). The two portal
+        // filters follow the same rule, so a deployed worker is listed - and
+        // labelled - as an employee login rather than only under "applicant".
+        $reachesEmployee = fn ($q) => $q->whereNotNull('employee_id')
+            ->orWhereHas('applicant', fn ($a) => $a->whereHas('employee'));
+
         $users = User::query()
-            ->with(['roles', 'activeCoordinatorAssignment.company'])
-            ->when($filters['search'] ?? null, function ($q, $v) {
-                $operator = $q->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-                $q->where(fn ($sub) => $sub
-                    ->where('first_name', $operator, "%{$v}%")
-                    ->orWhere('last_name', $operator, "%{$v}%")
-                    ->orWhere('email', $operator, "%{$v}%"));
+            ->with(['roles', 'activeCoordinatorAssignment.company', 'applicant:id', 'applicant.employee:id,applicant_id'])
+            ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(fn ($sub) => $sub
+                ->whereContains('first_name', $v)
+                ->orWhereContains('last_name', $v)
+                ->orWhereContains('email', $v)))
+            ->when($filters['user_type'] ?? null, fn ($q, $v) => match ($v) {
+                'employee' => $q->whereIn('user_type', User::PORTAL_TYPES)->where($reachesEmployee),
+                'applicant' => $q->where('user_type', 'applicant')->whereNot($reachesEmployee),
+                default => $q->where('user_type', $v),
             })
-            ->when($filters['user_type'] ?? null, fn ($q, $v) => $q->where('user_type', $v))
             ->when(isset($filters['is_active']), fn ($q) => $q->where('is_active', $filters['is_active']))
             ->orderBy('user_type')
             ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->orderBy('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(
@@ -74,12 +87,14 @@ class UserController extends Controller
     {
         $this->authorize('createUsers');
 
+        PhilippineMobileNumber::normalizeRequest($request, 'mobile_number');
+
         $data = $request->validate([
-            'first_name' => ['required', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['required', 'string', 'max:100'],
-            'email' => ['required', 'email', 'max:190', 'unique:users,email'],
-            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'first_name' => ['required', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['required', 'string', 'max:100', new PersonName()],
+            'email' => ['required', 'email:rfc,filter', 'max:190', 'unique:users,email'],
+            'mobile_number' => ['nullable', 'string', 'max:30', new PhilippineMobileNumber()],
             'user_type' => ['required', Rule::in(['admin', 'hr', 'coordinator'])],
             // A coordinator's role is fixed; staff choose admin or hr.
             'role' => ['required_unless:user_type,coordinator', 'nullable', 'string', 'exists:roles,name'],
@@ -152,12 +167,14 @@ class UserController extends Controller
     {
         $this->authorize('updateUsers');
 
+        PhilippineMobileNumber::normalizeRequest($request, 'mobile_number');
+
         $data = $request->validate([
-            'first_name' => ['sometimes', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['sometimes', 'string', 'max:100'],
-            'email' => ['sometimes', 'email', 'max:190', Rule::unique('users', 'email')->ignore($user->id)],
-            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'first_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'email' => ['sometimes', 'email:rfc,filter', 'max:190', Rule::unique('users', 'email')->ignore($user->id)],
+            'mobile_number' => ['nullable', 'string', 'max:30', new PhilippineMobileNumber()],
             'role' => ['sometimes', 'string', 'exists:roles,name'],
         ]);
 
@@ -284,7 +301,7 @@ class UserController extends Controller
         $data = $request->validate([
             'applicant_id' => ['required_without:employee_id', 'nullable', 'integer', 'exists:applicants,id'],
             'employee_id' => ['required_without:applicant_id', 'nullable', 'integer', 'exists:employees,id'],
-            'email' => ['required', 'email', 'max:190', 'unique:users,email'],
+            'email' => ['required', 'email:rfc,filter', 'max:190', 'unique:users,email'],
         ]);
 
         if (isset($data['applicant_id'], $data['employee_id'])) {
@@ -513,6 +530,26 @@ class UserController extends Controller
         );
     }
 
+    /**
+     * "employee" when the login reaches an employment record, directly or
+     * through its applicant record; "applicant" for any other portal login.
+     * The list eager-loads what this reads; a single account loads it here.
+     */
+    private function portalAccess(User $user): ?string
+    {
+        if (! $user->isPortalAccount()) {
+            return null;
+        }
+
+        if ($user->employee_id) {
+            return 'employee';
+        }
+
+        $user->loadMissing('applicant.employee:id,applicant_id');
+
+        return $user->applicant?->employee ? 'employee' : 'applicant';
+    }
+
     private function present(User $user): array
     {
         return [
@@ -524,6 +561,8 @@ class UserController extends Controller
             'email' => $user->email,
             'mobile_number' => $user->mobile_number,
             'user_type' => $user->user_type,
+            // Which portal the login actually opens onto, by the rule above.
+            'portal_access' => $this->portalAccess($user),
             'is_active' => (bool) $user->is_active,
             'roles' => $user->getRoleNames(),
             'applicant_id' => $user->applicant_id,

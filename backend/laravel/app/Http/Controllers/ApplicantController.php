@@ -13,6 +13,8 @@ use App\Models\JobRequest;
 use App\Models\PlacementDecision;
 use App\Models\RequirementType;
 use App\Models\TrainingEnrollment;
+use App\Rules\PersonName;
+use App\Rules\PhilippineMobileNumber;
 use App\Services\ApplicantLifecycleService;
 use App\Services\AuditService;
 use App\Services\FolderCategoryService;
@@ -40,9 +42,29 @@ class ApplicantController extends Controller
     {
         $this->authorize('viewAny', Applicant::class);
 
+        // One status, or several separated by commas - the form a dashboard
+        // figure uses to open the list of exactly the people it counted.
+        if (is_string($request->query('current_status'))) {
+            $request->merge(['current_status' => array_values(array_filter(
+                array_map('trim', explode(',', $request->query('current_status')))
+            ))]);
+        }
+
         $filters = $request->validate([
             'search' => ['nullable', 'string', 'max:120'],
-            'current_status' => ['nullable', Rule::in(ApplicantStatuses::all())],
+            // Each one a status of the vocabulary, reported under
+            // `current_status` itself as it always was. "deployed" is read
+            // from the employment record, not the column
+            // (Applicant::scopeCurrentlyDeployed).
+            'current_status' => ['bail', 'nullable', 'array', 'max:20', function (string $attribute, mixed $value, \Closure $fail) {
+                foreach ((array) $value as $status) {
+                    if (! is_string($status) || ! ApplicantStatuses::isKnown($status)) {
+                        $fail('The selected :attribute is invalid.');
+
+                        return;
+                    }
+                }
+            }],
             'folder_category' => ['nullable', Rule::in(['folder_1', 'folder_2', 'folder_3'])],
             'source_channel' => ['nullable', Rule::in(Applicant::SOURCE_CHANNELS)],
             'awaiting_identity_check' => ['nullable', 'boolean'],
@@ -53,6 +75,9 @@ class ApplicantController extends Controller
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             // Status says every document was verified; the folder says not (WF-06).
             'documents_lapsed' => ['nullable', 'boolean'],
+            // Leaves out anyone working under an active deployment today -
+            // the dashboard's "ready for deployment" figure does.
+            'exclude_deployed' => ['nullable', 'boolean'],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
@@ -60,10 +85,13 @@ class ApplicantController extends Controller
             'sort_dir' => ['nullable', Rule::in(['asc', 'desc'])],
         ]);
 
+        $direction = $filters['sort_dir'] ?? 'desc';
+
         $applicants = Applicant::query()
             ->with('openEndorsement.currentDecision')
+            ->withPlacement()
             ->search($filters['search'] ?? null)
-            ->when($filters['current_status'] ?? null, fn ($q, $v) => $q->where('current_status', $v))
+            ->when($filters['current_status'] ?? null, fn ($q, $v) => $q->inStatuses($v))
             ->when($filters['folder_category'] ?? null, fn ($q, $v) => $q->where('folder_category', $v))
             ->when($filters['source_channel'] ?? null, fn ($q, $v) => $q->where('source_channel', $v))
             ->when($filters['awaiting_identity_check'] ?? false, fn ($q) => $q->awaitingIdentityCheck())
@@ -75,9 +103,14 @@ class ApplicantController extends Controller
             ->when($filters['documents_lapsed'] ?? false, fn ($q) => $q
                 ->whereIn('current_status', config('empower.past_document_gate_statuses'))
                 ->where(fn ($folder) => $folder->whereNull('folder_category')->orWhere('folder_category', '!=', 'folder_1')))
+            ->when($filters['exclude_deployed'] ?? false, fn ($q) => $q->notCurrentlyDeployed())
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '<=', $v))
-            ->orderBy($filters['sort_by'] ?? 'application_date', $filters['sort_dir'] ?? 'desc')
+            ->orderBy($filters['sort_by'] ?? 'application_date', $direction)
+            // Many applicants share an application date. Without a unique
+            // last key MySQL and PostgreSQL may order the ties differently on
+            // each page, repeating some people and skipping others.
+            ->orderBy('applicants.id', $direction)
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(
@@ -242,28 +275,30 @@ class ApplicantController extends Controller
     {
         $this->authorize('update', $applicant);
 
+        PhilippineMobileNumber::normalizeRequest($request, 'contact_number');
+
         $data = $request->validate([
-            'first_name' => ['sometimes', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['sometimes', 'string', 'max:100'],
-            'suffix' => ['nullable', 'string', 'max:20'],
+            'first_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['sometimes', 'string', 'max:100', new PersonName()],
+            'suffix' => ['nullable', 'string', 'max:20', new PersonName()],
             'sex' => ['nullable', Rule::in(['male', 'female'])],
             'birth_date' => ['nullable', 'date', 'before:'.now()->subYears(15)->toDateString()],
-            'civil_status' => ['nullable', 'string', 'max:30'],
+            'civil_status' => ['nullable', Rule::in(['single', 'married', 'widowed', 'separated', 'divorced'])],
             'nationality' => ['nullable', 'string', 'max:80'],
-            'height_cm' => ['nullable', 'numeric', 'between:100,250'],
-            'weight_kg' => ['nullable', 'numeric', 'between:30,300'],
-            'contact_number' => ['nullable', 'string', 'max:40'],
-            'email' => ['nullable', 'email', 'max:190'],
+            'height_cm' => ['nullable', 'numeric', 'decimal:0,2', 'between:100,250'],
+            'weight_kg' => ['nullable', 'numeric', 'decimal:0,2', 'between:30,300'],
+            'contact_number' => ['nullable', 'string', 'max:40', new PhilippineMobileNumber()],
+            'email' => ['nullable', 'email:rfc,filter', 'max:190'],
             'present_address' => ['sometimes', 'string', 'max:255'],
             'provincial_address' => ['nullable', 'string', 'max:255'],
             'preferred_position_id' => ['nullable', 'integer', 'exists:job_positions,id'],
             'preferred_position' => ['nullable', 'string', 'max:150'],
             'availability_date' => ['nullable', 'date'],
-            'distance_km' => ['nullable', 'numeric', 'min:0', 'max:9999'],
-            'communication_rating' => ['nullable', 'numeric', 'between:0,5'],
-            'reliability_rating' => ['nullable', 'numeric', 'between:0,5'],
-            'remarks' => ['nullable', 'string'],
+            'distance_km' => ['nullable', 'numeric', 'decimal:0,2', 'min:0', 'max:9999'],
+            'communication_rating' => ['nullable', 'numeric', 'decimal:0,2', 'between:0,5'],
+            'reliability_rating' => ['nullable', 'numeric', 'decimal:0,2', 'between:0,5'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
         ]);
 
         $data = $this->withPositionTitle($data);

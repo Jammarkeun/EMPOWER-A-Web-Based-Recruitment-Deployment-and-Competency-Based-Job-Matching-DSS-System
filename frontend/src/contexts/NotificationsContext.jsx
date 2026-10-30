@@ -1,5 +1,6 @@
 import * as React from 'react'
-import { get } from '@/lib/api'
+import { useLocation } from 'react-router-dom'
+import { get, post } from '@/lib/api'
 
 /**
  * Unread notification counts, shared by everything that displays one.
@@ -27,13 +28,51 @@ const NotificationsContext = React.createContext({
   byCategory: {},
   refresh: () => {},
   countFor: () => 0,
+  countsFor: () => new Map(),
+  markSeen: () => {},
+  ready: false,
 })
+
+/** Whether a sidebar link covers a notification's page: itself, or a page beneath it. */
+function covers(to, path) {
+  return path === to || path.startsWith(`${to}/`)
+}
+
+/**
+ * The sidebar item a group of notifications belongs to.
+ *
+ * The page the notification opens decides it - the most specific link that
+ * covers that page - so every page with news shows a number, including ones
+ * added later, with nothing to keep in step. A notification whose page is not
+ * in this person's sidebar falls back to the item that lists its category.
+ */
+function itemFor(items, entry) {
+  if (entry.path) {
+    const covering = items.filter((item) => covers(item.to, entry.path))
+    if (covering.length) return covering.reduce((best, item) => (item.to.length > best.to.length ? item : best))
+  }
+
+  return items.find((item) => item.categories?.includes(entry.category)) ?? null
+}
+
+/**
+ * The sidebar item for the page being viewed: the most specific link that
+ * covers it. A link marked `end` (a home page such as the dashboard or "My
+ * application") counts only for itself, so opening Settings beneath the
+ * portal does not count as having looked at "My application".
+ */
+function currentItem(items, pathname) {
+  const matching = items.filter((item) => (item.end ? pathname === item.to : covers(item.to, pathname)))
+  return matching.length ? matching.reduce((best, item) => (item.to.length > best.to.length ? item : best)) : null
+}
 
 const POLL_MS = 60_000
 
 export function NotificationsProvider({ children, enabled = true }) {
   const [unread, setUnread] = React.useState(0)
   const [byCategory, setByCategory] = React.useState({})
+  // null until a server that reports destinations answers.
+  const [byDestination, setByDestination] = React.useState(null)
 
   const refresh = React.useCallback(async () => {
     if (!enabled) return
@@ -44,6 +83,7 @@ export function NotificationsProvider({ children, enabled = true }) {
       const response = await get('/notifications/unread-count', null, { background: true })
       setUnread(response.data.unread_count ?? 0)
       setByCategory(response.data.by_category ?? {})
+      setByDestination(response.data.by_destination ?? null)
     } catch {
       // A failing badge must never interrupt whatever the user is doing, and a
       // stale number is better than an error where a number should be.
@@ -54,6 +94,7 @@ export function NotificationsProvider({ children, enabled = true }) {
     if (!enabled) {
       setUnread(0)
       setByCategory({})
+      setByDestination(null)
       return
     }
 
@@ -95,9 +136,75 @@ export function NotificationsProvider({ children, enabled = true }) {
     [byCategory]
   )
 
+  /**
+   * The unread count for every item of a sidebar at once, keyed by its link.
+   *
+   * Each notification is counted on exactly one item - the one for the page
+   * it opens (see itemFor) - so the numbers in the sidebar add up to no more
+   * than the bell. Pass only the items this person can see. Falls back to the
+   * categories when the server does not report destinations.
+   */
+  const countsFor = React.useCallback(
+    (items) => {
+      const counts = new Map(items.map((item) => [item.to, 0]))
+
+      if (!byDestination) {
+        items.forEach((item) => counts.set(item.to, countFor(item.categories)))
+        return counts
+      }
+
+      for (const entry of byDestination) {
+        const item = itemFor(items, entry)
+        if (item) counts.set(item.to, counts.get(item.to) + entry.count)
+      }
+
+      return counts
+    },
+    [byDestination, countFor]
+  )
+
+  /**
+   * Marks read what was counted on one sidebar item, because its page has
+   * been opened and the person has now seen it.
+   *
+   * Exactly the destinations countsFor gave that item are sent, so the number
+   * that disappears is the number that was shown - nothing counted elsewhere is
+   * touched. The badge drops at once; the next refresh confirms it.
+   */
+  const markSeen = React.useCallback(
+    async (items, item) => {
+      if (!byDestination) return
+
+      const seen = byDestination.filter((entry) => itemFor(items, entry)?.to === item.to)
+      if (!seen.length) return
+
+      const total = seen.reduce((sum, entry) => sum + entry.count, 0)
+      setByDestination((current) => current?.filter((entry) => !seen.includes(entry)) ?? current)
+      setUnread((count) => Math.max(0, count - total))
+      setByCategory((current) => {
+        const next = { ...current }
+        seen.forEach((entry) => {
+          next[entry.category] = Math.max(0, (next[entry.category] ?? 0) - entry.count)
+        })
+        return next
+      })
+
+      try {
+        await post('/notifications/read-destinations', {
+          destinations: seen.map(({ path, category }) => ({ path, category })),
+        })
+      } catch {
+        // The badge comes back on the next refresh; nothing else depends on it.
+      }
+
+      refresh()
+    },
+    [byDestination, refresh]
+  )
+
   const value = React.useMemo(
-    () => ({ unread, byCategory, refresh, countFor }),
-    [unread, byCategory, refresh, countFor]
+    () => ({ unread, byCategory, refresh, countFor, countsFor, markSeen, ready: byDestination !== null }),
+    [unread, byCategory, refresh, countFor, countsFor, markSeen, byDestination]
   )
 
   return <NotificationsContext.Provider value={value}>{children}</NotificationsContext.Provider>
@@ -105,4 +212,28 @@ export function NotificationsProvider({ children, enabled = true }) {
 
 export function useNotifications() {
   return React.useContext(NotificationsContext)
+}
+
+/**
+ * Clears a sidebar item's number when its page is opened.
+ *
+ * Runs once per page visited - on arriving at it, or as soon as the counts
+ * first load if the person landed there directly. Something new that arrives
+ * while they stay on the page keeps its number until they next open it: the
+ * page they are looking at may not show it yet, so it has not been seen.
+ *
+ * `items` is the sidebar as this person sees it.
+ */
+export function useMarkSeenOnVisit(items) {
+  const { pathname } = useLocation()
+  const { ready, markSeen } = useNotifications()
+  const handled = React.useRef(null)
+
+  React.useEffect(() => {
+    if (!ready || handled.current === pathname) return
+    handled.current = pathname
+
+    const item = currentItem(items, pathname)
+    if (item) markSeen(items, item)
+  }, [ready, pathname, items, markSeen])
 }

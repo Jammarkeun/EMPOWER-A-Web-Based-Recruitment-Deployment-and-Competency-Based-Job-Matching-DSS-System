@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\DocumentUploadPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use League\Flysystem\FilesystemException;
@@ -19,28 +20,22 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * Laravel's built-in file route was not used because it sends
  * `Content-Security-Policy: sandbox`, under which Chrome refuses to display a
- * PDF at all. Instead only the four stored types are ever served, each with its
- * exact content type and `nosniff`, so a file can never be read as a page.
+ * PDF at all. Instead only the types DocumentUploadPolicy stores are ever
+ * served, each with its exact content type and `nosniff`, so a file can never
+ * be read as a page. PDFs and ordinary images open in the browser; a Word file
+ * or anything else a browser cannot show is sent as a download.
  */
 class DocumentFileController extends Controller
 {
-    /** Stored extension => the content type it is served with. Nothing else is served. */
-    private const TYPES = [
-        'pdf' => 'application/pdf',
-        'jpg' => 'image/jpeg',
-        'jpeg' => 'image/jpeg',
-        'png' => 'image/png',
-        'webp' => 'image/webp',
-    ];
-
     public function __invoke(Request $request, string $path): Response
     {
         $diskName = (string) config('empower.uploads.disk');
         $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $type = DocumentUploadPolicy::servedType($extension);
 
         abort_if(
             config("filesystems.disks.{$diskName}.driver") !== 'local'
-                || ! isset(self::TYPES[$extension])
+                || $type === null
                 || str_contains($path, '..')
                 || str_contains($path, "\0"),
             404
@@ -55,7 +50,7 @@ class DocumentFileController extends Controller
         }
 
         $headers = [
-            'Content-Type' => self::TYPES[$extension],
+            'Content-Type' => $type,
             'X-Content-Type-Options' => 'nosniff',
             'Cache-Control' => 'no-store, private, max-age=0',
             // The signed link must not travel onward in a Referer header.
@@ -66,6 +61,11 @@ class DocumentFileController extends Controller
                 : "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; sandbox",
         ];
 
-        return $disk->response($path, basename($path), $headers, 'inline');
+        return $disk->response(
+            $path,
+            basename($path),
+            $headers,
+            DocumentUploadPolicy::opensInBrowser($extension) ? 'inline' : 'attachment'
+        );
     }
 }

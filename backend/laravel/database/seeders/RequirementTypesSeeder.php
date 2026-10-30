@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\RequirementType;
+use App\Support\DocumentCompliance;
 use Illuminate\Database\Seeder;
 
 /**
@@ -38,6 +39,16 @@ class RequirementTypesSeeder extends Seeder
         ['medical_result', 'Medical Examination Result', 'final', true, true],
     ];
 
+    /**
+     * What happens to each after deployment, where CDE has said (26 October
+     * 2026): the annual medical and the health card are renewed while the
+     * worker is employed. Nothing else has a rule yet; see DocumentCompliance.
+     */
+    private const POST_DEPLOYMENT_RULES = [
+        'health_card' => DocumentCompliance::RENEW_WHILE_EMPLOYED,
+        'medical_result' => DocumentCompliance::RENEW_WHILE_EMPLOYED,
+    ];
+
     public function run(): void
     {
         foreach (self::REQUIREMENTS as $index => [$code, $name, $group, $required, $expires]) {
@@ -51,6 +62,9 @@ class RequirementTypesSeeder extends Seeder
                     'active_flag' => true,
                     'display_order' => $index + 1,
                 ]
+                // Only where CDE gave one, so re-seeding never clears a rule
+                // an administrator has set on another type.
+                + (isset(self::POST_DEPLOYMENT_RULES[$code]) ? ['post_deployment_rule' => self::POST_DEPLOYMENT_RULES[$code]] : [])
             );
         }
     }

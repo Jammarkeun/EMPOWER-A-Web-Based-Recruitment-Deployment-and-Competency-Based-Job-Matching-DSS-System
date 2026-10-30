@@ -6,6 +6,7 @@ use App\Models\PersonalAccessToken;
 use App\Models\User;
 use App\Services\SessionLifetime;
 use App\Services\SettingsService;
+use App\Support\TextSearch;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -64,6 +65,10 @@ class AppServiceProvider extends ServiceProvider
         // Guards against a mass-assignment mistake silently doing nothing, which
         // is precisely how the request_status bug hid during development.
         Model::preventSilentlyDiscardingAttributes($this->app->environment('local', 'testing'));
+
+        // whereContains() / orWhereContains(): search boxes match what was
+        // typed, % and _ included, rather than reading them as wildcards.
+        TextSearch::register();
 
         /*
          * A date that reaches JSON on its own - an audit entry's before and

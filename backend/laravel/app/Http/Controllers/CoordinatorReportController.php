@@ -8,6 +8,7 @@ use App\Http\Responses\ApiResponse;
 use App\Models\EmployeeViolation;
 use App\Models\ViolationReport;
 use App\Services\DocumentStorageService;
+use App\Services\DocumentUploadPolicy;
 use App\Services\ViolationReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -38,14 +39,19 @@ class CoordinatorReportController extends Controller
                 'value' => $t,
                 'label' => $t === 'awol' ? 'AWOL' : ucwords(str_replace('_', ' ', $t)),
             ]),
-            'statuses' => collect(ViolationReport::LABELS)->map(fn ($label, $value) => compact('value', 'label'))->values(),
+            // The group first: the dashboard figure counts it, and opens
+            // the list on it.
+            'statuses' => collect(['pending' => 'Awaiting HR'] + ViolationReport::LABELS)
+                ->map(fn ($label, $value) => compact('value', 'label'))->values(),
         ]);
     }
 
     public function index(Request $request): JsonResponse
     {
         $filters = $request->validate([
-            'status' => ['nullable', Rule::in(ViolationReport::STATUSES)],
+            // "pending" is every status still waiting on the office, as on
+            // HR's own list.
+            'status' => ['nullable', Rule::in([...ViolationReport::STATUSES, 'pending'])],
             'mine' => ['nullable', 'boolean'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
@@ -54,9 +60,12 @@ class CoordinatorReportController extends Controller
             ->with(['employee.applicant', 'department', 'reporter', 'violation'])
             // Another coordinator's drafts are their own unfinished work.
             ->where(fn ($q) => $q->where('status', '!=', 'draft')->orWhere('reported_by', $request->user()->id))
-            ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
+            ->when($filters['status'] ?? null, fn ($q, $v) => $v === 'pending'
+                ? $q->whereIn('status', ViolationReport::PENDING_REVIEW)
+                : $q->where('status', $v))
             ->when($filters['mine'] ?? false, fn ($q) => $q->where('reported_by', $request->user()->id))
             ->latest()
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 25);
 
         return ApiResponse::paginated(ViolationReportResource::collection($reports), 'Reports retrieved');
@@ -162,11 +171,7 @@ class CoordinatorReportController extends Controller
             'incident_date' => [$presence, 'date', 'before_or_equal:today'],
             'details' => [$presence, 'string', 'max:5000'],
             'notes' => ['nullable', 'string', 'max:2000'],
-            'evidence' => [
-                'nullable', 'file',
-                'max:'.config('empower.uploads.max_size_kb'),
-                'mimes:'.implode(',', config('empower.uploads.allowed_mimes')),
-            ],
+            'evidence' => DocumentUploadPolicy::rules(required: false),
             'submit' => ['nullable', 'boolean'],
         ];
     }

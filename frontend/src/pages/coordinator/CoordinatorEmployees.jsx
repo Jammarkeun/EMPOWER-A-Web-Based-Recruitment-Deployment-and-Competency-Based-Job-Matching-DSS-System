@@ -9,7 +9,7 @@ import { Badge, StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
-import { Pagination } from '@/components/Pagination'
+import { Pagination, useClampPage } from '@/components/Pagination'
 
 /**
  * The workers CDE has placed at the coordinator's client.
@@ -42,6 +42,8 @@ export default function CoordinatorEmployees() {
     if (key !== 'page') next.delete('page')
     setSearchParams(next)
   }
+
+  useClampPage(meta, (p) => update('page', String(p)))
 
   return (
     <div className="space-y-4">

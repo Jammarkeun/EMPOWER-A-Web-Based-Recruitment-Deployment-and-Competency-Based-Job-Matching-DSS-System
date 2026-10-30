@@ -11,7 +11,7 @@ import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
 import { ProgressTrack } from '@/components/ui/panel'
-import { Pagination } from '@/components/Pagination'
+import { Pagination, useClampPage } from '@/components/Pagination'
 import NewJobRequestDialog from '@/components/dialogs/NewJobRequestDialog'
 
 export default function JobRequests() {
@@ -25,7 +25,7 @@ export default function JobRequests() {
 
   const { data, meta, loading, error, refetch } = useApi('/job-requests', {
     request_status: status || undefined,
-    only_open: onlyOpen || undefined,
+    only_open: onlyOpen ? 1 : undefined,
     page,
     per_page: 20,
   })
@@ -41,6 +41,9 @@ export default function JobRequests() {
   function clearFilters() {
     setSearchParams(new URLSearchParams())
   }
+
+  const filtered = Boolean(status || onlyOpen)
+  useClampPage(meta, (p) => updateFilter('page', String(p)))
 
   return (
     <div className="space-y-4">
@@ -99,10 +102,18 @@ export default function JobRequests() {
       ) : !data?.length ? (
         <EmptyState
           icon={ClipboardList}
-          title="No manpower requests found"
-          description="Record a request when a client company asks for workers."
+          title={filtered ? 'No manpower requests match these filters' : 'No manpower requests recorded yet'}
+          description={
+            filtered
+              ? 'Try another status, or show every request.'
+              : 'Record a request when a client company asks for workers.'
+          }
           action={
-            can('job_requests.create') ? (
+            filtered ? (
+              <Button size="sm" variant="outline" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            ) : can('job_requests.create') ? (
               <Button size="sm" onClick={() => setDialogOpen(true)}>
                 <Plus className="h-4 w-4" />
                 Record Request

@@ -7,9 +7,10 @@ import PersonAvatar from '@/components/PersonAvatar'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
+import { Button } from '@/components/ui/button'
 import { FilterToolbar } from '@/components/FilterToolbar'
 import { formatDate } from '@/lib/utils'
-import { Pagination } from '@/components/Pagination'
+import { Pagination, useClampPage } from '@/components/Pagination'
 
 export default function Employees() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -38,6 +39,9 @@ export default function Employees() {
     setSearchParams(new URLSearchParams())
   }
 
+  const filtered = Boolean(search || status)
+  useClampPage(meta, (p) => updateFilter('page', String(p)))
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -60,7 +64,8 @@ export default function Employees() {
               { value: 'active', label: 'Active' },
               { value: 'resigned', label: 'Resigned' },
               { value: 'terminated', label: 'Terminated' },
-              { value: 'archived', label: 'Archived' },
+              // No "Archived": archiving an employee keeps a snapshot in
+              // Archives and leaves the status as it was, so it never matched.
             ],
           },
         ]}
@@ -80,8 +85,19 @@ export default function Employees() {
       ) : !data?.length ? (
         <EmptyState
           icon={IdCard}
-          title="No employees found"
-          description="Employees will appear here once an applicant is deployed to a client company."
+          title={filtered ? 'No employees match these filters' : 'No employees recorded yet'}
+          description={
+            filtered
+              ? 'Try another status, or search for part of the name or employee number.'
+              : 'Employees will appear here once an applicant is deployed to a client company.'
+          }
+          action={
+            filtered ? (
+              <Button size="sm" variant="outline" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            ) : null
+          }
         />
       ) : (
         <div className="space-y-3">

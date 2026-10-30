@@ -62,6 +62,7 @@ export default function Dashboard() {
     violations_by_type,
     monthly_trend,
     open_requests,
+    links,
   } = data
 
   const firstName = String(user?.full_name ?? '').trim().split(/\s+/)[0]
@@ -121,7 +122,11 @@ export default function Dashboard() {
         {/* ------------------------------- ready, due, and waiting on someone */}
         <Cell span="xl:col-span-4 sm:col-span-6">
           <div className="flex h-full flex-col gap-4">
-            <ReadyHighlight ready={headline.ready_for_deployment} active={headline.active_applicants} />
+            <ReadyHighlight
+              ready={headline.ready_for_deployment}
+              active={headline.active_applicants}
+              to={applicantListPath(links?.ready_for_deployment)}
+            />
             <Panel
               title="Applicants by stage"
               icon={Layers}
@@ -142,7 +147,7 @@ export default function Dashboard() {
         </Cell>
 
         <Cell span="xl:col-span-4 sm:col-span-3">
-          <ActionQueue attention={attention} />
+          <ActionQueue attention={attention} links={links} />
         </Cell>
 
         {/* ------------------------------------------------------ the story */}
@@ -246,16 +251,29 @@ function Panel({ title, description, icon, action, children, className }) {
 }
 
 /**
+ * The applicant list opened on the filters the server counted a figure with,
+ * so the number on the tile and the people on the list are the same.
+ */
+function listPath(path, filters) {
+  const query = new URLSearchParams(filters ?? {}).toString()
+  return query ? `${path}?${query}` : path
+}
+
+function applicantListPath(filters) {
+  return listPath('/applicants', filters)
+}
+
+/**
  * The one highlighted figure: applicants ready to place, out of everyone still
  * active. Ready applicants are counted from the active pool, so the bar can
  * never run past full.
  */
-function ReadyHighlight({ ready, active }) {
+function ReadyHighlight({ ready, active, to }) {
   const percent = active > 0 ? Math.min(100, (ready / active) * 100) : 0
 
   return (
     <Link
-      to="/applicants?folder_category=folder_1"
+      to={to}
       className="surface-highlight group block rounded-panel p-5 text-white transition-shadow hover:shadow-float sm:p-6"
     >
       <div className="flex items-center gap-2 text-sm text-white/90">
@@ -290,14 +308,14 @@ function ReadyHighlight({ ready, active }) {
  * rather than shown as a reassuring "0", so the panel only ever contains real
  * work.
  */
-function ActionQueue({ attention }) {
+function ActionQueue({ attention, links }) {
   const items = [
     {
       key: 'incomplete_requirements',
       label: 'Applicants with incomplete requirements',
       value: attention.incomplete_requirements,
       icon: FileX2,
-      to: '/applicants?current_status=incomplete_requirements',
+      to: applicantListPath(links?.incomplete_requirements),
       tone: 'warning',
     },
     {
@@ -307,7 +325,16 @@ function ActionQueue({ attention }) {
       icon: CalendarClock,
       to: '/applicants',
       tone: 'destructive',
-      hint: 'Verified documents that have since lapsed',
+      hint: 'Lapsed while the applicant waited for a posting',
+    },
+    {
+      key: 'employee_renewals_overdue',
+      label: 'Employee renewals overdue',
+      value: attention.employee_renewals_overdue,
+      icon: CalendarClock,
+      to: '/employees',
+      tone: 'warning',
+      hint: 'Annual medical or health card lapsed; renewed while employed',
     },
     {
       key: 'overdue_requests',
@@ -330,8 +357,19 @@ function ActionQueue({ attention }) {
       label: 'Resignations awaiting clearance',
       value: attention.pending_clearance,
       icon: FileWarning,
-      to: '/separations',
+      to: listPath('/separations', links?.pending_clearance),
       tone: 'warning',
+    },
+    {
+      // Open, but the next move is the employee's: counted apart so the
+      // figure above is only HR's own work.
+      key: 'resignations_awaiting_employee',
+      label: 'Resignations waiting on the employee',
+      value: attention.resignations_awaiting_employee,
+      icon: FileWarning,
+      to: listPath('/separations', links?.resignations_awaiting_employee),
+      tone: 'info',
+      hint: 'HR asked them for more information',
     },
     {
       key: 'terminations_for_review',

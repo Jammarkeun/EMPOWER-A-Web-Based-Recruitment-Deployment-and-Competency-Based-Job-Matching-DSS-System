@@ -20,13 +20,16 @@ import {
   Flag,
   Handshake,
   Hourglass,
+  Siren,
+  FilePlus2,
+  MonitorSmartphone,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import NotificationBell from '@/components/NotificationBell'
 import CommandPalette from '@/components/CommandPalette'
 import ThemeToggle from '@/components/ThemeToggle'
-import { useNotifications } from '@/contexts/NotificationsContext'
+import { useNotifications, useMarkSeenOnVisit } from '@/contexts/NotificationsContext'
 import { LoadingState } from '@/components/ui/states'
 import {
   ShellFrame,
@@ -63,7 +66,10 @@ const NAVIGATION = [
       { to: '/coordinator/company', label: 'My Client Company', icon: Handshake, permission: 'coordination.access' },
       { to: '/coordinator/employees', label: 'Employees', icon: IdCard, permission: 'coordination.access' },
       { to: '/coordinator/deployments', label: 'Deployments', icon: Truck, permission: 'coordination.access' },
+      // The coordinator's three functions, as CDE named them on 26 October 2026.
       { to: '/coordinator/reports', label: 'Violation Reports', icon: Flag, permission: 'coordination.access', categories: ['coordination'] },
+      { to: '/coordinator/incidents', label: 'Incident Reports', icon: Siren, permission: 'coordination.access' },
+      { to: '/coordinator/requisitions', label: 'Requisitions', icon: FilePlus2, permission: 'coordination.access' },
       { to: '/coordinator/requests', label: 'Manpower Requests', icon: ClipboardList, permission: 'coordination.access' },
     ],
   },
@@ -75,6 +81,7 @@ const NAVIGATION = [
     section: 'Recruitment',
     items: [
       { to: '/job-requests', label: 'Manpower Requests', icon: ClipboardList, permission: 'job_requests.view' },
+      { to: '/requisitions', label: 'Requisitions', icon: FilePlus2, permission: 'requisitions.view' },
       // categories: the notification kinds this section is responsible for.
       // Named here beside the navigation because the mapping is a judgement
       // about where somebody would go to deal with the thing, not a property
@@ -91,6 +98,7 @@ const NAVIGATION = [
       { to: '/employees', label: 'Employees', icon: IdCard, permission: 'employees.view' },
       { to: '/attendance', label: 'Attendance (DTR)', icon: CalendarClock, permission: 'attendance.view' },
       { to: '/violation-reports', label: 'Violation Reports', icon: Flag, permission: 'violation_reports.view', categories: ['coordination'] },
+      { to: '/incident-reports', label: 'Incident Reports', icon: Siren, permission: 'incident_reports.view' },
       { to: '/separations', label: 'Separations', icon: FileWarning, permission: 'separation.view' },
     ],
   },
@@ -103,6 +111,7 @@ const NAVIGATION = [
       { to: '/retention', label: 'Retention Review', icon: Hourglass, permission: 'archives.view' },
       { to: '/users', label: 'Users & Access', icon: UserCog, permission: 'users.view' },
       { to: '/audit-logs', label: 'Audit Trail', icon: ScrollText, permission: 'audit.view' },
+      { to: '/sign-in-activity', label: 'Sign-in Activity', icon: MonitorSmartphone, permission: 'sessions.view' },
     ],
   },
 ]
@@ -119,8 +128,8 @@ function roleLabel(role) {
 }
 
 export default function AppLayout() {
-  const { user, logout, can } = useAuth()
-  const { countFor } = useNotifications()
+  const { user, logout, can, renewPhoto } = useAuth()
+  const { countsFor } = useNotifications()
   const navigate = useNavigate()
   const toast = useToast()
   const [mobileOpen, setMobileOpen] = React.useState(false)
@@ -139,6 +148,12 @@ export default function AppLayout() {
     ...section,
     items: section.items.filter((item) => can(item.permission)),
   })).filter((section) => section.items.length > 0)
+
+  // Each unread notification on the item for the page it opens, among the
+  // items this person can see - and cleared once that page is opened.
+  const visibleItems = sections.flatMap((section) => section.items)
+  const unreadByLink = countsFor(visibleItems)
+  useMarkSeenOnVisit(visibleItems)
 
   const roles = (user?.roles?.length ? user.roles : [user?.user_type]).filter(Boolean).map(roleLabel).join(', ')
   // A coordinator always sees which client they are acting for.
@@ -175,7 +190,7 @@ export default function AppLayout() {
                 <SidebarLink
                   key={item.to}
                   {...item}
-                  unread={countFor(item.categories)}
+                  unread={unreadByLink.get(item.to) ?? 0}
                   collapsed={collapsed}
                   onNavigate={closeMobile}
                 />
@@ -192,6 +207,8 @@ export default function AppLayout() {
           <ProfileMenu
             name={user?.full_name}
             subtitle={subtitle}
+            photoUrl={user?.photo_url}
+            onPhotoError={renewPhoto}
             details={[roles, user?.coordinator?.company_name]}
             items={[{ to: SETTINGS_LINK.to, label: 'My account', icon: SETTINGS_LINK.icon }]}
             onLogout={handleLogout}

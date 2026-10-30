@@ -51,6 +51,24 @@ class EmployeePolicy
     }
 
     /**
+     * Imports and client-wide leave or holidays, which belong to no one
+     * employee.
+     */
+    public function manageAnyAttendance(User $user): bool
+    {
+        return $user->can('attendance.manage');
+    }
+
+    /**
+     * Deciding what a flagged day was. Held apart from encoding, so the person
+     * who keys in a DTR need not be the one who verifies it.
+     */
+    public function reviewAttendance(User $user): bool
+    {
+        return $user->can('attendance.review');
+    }
+
+    /**
      * The disciplinary record: the person's file and the violations in it.
      */
     public function viewViolations(User $user, Employee $employee): bool

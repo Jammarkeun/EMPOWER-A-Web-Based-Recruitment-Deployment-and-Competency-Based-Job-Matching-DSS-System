@@ -66,12 +66,17 @@ return [
 
     /*
     | Employee status transitions, applied after an applicant becomes an employee.
+    |
+    | Both separations are final. There used to be an "archived" status after
+    | them, but nothing ever moved an employee into it: archiving a former
+    | employee writes a snapshot to the archives table and leaves the status
+    | as resigned or terminated. Removed 2026-10-30, so filters and reports no
+    | longer offer a status no record can have.
     */
     'employee_transitions' => [
         'active' => ['resigned', 'terminated'],
-        'resigned' => ['archived'],
-        'terminated' => ['archived'],
-        'archived' => [],
+        'resigned' => [],
+        'terminated' => [],
     ],
 
     /*
@@ -173,9 +178,9 @@ return [
     ],
 
     /*
-    | Document upload policy. Applied in addition to the MIME sniffing that
-    | Laravel's file validation performs, so an executable renamed to .pdf is
-    | still rejected.
+    | Document upload limits. Which file types are accepted is decided from
+    | each file's content by App\Services\DocumentUploadPolicy, so an
+    | executable renamed to .pdf is still rejected.
     */
     'uploads' => [
         /*
@@ -185,7 +190,6 @@ return [
         'disk' => env('DOCUMENT_DISK', 'supabase'),
 
         'max_size_kb' => 10240,
-        'allowed_mimes' => ['pdf', 'jpg', 'jpeg', 'png', 'webp'],
         'max_width' => 7000,
         'max_height' => 7000,
         'storage_retries' => 3,
@@ -235,8 +239,26 @@ return [
         'active_window_months' => 12,
 
         // Offences within that window at which the employee is flagged for an
-        // administrator to review. Currently the fourth, per CDE.
+        // administrator to review. The fourth, per CDE's earlier validation.
+        // On 26 October 2026 CDE said a new memo extends this to the seventh
+        // offence and that AWOL counts; the memo (the "sanction board") has
+        // not been received, so the value is unchanged until it is. An
+        // administrator changes it in Settings - no code change needed. See
+        // docs/07-project-management/cde-requirements-integration.md.
         'termination_threshold' => 4,
+    ],
+
+    /*
+    | Resignation notice.
+    |
+    | CDE's interview: "ayon sa batas, meron tayong 30 days render bago tayo
+    | officially matanggal sa trabaho". Guidance only. The portal tells the
+    | employee, and shows HR how much notice a request gives, but nothing is
+    | refused for being shorter: a waived or shortened notice is HR's to agree
+    | and is recorded as rendering days on the resignation.
+    */
+    'separation' => [
+        'notice_days' => 30,
     ],
 
     /*
@@ -251,6 +273,12 @@ return [
     */
     'attendance' => [
         'late_grace_minutes' => 0,
+
+        // A DTR file imported at once. The client's biometric export has not
+        // been seen, so these are generous bounds, not a format: a month for
+        // 164 workers is about 5,000 rows.
+        'import_max_rows' => 10000,
+        'import_max_kb' => 5120,
     ],
 
     /*
@@ -346,10 +374,13 @@ return [
     | Printed in the header of every exported report and shown to applicants in
     | the portal. Held here rather than hard-coded so the agency can correct its
     | own details without a code change.
+    |
+    | The defaults are the letterhead on CDE's own Manpower Requisition Form
+    | (received 29 October 2026), which every report now copies.
     */
     'organisation' => [
         'name' => 'CDE Manpower Services',
-        'address' => 'Sta. Cruz, Laguna',
+        'address' => 'Sitio Bigayan, Brgy. Calios, Santa Cruz, Laguna',
         'contact' => null,
     ],
 
@@ -366,5 +397,53 @@ return [
         'client' => 'CLI',
         'position' => 'POS',
         'violation_report' => 'VR',
+        'incident_report' => 'IR',
+        'requisition' => 'MRF',
+        'attendance_import' => 'DTR',
+    ],
+
+    /*
+    | The manpower requisition form a coordinator fills in.
+    |
+    | CDE's own Manpower Requisition Form, received 29 October 2026 as a photo
+    | of a filled-in copy. The screen keeps its labels and order: Date
+    | requested, Date Needed, Total Manpower Needed, Required Qualification(s),
+    | Other Remarks, Reason of Request, Requested by, Acknowledged by.
+    |
+    | `version` is stamped on each requisition. Requisitions filed before this
+    | form arrived carry "provisional-2026-10" and are shown as written on the
+    | temporary default form, with the fields that form had.
+    */
+    'requisition_form' => [
+        'version' => 'cde-2026-10',
+        'title' => 'Manpower Requisition Form',
+
+        // "Reason of Request", in the form's order and wording. One is ticked.
+        'reasons' => [
+            'new_position' => 'New Position',
+            'replacement' => 'Replacement',
+            'additional_manpower' => 'Additional Manpower',
+            'reliever_manpower' => 'Reliever Manpower',
+            'others' => 'Others',
+        ],
+
+        // Labels for what the temporary default form (provisional-2026-10)
+        // recorded. Read-only: nothing new is written with these.
+        'temporary_form' => [
+            'version' => 'provisional-2026-10',
+            'notice' => 'Temporary Default Form — Pending Official CDE Form',
+            'gender_requirements' => [
+                'any' => 'Any',
+                'male' => 'Male',
+                'female' => 'Female',
+                'as_specified' => 'Other / as specified by the client',
+            ],
+            'employment_types' => [
+                'regular' => 'Regular',
+                'contractual' => 'Contractual',
+                'project_based' => 'Project-based',
+                'other' => 'Other',
+            ],
+        ],
     ],
 ];

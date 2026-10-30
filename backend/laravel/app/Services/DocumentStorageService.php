@@ -83,6 +83,39 @@ class DocumentStorageService
         // uploader gave the file: a PDF called "notes.html" must not be stored,
         // or served back, as a web page.
         $extension = $this->policy->assertSafe($file, $types);
+
+        return $this->put($file, $folder, $ownerId, $extension);
+    }
+
+    /**
+     * Stores a file whose content the caller has already checked, on the same
+     * private disk and under the same random keys as documents.
+     *
+     * For uploads that are not documents - a client's DTR spreadsheet - whose
+     * type the document policy, rightly, would refuse. The caller is
+     * responsible for having opened and validated the file first.
+     */
+    public function storeChecked(UploadedFile $file, string $folder, int $ownerId, string $extension): array
+    {
+        return $this->put($file, $folder, $ownerId, $extension);
+    }
+
+    /**
+     * The stored bytes, for a file the server itself has to read back.
+     */
+    public function contents(string $key): string
+    {
+        $contents = Storage::disk($this->disk())->get($key);
+
+        if ($contents === null) {
+            throw new RuntimeException('The stored file could not be read. It may have been removed.', 404);
+        }
+
+        return $contents;
+    }
+
+    private function put(UploadedFile $file, string $folder, int $ownerId, string $extension): array
+    {
         $disk = $this->disk();
 
         // A random object key means a document cannot be located by guessing an
@@ -136,7 +169,9 @@ class DocumentStorageService
         return [
             'file_path' => $key,
             'file_name' => $this->sanitiseName($file->getClientOriginalName()),
-            'file_mime' => $file->getMimeType(),
+            // The stored format's own type: a .docx that finfo saw only as a
+            // zip is still a Word document.
+            'file_mime' => DocumentUploadPolicy::servedType($extension) ?? $file->getMimeType(),
             'file_size_bytes' => $file->getSize(),
             // Lets a duplicate submission be recognised without opening the file.
             'file_hash' => hash_file('sha256', $file->getRealPath()),

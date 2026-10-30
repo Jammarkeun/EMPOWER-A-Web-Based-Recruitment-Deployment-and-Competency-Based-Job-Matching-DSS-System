@@ -237,15 +237,16 @@ class RegistrationTest extends TestCase
     {
         config(['empower.rate_limits.registrations_per_hour' => 3]);
 
-        for ($i = 0; $i < 3; $i++) {
+        // Names are letters only, so the people are told apart by letter.
+        foreach (['Ana', 'Ben', 'Carla'] as $i => $name) {
             $this->postJson('/api/v1/register', $this->payload([
-                'first_name' => 'Person'.$i,
+                'first_name' => $name,
                 'email' => "person{$i}@example.test",
             ]))->assertCreated();
         }
 
         $this->postJson('/api/v1/register', $this->payload([
-            'first_name' => 'Person4',
+            'first_name' => 'Dina',
             'email' => 'person4@example.test',
         ]))->assertStatus(429);
     }

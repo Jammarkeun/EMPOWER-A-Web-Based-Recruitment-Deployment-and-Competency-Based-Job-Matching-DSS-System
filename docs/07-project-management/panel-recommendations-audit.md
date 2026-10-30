@@ -174,6 +174,16 @@ lists who needs attention. A late or absent day can start a pre-filled violation
 record; nothing is recorded automatically. New permissions `attendance.view`
 and `attendance.manage` are granted to HR and administrators.
 
+**Corrected 2026-10-29.** The first version counted a scheduled day with no
+record as *absent* and offered a violation straight from it. Since CDE confirmed
+the DTR stays in the client's biometrics, that would have shown nearly every day
+as an absence. The comparison now says "awaiting DTR" until the DTR for a day is
+known to be received; flagged days go to a review queue (`attendance.review`),
+and only a verified one can become a violation. Schedules can be corrected or
+voided, every DTR change keeps a revision, leave and holidays can be recorded,
+and a provisional, column-mapped DTR import was added. Details:
+`dtr-attendance-rework.md`.
+
 ## 9. Confirmation on termination
 
 **Found.** There was no finalisation screen at all, filing had no confirmation,

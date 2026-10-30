@@ -40,6 +40,7 @@ import { formatDate, formatDateTime, humanise } from '@/lib/utils'
 import CriterionDetails from '@/components/CriterionDetails'
 import { FillBar } from './JobRequests'
 import CriteriaDialog from '@/components/dialogs/CriteriaDialog'
+import { describeRange, isMustHave, unitFor } from '@/lib/requirementRange'
 import DeployDialog from '@/components/dialogs/DeployDialog'
 import MatchBreakdownDialog from '@/components/dialogs/MatchBreakdownDialog'
 
@@ -97,7 +98,7 @@ export default function JobRequestDetail() {
             {can('job_requests.configure_criteria') && (
               <Button variant="outline" onClick={() => setCriteriaOpen(true)}>
                 <SlidersHorizontal className="h-4 w-4" />
-                {hasCriteria ? 'Adjust criteria' : 'Set criteria'}
+                {hasCriteria ? 'Edit matching requirements' : 'Set matching requirements'}
               </Button>
             )}
             {can('matching.evaluate') && (
@@ -155,10 +156,10 @@ export default function JobRequestDetail() {
           <CardContent className="flex items-start gap-3 py-4">
             <Info className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
             <div>
-              <p className="text-sm font-medium">No criteria set for this position yet</p>
+              <p className="text-sm font-medium">No matching requirements set for this position yet</p>
               <p className="text-sm text-muted-foreground">
-                Set the criteria and their weights before running an evaluation, so the ranking
-                reflects what this client actually needs.
+                Set the matching requirements and how important each one is before running an
+                evaluation, so the ranking reflects what this client actually needs.
               </p>
             </div>
           </CardContent>
@@ -203,7 +204,7 @@ export default function JobRequestDetail() {
       <Tabs defaultValue="rankings">
         <TabsList>
           <TabsTrigger value="rankings">Candidate rankings</TabsTrigger>
-          <TabsTrigger value="criteria">Criteria &amp; weights</TabsTrigger>
+          <TabsTrigger value="criteria">Matching requirements</TabsTrigger>
           <TabsTrigger value="details">Request details</TabsTrigger>
         </TabsList>
 
@@ -558,9 +559,9 @@ function CriteriaPanel({ criteria, onEdit, canEdit }) {
       <Card>
         <EmptyState
           icon={SlidersHorizontal}
-          title="No criteria configured"
-          description="Set which factors matter for this position and how much each is worth."
-          action={canEdit ? <Button size="sm" onClick={onEdit}>Set criteria</Button> : null}
+          title="No matching requirements set"
+          description="Choose what matters for this position and how important each one is."
+          action={canEdit ? <Button size="sm" onClick={onEdit}>Set requirements</Button> : null}
         />
       </Card>
     )
@@ -575,10 +576,10 @@ function CriteriaPanel({ criteria, onEdit, canEdit }) {
       {gates.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Mandatory requirements</CardTitle>
+            <CardTitle>Must Have requirements</CardTitle>
             <CardDescription>
-              Eligibility gates. Failing any one disqualifies the applicant regardless of their score
-              elsewhere, so these carry no weight of their own.
+              Applicants must meet every one of these to be eligible, however high their match score.
+              They add no points of their own.
             </CardDescription>
           </CardHeader>
           <CardContent className="divide-y">
@@ -597,12 +598,12 @@ function CriteriaPanel({ criteria, onEdit, canEdit }) {
       <Card>
         <CardHeader className="flex-row items-start justify-between space-y-0">
           <div className="space-y-1">
-            <CardTitle>Scored criteria</CardTitle>
-            <CardDescription>Total weight: {totalWeight} points</CardDescription>
+            <CardTitle>Scored requirements</CardTitle>
+            <CardDescription>Total importance: {totalWeight} points</CardDescription>
           </div>
           {canEdit && (
             <Button variant="outline" size="sm" onClick={onEdit}>
-              Adjust
+              Edit
             </Button>
           )}
         </CardHeader>
@@ -630,7 +631,7 @@ function CriteriaPanel({ criteria, onEdit, canEdit }) {
   )
 }
 
-/** Renders a criterion's configuration as a sentence HR can read back. */
+/** Renders a requirement's configuration as a sentence HR can read back. */
 function describeRule(criterion) {
   if (criterion.rubric_json) {
     const entries = Object.entries(criterion.rubric_json)
@@ -639,16 +640,20 @@ function describeRule(criterion) {
     return `Rated against: ${entries}`
   }
 
-  if (criterion.min_value !== null && criterion.max_value !== null) {
-    const direction = criterion.score_direction === 'lower_better' ? 'lower is better' : 'higher is better'
-    return `Graded from ${criterion.min_value} to ${criterion.max_value} (${direction})`
+  if (criterion.min_value !== null || criterion.max_value !== null) {
+    return describeRange({
+      min: criterion.min_value,
+      max: criterion.max_value,
+      mustHave: isMustHave(criterion.mandatory_flag, criterion.criteria_type),
+      lowerIsBetter: criterion.score_direction === 'lower_better',
+      unit: unitFor(criterion.criteria_code),
+      code: criterion.criteria_code,
+    })
   }
 
-  if (criterion.min_value !== null) return `Minimum of ${criterion.min_value}`
-  if (criterion.max_value !== null) return `Maximum of ${criterion.max_value}`
-  if (criterion.expected_value) return `Expected: ${criterion.expected_value}`
+  if (criterion.expected_value) return `Required: ${criterion.expected_value}`
 
-  return 'Scored on whether it is recorded at all'
+  return 'Met by any applicant with this recorded on their profile'
 }
 
 /**
@@ -699,12 +704,12 @@ function DetailsPanel({ job, canEdit, onEdit }) {
             <p className="min-w-0 flex-1 text-sm text-muted-foreground">
               {unscored.map(([label]) => label).join(', ')}{' '}
               {unscored.length === 1 ? 'is' : 'are'} stated on this request but not used in the ranking.
-              Add {unscored.length === 1 ? 'it' : 'them'} as criteria so applicants are matched against{' '}
+              Add {unscored.length === 1 ? 'it' : 'them'} as matching requirements so applicants are matched against{' '}
               {unscored.length === 1 ? 'it' : 'them'}.
             </p>
             {canEdit && (
               <Button size="sm" variant="outline" onClick={onEdit}>
-                Adjust criteria
+                Edit matching requirements
               </Button>
             )}
           </div>

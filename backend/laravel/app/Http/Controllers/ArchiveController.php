@@ -7,6 +7,7 @@ use App\Models\Archive;
 use App\Models\AuditLog;
 use App\Models\User;
 use App\Services\AuditTrailPresenter;
+use App\Support\TextSearch;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -43,18 +44,61 @@ class ArchiveController extends Controller
                 // Searches inside the stored snapshot, so a former employee can
                 // still be found by name even though the archive table itself
                 // holds no name columns.
-                $driver = $q->getConnection()->getDriverName();
-                $operator = $driver === 'pgsql' ? 'ilike' : 'like';
-                $column = $driver === 'pgsql' ? 'snapshot_json::text' : 'snapshot_json';
+                //
+                // Lower-cased on both sides outside PostgreSQL: MariaDB keeps
+                // a JSON column in a binary collation, so a plain LIKE there
+                // was case-sensitive and "ramirez" did not find "Ramirez".
+                $pgsql = $q->getConnection()->getDriverName() === 'pgsql';
+                $snapshot = ($pgsql ? 'snapshot_json::text ilike' : 'LOWER(snapshot_json) like')
+                    .' ? escape \''.TextSearch::ESCAPE.'\'';
 
-                $q->where(fn ($sub) => $sub
-                    ->whereRaw("{$column} {$operator} ?", ["%{$v}%"])
-                    ->orWhere('archive_reason', $operator, "%{$v}%"));
+                $q->where(function ($sub) use ($v, $pgsql, $snapshot) {
+                    foreach ($this->snapshotForms($v, $pgsql) as $form) {
+                        $sub->orWhereRaw($snapshot, [TextSearch::contains($form)]);
+                    }
+
+                    $sub->orWhereContains('archive_reason', $v);
+                });
             })
             ->orderByDesc('archived_at')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated($archives, 'Archived records retrieved');
+    }
+
+    /**
+     * The search text as it can appear inside a stored snapshot.
+     *
+     * Snapshots are JSON text on MariaDB and SQLite, and until 2026-10-30 they
+     * were written with every accented letter escaped: "Peña" is stored as
+     * "Peña", so typing "peña" found nothing. Newer snapshots keep the
+     * letter itself (Archive casts to json:unicode). Both spellings are tried,
+     * the escaped one in the casings a name is written in, since lower-casing
+     * the column cannot change the case an escape stands for. PostgreSQL keeps
+     * jsonb, which prints letters as themselves whatever was sent.
+     *
+     * @return list<string>
+     */
+    private function snapshotForms(string $text, bool $pgsql): array
+    {
+        $json = fn (string $value, int $flags = 0) => substr(
+            json_encode($value, $flags | JSON_INVALID_UTF8_IGNORE),
+            1,
+            -1,
+        );
+
+        if ($pgsql) {
+            return [$json($text, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)];
+        }
+
+        return array_values(array_unique([
+            $json(mb_strtolower($text), JSON_UNESCAPED_UNICODE),
+            ...array_map(
+                fn (int $case) => strtolower($json(mb_convert_case($text, $case))),
+                [MB_CASE_LOWER, MB_CASE_UPPER, MB_CASE_TITLE],
+            ),
+        ]));
     }
 
     public function show(Archive $archive): JsonResponse

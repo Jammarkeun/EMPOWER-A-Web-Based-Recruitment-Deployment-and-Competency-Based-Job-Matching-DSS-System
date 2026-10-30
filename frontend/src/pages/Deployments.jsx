@@ -9,7 +9,7 @@ import { Select } from '@/components/ui/select'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { formatDate } from '@/lib/utils'
-import { Pagination } from '@/components/Pagination'
+import { Pagination, useClampPage } from '@/components/Pagination'
 
 export default function Deployments() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -31,6 +31,8 @@ export default function Deployments() {
     setSearchParams(next)
   }
 
+  useClampPage(meta, (p) => updateFilter('page', String(p)))
+
   return (
     <>
       <PageHeader
@@ -47,9 +49,11 @@ export default function Deployments() {
             aria-label="Filter by deployment status"
             className="sm:w-56"
           >
+            {/* The two a deployment is ever given: recorded active, ended at
+                separation. A reassignment keeps the deployment active and
+                writes a history row, so "completed" and "transferred" - in
+                the original schema - never matched anything. */}
             <option value="active">Active</option>
-            <option value="completed">Completed</option>
-            <option value="transferred">Transferred</option>
             <option value="ended">Ended</option>
           </Select>
         </CardContent>
@@ -63,8 +67,12 @@ export default function Deployments() {
         ) : !data?.length ? (
           <EmptyState
             icon={Truck}
-            title="No deployments recorded"
-            description="Deployments are recorded from a manpower request once HR selects a candidate."
+            title={status ? `No ${status} deployments` : 'No deployments recorded'}
+            description={
+              status
+                ? 'Choose another status, or show all deployments.'
+                : 'Deployments are recorded from a manpower request once HR selects a candidate.'
+            }
           />
         ) : (
           <>

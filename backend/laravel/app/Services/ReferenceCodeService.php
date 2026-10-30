@@ -54,6 +54,21 @@ class ReferenceCodeService
         return $this->next('violation_reports', 'report_code', config('empower.code_prefixes.violation_report'));
     }
 
+    public function incidentReport(): string
+    {
+        return $this->next('incident_reports', 'report_code', config('empower.code_prefixes.incident_report'));
+    }
+
+    public function requisition(): string
+    {
+        return $this->next('manpower_requisitions', 'requisition_code', config('empower.code_prefixes.requisition'));
+    }
+
+    public function attendanceImport(): string
+    {
+        return $this->next('attendance_imports', 'import_code', config('empower.code_prefixes.attendance_import', 'DTR'));
+    }
+
     private function next(string $table, string $column, string $prefix): string
     {
         $year = now()->year;

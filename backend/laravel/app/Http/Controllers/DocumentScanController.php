@@ -48,7 +48,8 @@ class DocumentScanController extends Controller
         $this->authorize('create', Applicant::class);
 
         $request->validate([
-            'file' => $this->uploads->rules(),
+            // Only what the reader understands, not every document type.
+            'file' => DocumentUploadPolicy::rules(types: DocumentUploadPolicy::SCANNABLE),
             'document_type' => [
                 'nullable',
                 Rule::in(['auto', 'resume', 'id', 'umid', 'philsys', 'drivers_license']),
@@ -58,7 +59,7 @@ class DocumentScanController extends Controller
         $file = $request->file('file');
         // The stored name is a random id plus the extension of the detected
         // type; the uploader's file name never reaches the path.
-        $extension = $this->uploads->assertSafe($file);
+        $extension = $this->uploads->assertSafe($file, DocumentUploadPolicy::SCANNABLE);
         $path = 'ocr-scans/'.Str::uuid().'.'.$extension;
         if (! Storage::disk('local')->putFileAs('ocr-scans', $file, basename($path))) {
             return ApiResponse::error('The scan could not be queued. Please try again.', 503);

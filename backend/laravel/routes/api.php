@@ -4,18 +4,25 @@ use App\Http\Controllers\ApplicantController;
 use App\Http\Controllers\ApplicantQualificationController;
 use App\Http\Controllers\ArchiveController;
 use App\Http\Controllers\AttendanceController;
+use App\Http\Controllers\AttendanceExceptionController;
+use App\Http\Controllers\AttendanceImportController;
+use App\Http\Controllers\AttendanceReviewController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ClientCompanyController;
 use App\Http\Controllers\CoordinatorController;
+use App\Http\Controllers\CoordinatorIncidentController;
 use App\Http\Controllers\CoordinatorReportController;
+use App\Http\Controllers\CoordinatorRequisitionController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeploymentController;
 use App\Http\Controllers\DocumentFileController;
 use App\Http\Controllers\DocumentLibraryController;
 use App\Http\Controllers\DocumentScanController;
 use App\Http\Controllers\EmployeeController;
+use App\Http\Controllers\IncidentReportController;
 use App\Http\Controllers\JobPositionController;
 use App\Http\Controllers\JobRequestController;
+use App\Http\Controllers\ManpowerRequisitionController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\PortalController;
@@ -25,6 +32,7 @@ use App\Http\Controllers\RequirementController;
 use App\Http\Controllers\RetentionReviewController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SeparationController;
+use App\Http\Controllers\SessionMonitorController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\TrainingController;
 use App\Http\Controllers\UserController;
@@ -116,6 +124,11 @@ Route::prefix('v1')->group(function () {
         Route::patch('auth/profile', [AuthController::class, 'updateProfile']);
         Route::post('auth/change-password', [AuthController::class, 'changePassword']);
 
+        // A staff account's own picture - administrator, HR, or coordinator.
+        // Portal accounts set theirs under /portal, on their applicant record.
+        Route::post('auth/profile/photo', [AuthController::class, 'uploadPhoto'])
+            ->middleware('throttle:profile-photo');
+
         // Which notifications this account wants. Open to every signed-in user,
         // staff and portal alike - the categories and the reasoning are the same.
         Route::get('auth/notification-preferences', [AuthController::class, 'notificationPreferences']);
@@ -128,6 +141,8 @@ Route::prefix('v1')->group(function () {
         Route::get('notifications/unread-count', [NotificationController::class, 'unreadCount']);
         Route::post('notifications/{id}/read', [NotificationController::class, 'markRead']);
         Route::post('notifications/read-all', [NotificationController::class, 'markAllRead']);
+        // What a sidebar item counted, once its page has been opened.
+        Route::post('notifications/read-destinations', [NotificationController::class, 'markDestinationsRead']);
     });
 
     /*
@@ -295,12 +310,28 @@ Route::prefix('v1')->group(function () {
         Route::patch('employees/{employee}', [EmployeeController::class, 'update']);
 
         // ---------------------------------------------------------- attendance
-        // The DTR compared with the schedule. Encoded by HR from the client's
-        // timekeeping; nothing here computes pay.
+        // The one attendance workflow: schedules, the DTR (typed in or
+        // imported from the client's file), the comparison, and HR's review
+        // of what it flags. Nothing here computes pay or records a violation.
         Route::get('attendance', [AttendanceController::class, 'summary']);
+        Route::get('attendance/discrepancies', [AttendanceReviewController::class, 'index']);
+        Route::get('attendance/imports', [AttendanceImportController::class, 'index']);
+        Route::post('attendance/imports', [AttendanceImportController::class, 'store']);
+        Route::get('attendance/imports/{import}', [AttendanceImportController::class, 'show']);
+        Route::post('attendance/imports/{import}/preview', [AttendanceImportController::class, 'preview']);
+        Route::post('attendance/imports/{import}/confirm', [AttendanceImportController::class, 'confirm']);
+        Route::post('attendance/imports/{import}/discard', [AttendanceImportController::class, 'discard']);
+        Route::get('attendance/imports/{import}/file', [AttendanceImportController::class, 'file']);
+        Route::get('attendance/exceptions', [AttendanceExceptionController::class, 'index']);
+        Route::post('attendance/exceptions', [AttendanceExceptionController::class, 'store']);
+        Route::post('attendance/exceptions/{exception}/void', [AttendanceExceptionController::class, 'void']);
         Route::get('employees/{employee}/attendance', [AttendanceController::class, 'show']);
         Route::post('employees/{employee}/attendance', [AttendanceController::class, 'storeRecords']);
+        Route::get('employees/{employee}/attendance/days/{date}', [AttendanceController::class, 'day']);
+        Route::post('employees/{employee}/attendance/days/{date}/review', [AttendanceReviewController::class, 'store']);
         Route::post('employees/{employee}/schedules', [AttendanceController::class, 'storeSchedule']);
+        Route::patch('employees/{employee}/schedules/{schedule}', [AttendanceController::class, 'updateSchedule']);
+        Route::post('employees/{employee}/schedules/{schedule}/void', [AttendanceController::class, 'voidSchedule']);
 
         // ---------------------------------------------------------- violations
         Route::get('employees/{employee}/violations', [EmployeeController::class, 'violations']);
@@ -316,6 +347,20 @@ Route::prefix('v1')->group(function () {
         Route::post('violation-reports/{report}/review', [ViolationReportController::class, 'review']);
         Route::get('violation-reports/{report}/evidence', [ViolationReportController::class, 'evidence']);
 
+        // Incidents coordinators report from client sites, for the office to
+        // read and answer with notes. Never about one worker's record.
+        Route::get('incident-reports', [IncidentReportController::class, 'index']);
+        Route::get('incident-reports/{report}', [IncidentReportController::class, 'show']);
+        Route::post('incident-reports/{report}/notes', [IncidentReportController::class, 'addNote']);
+        Route::get('incident-reports/{report}/evidence', [IncidentReportController::class, 'evidence']);
+
+        // Coordinators' manpower requisitions (provisional form). Approving
+        // one creates nothing; HR records the manpower request, which links it.
+        Route::get('requisitions', [ManpowerRequisitionController::class, 'index']);
+        Route::get('requisitions/{requisition}', [ManpowerRequisitionController::class, 'show']);
+        Route::post('requisitions/{requisition}/review', [ManpowerRequisitionController::class, 'review']);
+        Route::get('requisitions/{requisition}/attachment', [ManpowerRequisitionController::class, 'attachment']);
+
         // ---------------------------------------------------------- separation
         Route::get('separations', [SeparationController::class, 'index']);
         Route::post('employees/{employee}/resignations', [SeparationController::class, 'storeResignation']);
@@ -328,6 +373,8 @@ Route::prefix('v1')->group(function () {
         // reason. Neither deletes the termination.
         Route::post('employees/{employee}/terminations/{termination}/finalise', [SeparationController::class, 'finaliseTermination']);
         Route::post('employees/{employee}/terminations/{termination}/withdraw', [SeparationController::class, 'withdrawTermination']);
+        // CDE's clearance after a finalised termination.
+        Route::put('employees/{employee}/terminations/{termination}/clearance', [SeparationController::class, 'updateTerminationClearance']);
         Route::get('employees/{employee}/terminations/{termination}/document', [SeparationController::class, 'terminationDocument']);
 
         // ----------------------------------------------------- archive + audit
@@ -340,6 +387,13 @@ Route::prefix('v1')->group(function () {
         Route::get('archives/{archive}', [ArchiveController::class, 'show']);
         Route::get('audit-logs', [ArchiveController::class, 'auditLogs']);
         Route::get('audit-logs/facets', [ArchiveController::class, 'auditLogFacets']);
+
+        // ------------------------------------------- sign-in monitoring (admin)
+        // Every device signed in, and every sign-in attempt. Shows no token or
+        // password; a session is addressed by its row id only.
+        Route::get('security/sessions', [SessionMonitorController::class, 'sessions']);
+        Route::get('security/sign-ins', [SessionMonitorController::class, 'signIns']);
+        Route::delete('security/sessions/{token}', [SessionMonitorController::class, 'revoke']);
 
         // ------------------------------------------------------------- reports
         Route::get('reports', [ReportController::class, 'index']);
@@ -392,6 +446,26 @@ Route::prefix('v1')->group(function () {
         Route::post('violation-reports/{report}/submit', [CoordinatorReportController::class, 'submit']);
         Route::delete('violation-reports/{report}', [CoordinatorReportController::class, 'destroy']);
         Route::get('violation-reports/{report}/evidence', [CoordinatorReportController::class, 'evidence']);
+
+        Route::get('incident-reports/options', [CoordinatorIncidentController::class, 'options']);
+        Route::get('incident-reports', [CoordinatorIncidentController::class, 'index']);
+        Route::post('incident-reports', [CoordinatorIncidentController::class, 'store'])->middleware('throttle:violation-report');
+        Route::get('incident-reports/{report}', [CoordinatorIncidentController::class, 'show']);
+        Route::post('incident-reports/{report}', [CoordinatorIncidentController::class, 'update']);
+        Route::post('incident-reports/{report}/submit', [CoordinatorIncidentController::class, 'submit']);
+        Route::post('incident-reports/{report}/notes', [CoordinatorIncidentController::class, 'addNote'])->middleware('throttle:violation-report');
+        Route::delete('incident-reports/{report}', [CoordinatorIncidentController::class, 'destroy']);
+        Route::get('incident-reports/{report}/evidence', [CoordinatorIncidentController::class, 'evidence']);
+
+        // Written on the provisional default form until CDE's own arrives.
+        Route::get('requisitions/options', [CoordinatorRequisitionController::class, 'options']);
+        Route::get('requisitions', [CoordinatorRequisitionController::class, 'index']);
+        Route::post('requisitions', [CoordinatorRequisitionController::class, 'store'])->middleware('throttle:violation-report');
+        Route::get('requisitions/{requisition}', [CoordinatorRequisitionController::class, 'show']);
+        Route::post('requisitions/{requisition}', [CoordinatorRequisitionController::class, 'update']);
+        Route::post('requisitions/{requisition}/submit', [CoordinatorRequisitionController::class, 'submit']);
+        Route::delete('requisitions/{requisition}', [CoordinatorRequisitionController::class, 'destroy']);
+        Route::get('requisitions/{requisition}/attachment', [CoordinatorRequisitionController::class, 'attachment']);
     });
 
     /*
@@ -434,7 +508,25 @@ Route::prefix('v1')->group(function () {
         // approval and the agency's decision are still separate acts.
         Route::post('placement-response', [PortalController::class, 'respondToPlacement']);
 
+        // The applicant's own training sessions. Read-only: attendance and
+        // completion are recorded by HR on the staff Training screen.
+        Route::get('training', [PortalController::class, 'training']);
+
         Route::get('employment', [PortalController::class, 'employment']);
-        Route::post('resignation', [PortalController::class, 'submitResignation']);
+
+        // The employee's own resignation request: sending it, withdrawing it
+        // before HR accepts it, answering HR's question about it, and opening
+        // the letter attached to it. A request, never the separation itself -
+        // only HR completes a resignation. No id in any of these: the request
+        // is always the signed-in employee's own.
+        Route::post('resignation', [PortalController::class, 'submitResignation'])
+            ->middleware('throttle:portal-upload');
+        Route::post('resignation/withdraw', [PortalController::class, 'withdrawResignation']);
+        Route::post('resignation/respond', [PortalController::class, 'respondToResignation']);
+        Route::get('resignation/letter', [PortalController::class, 'resignationLetter']);
+
+        // Confirms receipt of a termination notice. Not agreement with it, and
+        // nothing about the termination waits for it.
+        Route::post('separation-notice/acknowledge', [PortalController::class, 'acknowledgeNotice']);
     });
 });

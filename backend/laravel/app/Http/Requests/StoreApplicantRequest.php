@@ -3,6 +3,8 @@
 namespace App\Http\Requests;
 
 use App\Models\Applicant;
+use App\Rules\PersonName;
+use App\Rules\PhilippineMobileNumber;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -13,15 +15,21 @@ class StoreApplicantRequest extends FormRequest
         return $this->user()->can('applicants.create');
     }
 
+    /** "0917 123 4567" and "+63 917 123 4567" are tidied to 09171234567 first. */
+    protected function prepareForValidation(): void
+    {
+        PhilippineMobileNumber::normalizeRequest($this, 'contact_number');
+    }
+
     public function rules(): array
     {
         return [
             'source_channel' => ['required', Rule::in(Applicant::SOURCE_CHANNELS)],
 
-            'first_name' => ['required', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['required', 'string', 'max:100'],
-            'suffix' => ['nullable', 'string', 'max:20'],
+            'first_name' => ['required', 'string', 'max:100', new PersonName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new PersonName()],
+            'last_name' => ['required', 'string', 'max:100', new PersonName()],
+            'suffix' => ['nullable', 'string', 'max:20', new PersonName()],
 
             'sex' => ['nullable', Rule::in(['male', 'female'])],
             // Rejects anyone under 15: below the minimum working age set by
@@ -29,11 +37,11 @@ class StoreApplicantRequest extends FormRequest
             'birth_date' => ['nullable', 'date', 'before:'.now()->subYears(15)->toDateString()],
             'civil_status' => ['nullable', Rule::in(['single', 'married', 'widowed', 'separated', 'divorced'])],
             'nationality' => ['nullable', 'string', 'max:80'],
-            'height_cm' => ['nullable', 'numeric', 'between:100,250'],
-            'weight_kg' => ['nullable', 'numeric', 'between:30,300'],
+            'height_cm' => ['nullable', 'numeric', 'decimal:0,2', 'between:100,250'],
+            'weight_kg' => ['nullable', 'numeric', 'decimal:0,2', 'between:30,300'],
 
-            'contact_number' => ['nullable', 'string', 'max:40'],
-            'email' => ['nullable', 'email', 'max:190'],
+            'contact_number' => ['nullable', 'string', 'max:40', new PhilippineMobileNumber()],
+            'email' => ['nullable', 'email:rfc,filter', 'max:190'],
             'present_address' => ['required', 'string', 'max:255'],
             'provincial_address' => ['nullable', 'string', 'max:255'],
 
@@ -49,12 +57,12 @@ class StoreApplicantRequest extends FormRequest
             'preferred_position_id' => ['nullable', 'integer', 'exists:job_positions,id'],
             'preferred_position' => ['nullable', 'string', 'max:150'],
             'availability_date' => ['nullable', 'date'],
-            'distance_km' => ['nullable', 'numeric', 'min:0', 'max:9999'],
-            'communication_rating' => ['nullable', 'numeric', 'between:0,5'],
-            'reliability_rating' => ['nullable', 'numeric', 'between:0,5'],
+            'distance_km' => ['nullable', 'numeric', 'decimal:0,2', 'min:0', 'max:9999'],
+            'communication_rating' => ['nullable', 'numeric', 'decimal:0,2', 'between:0,5'],
+            'reliability_rating' => ['nullable', 'numeric', 'decimal:0,2', 'between:0,5'],
 
             'application_date' => ['required', 'date', 'before_or_equal:today'],
-            'remarks' => ['nullable', 'string'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
         ];
     }
 

@@ -47,19 +47,26 @@ function checkImage(file) {
   })
 }
 
+const APPLICANT_DESCRIPTION =
+  'Shown on your account, and to the CDE staff handling your application so they can recognise you.'
+
 /**
- * The applicant's profile picture: what it is now, and the way to change it.
+ * The signed-in person's profile picture: what it is now, and the way to
+ * change it.
  *
- * Used on both Profile and Settings, reading the one copy of the picture held
- * with the signed-in account. A successful upload updates that copy, so the
- * header, the overview greeting, and both of these pages change together
- * without a reload.
+ * Applicants use it on portal Profile and Settings, and staff - administrators,
+ * HR, and coordinators - on Settings. Each kind of account saves to its own
+ * `endpoint`, because an applicant's picture lives on their applicant record
+ * and a staff member's on their account. Either way it reads the one copy of
+ * the picture held with the signed-in account, and a successful upload updates
+ * that copy, so the header and every screen showing it change together without
+ * a reload.
  *
- * Choosing a file only previews it. Nothing is sent until the applicant saves,
+ * Choosing a file only previews it. Nothing is sent until the person saves,
  * and the current picture stays in place until the server confirms that the new
  * one is stored - a failed upload never leaves them with no picture.
  */
-export default function ProfilePhotoUploader() {
+export default function ProfilePhotoUploader({ endpoint = '/portal/profile/photo', description = APPLICANT_DESCRIPTION }) {
   const { user, mergeUser, renewPhoto } = useAuth()
   const toast = useToast()
   const inputRef = React.useRef(null)
@@ -107,7 +114,7 @@ export default function ProfilePhotoUploader() {
     form.append('photo', selected.file)
 
     try {
-      const response = await upload('/portal/profile/photo', form)
+      const response = await upload(endpoint, form)
       mergeUser({ photo_url: response.data?.photo_url ?? null })
       setSelected(null)
       toast.success('Profile picture updated', response.message)
@@ -131,9 +138,7 @@ export default function ProfilePhotoUploader() {
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base">Profile picture</CardTitle>
-        <CardDescription>
-          Shown on your account, and to the CDE staff handling your application so they can recognise you.
-        </CardDescription>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
 
       <CardContent>

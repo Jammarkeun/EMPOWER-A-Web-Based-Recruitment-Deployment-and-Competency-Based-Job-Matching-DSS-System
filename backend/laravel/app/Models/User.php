@@ -53,9 +53,12 @@ class User extends Authenticatable
         'is_active',
     ];
 
+    // The picture's storage key is never sent as it is: screens get a signed
+    // link to it, minted by ProfilePhotoService.
     protected $hidden = [
         'password',
         'remember_token',
+        'profile_photo_path',
     ];
 
     protected function casts(): array
@@ -81,7 +84,9 @@ class User extends Authenticatable
     public const NOTIFICATION_CATEGORIES = [
         'application' => 'Application updates',
         'requirements' => 'Document reviews',
+        'training' => 'Training schedule',
         'deployment' => 'Placement and deployment',
+        'employment' => 'Employment and separation',
         'coordination' => 'Violation reports and coordination',
         'general' => 'Everything else',
     ];
@@ -129,6 +134,25 @@ class User extends Authenticatable
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    /**
+     * The employment record behind a portal login, however it is reachable.
+     *
+     * A login made at registration is linked by `applicant_id` alone, and
+     * deployment creates the employee without rewriting it, so the account
+     * still says "applicant" while the person is employed. The applicant's
+     * own `employee` link is written by the deployment itself and is the one
+     * to follow. Every portal screen and the account profile ask this, so a
+     * deployed worker sees their employment whatever their login was made as.
+     */
+    public function portalEmployee(): ?Employee
+    {
+        if (! $this->isPortalAccount()) {
+            return null;
+        }
+
+        return $this->employee ?? $this->applicant?->employee;
     }
 
     /**

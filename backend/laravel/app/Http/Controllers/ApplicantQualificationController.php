@@ -68,7 +68,7 @@ class ApplicantQualificationController extends Controller
             'certifications.*.certification_name' => ['required', 'string', 'max:150'],
             'certifications.*.issuer' => ['nullable', 'string', 'max:150'],
             'certifications.*.issued_at' => ['nullable', 'date'],
-            'certifications.*.expires_at' => ['nullable', 'date'],
+            'certifications.*.expires_at' => ['nullable', 'date', 'after_or_equal:certifications.*.issued_at'],
         ], [
             'skills.*.distinct' => 'This skill is listed twice.',
         ]);

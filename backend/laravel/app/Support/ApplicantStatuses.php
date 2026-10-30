@@ -46,6 +46,15 @@ final class ApplicantStatuses
     public const DEPLOYABLE_FROM = ['approved', 'ready_for_deployment'];
 
     /**
+     * The dashboard's "ready for deployment": Folder 1 and in one of these.
+     * Kept here so the figure and the list it opens are the same people.
+     */
+    public const READY_FOR_PLACEMENT = ['ready_for_deployment', 'client_evaluation', 'approved'];
+
+    /** The dashboard's "incomplete requirements": still owing documents. */
+    public const AWAITING_DOCUMENTS = ['initial_screening', 'incomplete_requirements', 'pending_final_requirements'];
+
+    /**
      * Those statuses as Settings narrow them today: with the client's approval
      * required before deployment, only "approved". Published so a screen offers
      * Deploy exactly when the server will accept it.
@@ -116,6 +125,30 @@ final class ApplicantStatuses
     public static function documentsLapsed(string $status, ?string $folder): bool
     {
         return self::isPastDocumentGate($status) && $folder !== 'folder_1';
+    }
+
+    /**
+     * Whether somebody is placed today, beside what their status says.
+     *
+     * Read from the employment record, the same rule as the "deployed" filter
+     * (Applicant::scopeCurrentlyDeployed), so a filtered list and its rows
+     * agree. When the status and the employment record disagree the record
+     * is shown as it is and the disagreement is named; nothing is corrected
+     * here.
+     */
+    public static function placement(?string $status, bool $deployed, ?string $company): array
+    {
+        $statusSaysEmployed = in_array($status, self::STAGES['deployed']['statuses'], true);
+
+        return [
+            'deployed' => $deployed,
+            'company' => $deployed ? $company : null,
+            'mismatch' => match (true) {
+                $deployed && ! $statusSaysEmployed => 'status_not_updated',
+                ! $deployed && $statusSaysEmployed => 'no_active_deployment',
+                default => null,
+            },
+        ];
     }
 
     /** The published vocabulary, for screens that list or group statuses. */

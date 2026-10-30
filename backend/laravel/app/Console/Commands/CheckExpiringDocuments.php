@@ -6,7 +6,9 @@ use App\Models\ApplicantRequirement;
 use App\Models\User;
 use App\Notifications\DocumentsExpiringSoon;
 use App\Services\FolderRecalculationService;
+use App\Support\DocumentCompliance;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -39,16 +41,12 @@ class CheckExpiringDocuments extends Command
         $days = (int) ($this->option('days') ?: config('empower.expiry_warning_days', 30));
         $horizon = now()->addDays($days);
 
-        $expiring = ApplicantRequirement::query()
-            ->where('status', 'verified')
-            ->whereNotNull('expiry_date')
+        $expiring = $this->thatMatter()
             ->whereDate('expiry_date', '>=', now())
             ->whereDate('expiry_date', '<=', $horizon)
             ->count();
 
-        $expired = ApplicantRequirement::query()
-            ->where('status', 'verified')
-            ->whereNotNull('expiry_date')
+        $expired = $this->thatMatter()
             ->whereDate('expiry_date', '<', now())
             ->count();
 
@@ -61,10 +59,10 @@ class CheckExpiringDocuments extends Command
         }
 
         // Marking lapsed documents as expired keeps folder categorisation honest
-        // without waiting for someone to open the applicant's record.
-        $reclassified = ApplicantRequirement::query()
-            ->where('status', 'verified')
-            ->whereNotNull('expiry_date')
+        // without waiting for someone to open the applicant's record. Only the
+        // ones that matter for the person's stage: a deployed worker's NBI
+        // clearance keeps the "verified" it was deployed on, with its date.
+        $reclassified = $this->thatMatter()
             ->whereDate('expiry_date', '<', now())
             ->update(['status' => 'expired', 'updated_at' => now()]);
 
@@ -105,6 +103,29 @@ class CheckExpiringDocuments extends Command
         ]);
 
         return $this->recalculateFolders($recalculations, $reclassified);
+    }
+
+    /**
+     * Verified, dated documents whose expiry counts for their holder today
+     * (DocumentCompliance): every document of somebody not yet deployed, and
+     * only the renew-while-employed ones - the annual medical, the health
+     * card - of somebody working. A separated worker's documents are not
+     * tracked, and a document whose post-deployment rule CDE has not
+     * confirmed is never treated as a deployed worker's lapse.
+     */
+    private function thatMatter(): Builder
+    {
+        $employed = DocumentCompliance::EMPLOYED_STATUSES;
+        $notPreDeployment = [...$employed, ...DocumentCompliance::CLOSED_STATUSES];
+
+        return ApplicantRequirement::query()
+            ->where('status', 'verified')
+            ->whereNotNull('expiry_date')
+            ->where(fn (Builder $q) => $q
+                ->whereHas('applicant', fn (Builder $a) => $a->whereNotIn('current_status', $notPreDeployment))
+                ->orWhere(fn (Builder $e) => $e
+                    ->whereHas('applicant', fn (Builder $a) => $a->whereIn('current_status', $employed))
+                    ->whereHas('requirementType', fn (Builder $t) => $t->where('post_deployment_rule', DocumentCompliance::RENEW_WHILE_EMPLOYED))));
     }
 
     /**

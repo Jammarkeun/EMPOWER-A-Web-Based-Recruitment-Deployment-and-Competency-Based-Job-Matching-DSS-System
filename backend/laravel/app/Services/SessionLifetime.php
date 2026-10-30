@@ -112,6 +112,16 @@ class SessionLifetime
         ];
     }
 
+    /**
+     * Whether the token would still be accepted right now. A lapsed token is
+     * only deleted when it is next presented, so the table alone overstates
+     * who is signed in; the administrator's list asks this instead.
+     */
+    public function isLive(PersonalAccessToken $token): bool
+    {
+        return ! $this->pastLifetime($token) && ! $this->pastIdleLimit($token);
+    }
+
     /** The sentence the 401 carries, so the sign-in page can say what happened. */
     public function message(string $reason): string
     {

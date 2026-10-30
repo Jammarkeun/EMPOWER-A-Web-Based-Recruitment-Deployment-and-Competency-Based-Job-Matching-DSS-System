@@ -147,10 +147,11 @@ function fallbackMessage(status) {
 export async function get(url, params, options = {}) {
   const { signal, retries = 2, background = false } = options
   const headers = background ? { [BACKGROUND_HEADER]: '1' } : undefined
+  const query = queryParams(params)
 
   for (let attempt = 0; ; attempt += 1) {
     try {
-      const { data } = await api.get(url, { params, signal, headers })
+      const { data } = await api.get(url, { params: query, signal, headers })
       return data
     } catch (error) {
       if (signal?.aborted || error?.original?.code === 'ERR_CANCELED') throw error
@@ -162,6 +163,19 @@ export async function get(url, params, options = {}) {
       await wait(250 * (2 ** attempt), signal)
     }
   }
+}
+
+/**
+ * Booleans as 1 and 0. A query string carries `true` as the text "true",
+ * which Laravel's `boolean` rule refuses - the manpower-request "needing
+ * workers only" toggle failed with a validation error that way.
+ */
+export function queryParams(params) {
+  if (!params) return params
+
+  return Object.fromEntries(
+    Object.entries(params).map(([key, value]) => [key, typeof value === 'boolean' ? Number(value) : value])
+  )
 }
 
 export async function getCached(url, params, options = {}) {

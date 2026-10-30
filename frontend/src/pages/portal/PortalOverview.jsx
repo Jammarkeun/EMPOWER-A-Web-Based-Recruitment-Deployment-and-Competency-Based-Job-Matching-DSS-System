@@ -1,12 +1,16 @@
 import * as React from 'react'
+import { Link } from 'react-router-dom'
 import {
+  ArrowRight,
   CheckCircle2,
   Circle,
   Clock,
   AlertTriangle,
   Briefcase,
+  GraduationCap,
   MapPin,
   Loader2,
+  MinusCircle,
   PartyPopper,
   Phone,
   MessageCircle,
@@ -21,15 +25,99 @@ import { LoadingState, ErrorState } from '@/components/ui/states'
 import { cn, formatDate, formatDateTime } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import PersonAvatar from '@/components/PersonAvatar'
+import ApplicantSession, { TRAINING_TONES, isOpenSession } from '@/components/training/ApplicantSession'
 
-const STAGES = [
-  'Application received',
-  'Screening',
-  'Documents',
-  'Ready for placement',
-  'Client evaluation',
-  'Deployed',
-]
+/*
+ * The stages come from the server (application.stages), the same list the
+ * staff screen draws. This page used to keep its own copy, which still called
+ * the fourth stage "Ready for placement" after training had moved there - so an
+ * applicant never saw training on their path at all.
+ */
+
+/**
+ * How one step of the path is drawn.
+ *
+ * The Training step is ticked only by a recorded completion, never by the
+ * application having moved past it: somebody endorsed while training was not
+ * required has not been trained, and the path must not say they were.
+ */
+function stepState(stage, stageNumber, application, training) {
+  const passed = stageNumber < application.stage_number
+  const here = stageNumber === application.stage_number
+
+  if (stage.key !== 'training' || !training) {
+    return passed ? 'done' : here ? 'current' : 'upcoming'
+  }
+
+  if (training.status === 'completed') return 'done'
+  if (!passed && !here) return 'upcoming'
+  if (['not_required', 'not_recorded'].includes(training.status)) return 'skipped'
+
+  return here ? 'current' : 'open'
+}
+
+const STEP_ICONS = {
+  done: <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />,
+  current: <Clock className="h-5 w-5 shrink-0 text-primary" />,
+  // Moved past, but the training it stands for is still outstanding.
+  open: <Clock className="h-5 w-5 shrink-0 text-warning" />,
+  skipped: <MinusCircle className="h-5 w-5 shrink-0 text-muted-foreground/60" />,
+  upcoming: <Circle className="h-5 w-5 shrink-0 text-muted-foreground/40" />,
+}
+
+/** The icon's meaning in words, so it does not rest on colour and shape alone. */
+const STEP_WORDS = {
+  done: 'done',
+  current: 'current',
+  open: 'still to do',
+  skipped: 'skipped',
+  upcoming: 'not reached',
+}
+
+/**
+ * The training the applicant has to turn up for, said where they will see it.
+ *
+ * The notice in the bell is easy to miss and gone once read; this stays on the
+ * page for as long as the session is open, because it is read from the roster
+ * rather than from the notification. Shown only to somebody actually on a
+ * session - or marked absent from one - never as a general prompt.
+ */
+function TrainingReminderCard({ training }) {
+  const open = training.sessions
+    .filter(isOpenSession)
+    .sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
+  const missed = training.status === 'missed'
+
+  if (open.length === 0 && !missed) return null
+
+  return (
+    <Card className={missed ? 'border-warning/50 bg-warning/[0.06]' : 'border-primary/40 bg-primary/[0.04]'}>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <GraduationCap className={cn('h-4 w-4', missed ? 'text-warning' : 'text-primary')} />
+          {missed
+            ? 'Your training is not complete'
+            : training.status === 'in_progress'
+              ? 'Your training is in progress'
+              : 'You are scheduled for training'}
+        </CardTitle>
+        <CardDescription>{training.explanation}</CardDescription>
+      </CardHeader>
+
+      <CardContent className="space-y-3">
+        {open.map((session) => (
+          <ApplicantSession key={session.enrollment_id} session={session} />
+        ))}
+        <Button asChild variant={missed ? 'outline' : 'default'}>
+          <Link to="/portal/training">
+            View training details
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
 
 /**
  * The one screen a fresh online registrant sees.
@@ -268,7 +356,7 @@ export default function PortalOverview() {
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
   if (!data) return null
 
-  const { person, application, documents, employment, timeline } = data
+  const { person, application, documents, employment, timeline, training } = data
 
   return (
     <div className="space-y-4">
@@ -294,6 +382,29 @@ export default function PortalOverview() {
       */}
       {data.deployment && (
         <DeployedCard name={person.first_name || person.full_name.split(' ')[0]} deployment={data.deployment} />
+      )}
+
+      {/*
+        A resignation in progress or a notice about the employment, in one
+        line. The detail - and anything the person has to do about it - is on
+        My employment, where the server has already left out what is the
+        office's alone.
+      */}
+      {data.separation && (
+        <Card className={data.separation.needs_attention ? 'border-warning/40 bg-warning/[0.04]' : 'border-primary/30'}>
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">{data.separation.title}</p>
+              {data.separation.text && <p className="text-sm text-muted-foreground">{data.separation.text}</p>}
+            </div>
+            <Button asChild variant={data.separation.needs_attention ? 'default' : 'outline'} size="sm">
+              <Link to="/portal/employment">
+                {data.separation.kind === 'notice' ? 'Read the notice' : 'View your request'}
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {/*
@@ -367,6 +478,8 @@ export default function PortalOverview() {
         </Card>
       )}
 
+      {training && !application.record_closed && <TrainingReminderCard training={training} />}
+
       {application.office && (
         <Card>
           <CardHeader className="pb-3">
@@ -406,30 +519,30 @@ export default function PortalOverview() {
           {application.record_closed ? (
             <p className="text-sm text-muted-foreground">{application.explanation}</p>
           ) : (
-          <ol className="space-y-2.5">
-            {STAGES.map((stage, index) => {
+          <ol className="space-y-2.5" aria-label="Application stages">
+            {(application.stages ?? []).map((stage, index) => {
               const stageNumber = index + 1
-              const done = stageNumber < application.stage_number
+              const state = stepState(stage, stageNumber, application, training)
               const current = stageNumber === application.stage_number
+              // The Training step carries its own state from the roster, once
+              // the application has reached it or anything is on record.
+              const trainingBadge =
+                stage.key === 'training' && training && training.status !== 'not_reached'
 
               return (
-                <li key={stage} className="flex items-center gap-3">
-                  {done ? (
-                    <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
-                  ) : current ? (
-                    <Clock className="h-5 w-5 shrink-0 text-primary" />
-                  ) : (
-                    <Circle className="h-5 w-5 shrink-0 text-muted-foreground/40" />
-                  )}
+                <li key={stage.key} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {STEP_ICONS[state]}
                   <span
                     className={cn(
                       'text-sm',
                       current && 'font-medium',
-                      !done && !current && 'text-muted-foreground'
+                      ['upcoming', 'skipped'].includes(state) && 'text-muted-foreground'
                     )}
                   >
-                    {stage}
+                    {stage.label}
+                    <span className="sr-only"> ({STEP_WORDS[state]})</span>
                   </span>
+                  {trainingBadge && <Badge tone={TRAINING_TONES[training.status] ?? 'muted'}>{training.label}</Badge>}
                   {current && <Badge tone="info">You are here</Badge>}
                 </li>
               )
@@ -505,6 +618,12 @@ export default function PortalOverview() {
                   </div>
                 ))}
             </dl>
+            <Button asChild variant="link" size="sm" className="mt-2 h-auto px-0">
+              <Link to="/portal/employment">
+                Employment details{employment.status === 'active' ? ' and resignation requests' : ''}
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </Button>
           </CardContent>
         </Card>
       )}

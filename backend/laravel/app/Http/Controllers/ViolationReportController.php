@@ -48,14 +48,13 @@ class ViolationReportController extends Controller
             ->when($status === 'pending', fn ($q) => $q->whereIn('status', ViolationReport::PENDING_REVIEW))
             ->when(! in_array($status, ['pending', 'all'], true), fn ($q) => $q->where('status', $status))
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('client_company_id', $v))
-            ->when($filters['search'] ?? null, function ($q, $v) {
-                $operator = $q->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-                $q->where(fn ($sub) => $sub->where('report_code', $operator, "%{$v}%")
-                    ->orWhereHas('employee', fn ($e) => $e->where('employee_number', $operator, "%{$v}%")
-                        ->orWhereHas('applicant', fn ($a) => $a->search($v))));
-            })
+            ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(fn ($sub) => $sub
+                ->whereContains('report_code', $v)
+                ->orWhereHas('employee', fn ($e) => $e->whereContains('employee_number', $v)
+                    ->orWhereHas('applicant', fn ($a) => $a->search($v)))))
             ->orderByRaw("CASE WHEN status IN ('submitted', 'under_review') THEN 0 ELSE 1 END")
             ->orderByDesc('submitted_at')
+            ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 25);
 
         return ApiResponse::paginated(ViolationReportResource::collection($reports), 'Reports retrieved');

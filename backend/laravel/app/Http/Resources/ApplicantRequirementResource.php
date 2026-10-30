@@ -2,6 +2,8 @@
 
 namespace App\Http\Resources;
 
+use App\Models\ApplicantRequirementHistory;
+use App\Support\DocumentCompliance;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -46,8 +48,8 @@ class ApplicantRequirementResource extends JsonResource
              * staff has actually opened it, and both the portal and the staff
              * screens read this one value so they cannot disagree.
              */
-            'review_state' => $this->reviewState(),
-            'review_state_label' => match ($this->reviewState()) {
+            'review_state' => $this->displayState(),
+            'review_state_label' => match ($this->displayState()) {
                 'not_uploaded' => 'Not yet sent',
                 'uploaded' => 'Upload successful',
                 'under_review' => 'Being checked',
@@ -82,9 +84,62 @@ class ApplicantRequirementResource extends JsonResource
             'verified_by' => $this->whenLoaded('verifier', fn () => $this->verifier?->full_name),
             'expiry_date' => $this->expiry_date?->toDateString(),
             'is_expired' => $this->isExpired(),
-            'counts_as_complete' => $this->countsAsComplete(),
+            'counts_as_complete' => $this->countsAsComplete($this->rule(), $this->stage()),
+
+            /*
+             * Whether the expiry matters for this person now (CDE, 26 October
+             * 2026). A deployed worker's lapsed NBI clearance reads "not
+             * required while employed", not "Expired"; an annual medical reads
+             * "renewal due"; a type CDE has not ruled on says so instead of
+             * being counted against anybody.
+             */
+            'post_deployment_rule' => $this->whenLoaded('requirementType', fn () => $this->requirementType->post_deployment_rule),
+            'expiry_assessment' => DocumentCompliance::assess($this->resource, $this->rule(), $this->stage()),
+
+            // Earlier versions a renewal replaced. Staff screens only load it.
+            'history' => $this->whenLoaded('history', fn () => $this->history->map(fn (ApplicantRequirementHistory $h) => [
+                'id' => $h->id,
+                'status' => $h->status,
+                'file_name' => $h->file_name,
+                'has_file' => filled($h->file_path),
+                'expiry_date' => $h->expiry_date?->toDateString(),
+                'verified_at' => $h->verified_at?->toIso8601String(),
+                'verified_by' => $h->verifier?->full_name,
+                'reason' => $h->reason,
+                'replaced_at' => $h->replaced_at?->toIso8601String(),
+                'replaced_by' => $h->replacer?->full_name,
+            ])),
             'rejection_reason' => $this->rejection_reason,
             'remarks' => $this->remarks,
         ];
+    }
+
+    /**
+     * The review state, except that a lapse which does not count for this
+     * person (a deployed worker's NBI clearance) reads as what it was:
+     * accepted. expiry_assessment says it has lapsed and why that is fine.
+     */
+    private function displayState(): string
+    {
+        $state = $this->reviewState();
+
+        if ($state === 'expired'
+            && $this->verified_at !== null
+            && ! DocumentCompliance::expiryMatters($this->rule(), $this->stage())) {
+            return 'verified';
+        }
+
+        return $state;
+    }
+
+    private function rule(): ?string
+    {
+        return $this->relationLoaded('requirementType') ? $this->requirementType?->post_deployment_rule : null;
+    }
+
+    /** Judged as before deployment unless the holder's record came with it. */
+    private function stage(): string
+    {
+        return DocumentCompliance::stage($this->relationLoaded('applicant') ? $this->applicant?->current_status : null);
     }
 }
