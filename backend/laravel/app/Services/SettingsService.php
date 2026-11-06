@@ -88,6 +88,13 @@ class SettingsService
             'rules' => ['integer', 'between:1,120'],
             'unit' => 'minutes',
         ],
+        'empower.bio_data.signed_copy_required' => [
+            'group' => 'documents',
+            'label' => 'Ask for a printed, signed Bio-Data',
+            'help' => 'Awaiting CDE confirmation. When on, applicants are asked to print the Bio-Data they filled in online, sign it and bring it to the office, and the PDF has a signature line. No electronic signature is collected either way.',
+            'type' => 'boolean',
+            'rules' => ['boolean'],
+        ],
         'empower.expiry_warning_days' => [
             'group' => 'documents',
             'label' => 'Warn about expiring documents',

@@ -214,6 +214,57 @@ class CompetencyScoringService
     }
 
     /**
+     * Takes an applicant who has been deployed, or whose record has closed -
+     * terminated, resigned or archived - off every request's ranking.
+     *
+     * The evaluation already leaves them out of the pool, but the results it
+     * saved earlier stayed ranked until somebody re-ran it, so a deployed or
+     * terminated worker could still be recommended for a request. Their
+     * unshortlisted results are removed and a shortlisted one loses its rank,
+     * as a whole-pool run would do, and the ranks left behind close up so the
+     * list does not skip a number.
+     *
+     * Called from the lifecycle's transaction; each request is locked as an
+     * evaluation would lock it.
+     */
+    public function withdrawFromRankings(Applicant $applicant): void
+    {
+        $requestIds = JobRequestMatch::where('applicant_id', $applicant->id)
+            ->whereNotNull('rank_order')
+            ->pluck('job_request_id')
+            ->unique();
+
+        foreach ($requestIds as $requestId) {
+            JobRequest::withTrashed()->whereKey($requestId)->lockForUpdate()->first();
+
+            $results = JobRequestMatch::where('job_request_id', $requestId)->where('applicant_id', $applicant->id);
+
+            (clone $results)->where('is_shortlisted', false)->delete();
+            (clone $results)->where('is_shortlisted', true)->update(['rank_order' => null]);
+
+            $this->closeRankGaps((int) $requestId);
+        }
+    }
+
+    /**
+     * Renumbers a request's ranked results 1, 2, 3 in their existing order.
+     */
+    public function closeRankGaps(int $jobRequestId): void
+    {
+        JobRequestMatch::where('job_request_id', $jobRequestId)
+            ->whereNotNull('rank_order')
+            ->orderBy('rank_order')
+            ->orderBy('id')
+            ->get(['id', 'rank_order'])
+            ->values()
+            ->each(function (JobRequestMatch $row, int $index) {
+                if ((int) $row->rank_order !== $index + 1) {
+                    JobRequestMatch::whereKey($row->id)->update(['rank_order' => $index + 1]);
+                }
+            });
+    }
+
+    /**
      * Score a single applicant against the request's criteria.
      */
     public function score(Applicant $applicant, Collection $criteria, ?JobRequest $jobRequest = null): ApplicantScore

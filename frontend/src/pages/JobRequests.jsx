@@ -4,7 +4,8 @@ import { Plus, ClipboardList, ChevronRight } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
 import { PageHeader } from '@/components/PageHeader'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { SortableHead, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { useTableSort } from '@/hooks/useTableSort'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
@@ -21,11 +22,24 @@ export default function JobRequests() {
 
   const status = searchParams.get('request_status') ?? ''
   const onlyOpen = searchParams.get('only_open') === '1'
+  // Still short of workers after the deadline: the dashboard figure's list.
+  const overdue = searchParams.get('overdue') === '1'
+  const client = searchParams.get('client_company_id') ?? ''
   const page = Number(searchParams.get('page') ?? 1)
+  // Newest request first; the Deadline header sorts soonest first instead.
+  const sort = useTableSort(searchParams, setSearchParams, {
+    by: 'date_requested',
+    dir: 'desc',
+    firstDirection: { deployment_deadline: 'asc' },
+  })
+  const { data: clients } = useApi('/clients', { per_page: 100 }, { cacheKey: 'clients-all' })
 
   const { data, meta, loading, error, refetch } = useApi('/job-requests', {
     request_status: status || undefined,
     only_open: onlyOpen ? 1 : undefined,
+    overdue: overdue ? 1 : undefined,
+    client_company_id: client || undefined,
+    ...sort.params,
     page,
     per_page: 20,
   })
@@ -39,22 +53,22 @@ export default function JobRequests() {
   }
 
   function clearFilters() {
-    setSearchParams(new URLSearchParams())
+    setSearchParams(sort.keep(new URLSearchParams()))
   }
 
-  const filtered = Boolean(status || onlyOpen)
+  const filtered = Boolean(status || client || onlyOpen || overdue)
   useClampPage(meta, (p) => updateFilter('page', String(p)))
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="Manpower Requests"
-        description="Client staffing requests, open headcount, and fulfillment progress."
+        description="Client staffing requests, open headcount, and fulfillment progress. Approved coordinator requisitions appear here automatically."
         actions={
           can('job_requests.create') && (
-            <Button onClick={() => setDialogOpen(true)}>
+            <Button variant="outline" onClick={() => setDialogOpen(true)}>
               <Plus className="h-4 w-4" />
-              Record Request
+              Create Direct Request
             </Button>
           )
         }
@@ -77,6 +91,16 @@ export default function JobRequests() {
               { value: 'cancelled', label: 'Cancelled' },
             ],
           },
+          {
+            id: 'client_company_id',
+            label: 'All clients',
+            value: client,
+            onChange: (val) => updateFilter('client_company_id', val),
+            options: [
+              { value: '', label: 'All clients' },
+              ...(clients ?? []).map((c) => ({ value: String(c.id), label: c.company_name })),
+            ],
+          },
         ]}
         viewToggles={[
           {
@@ -84,6 +108,13 @@ export default function JobRequests() {
             label: 'Needing workers only',
             active: onlyOpen,
             onToggle: () => updateFilter('only_open', onlyOpen ? '' : '1'),
+          },
+          {
+            id: 'overdue',
+            label: 'Past deadline',
+            title: 'Still needing workers after the deployment deadline.',
+            active: overdue,
+            onToggle: () => updateFilter('overdue', overdue ? '' : '1'),
           },
         ]}
         resultCount={meta?.total}
@@ -106,7 +137,7 @@ export default function JobRequests() {
           description={
             filtered
               ? 'Try another status, or show every request.'
-              : 'Record a request when a client company asks for workers.'
+              : 'Approved coordinator requisitions appear here. Create a direct request only when a client asks without one.'
           }
           action={
             filtered ? (
@@ -116,7 +147,7 @@ export default function JobRequests() {
             ) : can('job_requests.create') ? (
               <Button size="sm" onClick={() => setDialogOpen(true)}>
                 <Plus className="h-4 w-4" />
-                Record Request
+                Create Direct Request
               </Button>
             ) : null
           }
@@ -130,7 +161,7 @@ export default function JobRequests() {
                 <TableHead>Client & Department</TableHead>
                 <TableHead>Fulfillment Progress</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Deadline</TableHead>
+                <SortableHead column="deployment_deadline" {...sort.head}>Deadline</SortableHead>
                 <TableHead>Matching Criteria</TableHead>
                 <TableHead className="w-8"></TableHead>
               </TableRow>
@@ -148,6 +179,21 @@ export default function JobRequests() {
                         {request.request_code}
                       </p>
                     </Link>
+                    <p className="text-xs text-muted-foreground">
+                      {request.source_requisition ? (
+                        <>
+                          From{' '}
+                          <Link
+                            to={`/requisitions/${request.source_requisition.id}`}
+                            className="font-mono text-primary hover:underline"
+                          >
+                            {request.source_requisition.requisition_code}
+                          </Link>
+                        </>
+                      ) : (
+                        'Direct request'
+                      )}
+                    </p>
                   </TableCell>
 
                   {/* Client & Department */}
@@ -193,7 +239,7 @@ export default function JobRequests() {
 
                   {/* Action Link */}
                   <TableCell className="text-right">
-                    <Link to={`/job-requests/${request.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/job-requests/${request.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open request ${request.request_code}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

@@ -42,6 +42,38 @@ function Field({ label, htmlFor, error, hint, required, className, children }) {
   )
 }
 
+/**
+ * Brings the first field with an error into view and focus after a refused
+ * submit, so on a long form - registration on a phone, above all - the
+ * person sees what to fix instead of a toast and an unchanged screen.
+ *
+ *     const [formRef, focusFirstError] = useFocusFirstError()
+ *     <form ref={formRef}> … setErrors(problems); focusFirstError()
+ *
+ * Called by the submit handler rather than fired whenever the errors change:
+ * some forms clear one field's error as it is typed in, or work errors out
+ * live, and focus must never jump while somebody is typing. The move happens
+ * after the render that shows the errors, since that is what marks the
+ * fields aria-invalid (see Field).
+ */
+function useFocusFirstError() {
+  const ref = React.useRef(null)
+  const [requested, setRequested] = React.useState(0)
+
+  React.useEffect(() => {
+    if (!requested) return
+    const first = ref.current?.querySelector('[aria-invalid="true"]')
+    if (!first) return
+    first.focus({ preventScroll: true })
+    // Centred, so the message beneath the field is in view as well.
+    first.scrollIntoView({ block: 'center' })
+  }, [requested])
+
+  const focusFirstError = React.useCallback(() => setRequested((n) => n + 1), [])
+
+  return [ref, focusFirstError]
+}
+
 function FormGrid({ className, children }) {
   return <div className={cn('grid gap-4 sm:grid-cols-2', className)}>{children}</div>
 }
@@ -58,4 +90,4 @@ function FormSection({ title, description, children }) {
   )
 }
 
-export { Field, FormGrid, FormSection }
+export { Field, FormGrid, FormSection, useFocusFirstError }

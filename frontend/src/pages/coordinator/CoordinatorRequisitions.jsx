@@ -123,7 +123,7 @@ export default function CoordinatorRequisitions() {
                     <ReportStatus status={r.status} label={r.status_label} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/coordinator/requisitions/${r.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/coordinator/requisitions/${r.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open requisition ${r.requisition_code}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

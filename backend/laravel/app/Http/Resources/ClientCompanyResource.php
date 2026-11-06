@@ -21,12 +21,17 @@ class ClientCompanyResource extends JsonResource
             'contact_number' => $this->contact_number,
             'email' => $this->email,
             'office_address' => $this->office_address,
+            // The pinned establishment, or null for a company never pinned.
+            'latitude' => $this->latitude,
+            'longitude' => $this->longitude,
             'status' => $this->status,
             'notes' => $this->notes,
             'departments' => ClientDepartmentResource::collection($this->whenLoaded('departments')),
             'departments_count' => $this->whenCounted('departments'),
             'job_requests_count' => $this->whenCounted('jobRequests'),
             'employees_count' => $this->whenCounted('employees'),
+            // How many documents of its own are on file; none is not a fault.
+            'documents_count' => $this->whenCounted('documents'),
             // Placed there today: active deployments only.
             'deployed_count' => $this->whenCounted('deployed'),
             'created_at' => $this->created_at?->toIso8601String(),

@@ -232,7 +232,18 @@ class AttendanceConsistencyTest extends TestCase
         $this->assertSame('manual', $days['2026-09-07']['source']);
         $this->assertSame('import', $days['2026-09-08']['source']);
         $this->assertSame('on_schedule', $days['2026-09-09']['status']);
-        // The files covered the 10th and 11th with no row: flagged in both views.
+
+        // Both files went under one DTR period. Until HR says it is complete,
+        // the 10th and 11th are awaiting the DTR in both views.
+        $periods = $this->getJson('/api/v1/attendance/dtr-periods')->assertOk()->json('data');
+        $this->assertCount(1, $periods);
+        $this->assertSame(2, $periods[0]['files']['imported']);
+        $this->assertSame('awaiting_dtr', $days['2026-09-10']['status']);
+        $this->assertSame([], array_keys($this->queue()));
+
+        // Confirmed complete: the days with no row are flagged in both views.
+        $this->postJson("/api/v1/attendance/dtr-periods/{$periods[0]['id']}/status", ['action' => 'complete', 'acknowledge_gaps' => true])->assertOk();
+        $days = collect($this->profile()['days'])->keyBy('date');
         $this->assertSame(['no_record'], $days['2026-09-10']['discrepancies']);
         $this->assertSame(['2026-09-10', '2026-09-11'], collect(array_keys($this->queue()))->sort()->values()->all());
     }

@@ -8,6 +8,8 @@ use App\Models\ApplicationStatusHistory;
 use App\Models\Archive;
 use App\Models\User;
 use App\Notifications\ApplicationStatusChanged;
+use App\Services\Matching\CompetencyScoringService;
+use App\Support\ApplicantStatuses;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -25,6 +27,7 @@ class ApplicantLifecycleService
         private readonly AuditService $audit,
         private readonly FolderCategoryService $folders,
         private readonly PlacementService $placements,
+        private readonly CompetencyScoringService $rankings,
     ) {
     }
 
@@ -128,6 +131,12 @@ class ApplicantLifecycleService
             // Opens an endorsement when the applicant is put forward to a
             // client, and closes it when they leave that stage (R-05, R-07).
             $this->placements->syncEndorsement($applicant, $from, $toStatus, $actor, $history, $context);
+
+            // A deployed worker or a closed record is no longer anybody's
+            // recommendation.
+            if (ApplicantStatuses::isOffRankings($toStatus)) {
+                $this->rankings->withdrawFromRankings($applicant);
+            }
 
             $this->audit->record(
                 action: 'update',
@@ -307,7 +316,7 @@ class ApplicantLifecycleService
             'deployment' => 'Deployment is recorded with the deployment form, which creates the employee record. '
                 .'It cannot be set as a status on its own.',
             'separation' => 'Employment ends through the separation process on the employee record: a resignation '
-                .'is completed after clearance, and a termination is finalised by an administrator. '
+                .'is completed after clearance, and a termination is approved by an administrator and finalised after clearance. '
                 .'It cannot be set as a status on its own.',
             'training' => 'Training is recorded on the Training screen: enrol the applicant in a session, then '
                 .'record their attendance and completion there. It cannot be set as a status on its own.',

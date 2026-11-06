@@ -17,9 +17,9 @@ use Illuminate\Support\Collection;
  * attending, and attending is not completing. "Completed" is the very check
  * the endorsement gate makes (ApplicantLifecycleService::hasCompletedTraining).
  *
- * Only what the session record holds is passed on. A session has a date, a
- * location and a trainer but no start time or meeting link, so none is
- * implied. Remarks and the officers' names stay on the staff side.
+ * Only what the session record holds is passed on: date, start and end time,
+ * location and trainer. A session scheduled before times were kept has none,
+ * and none is implied. Remarks and the officers' names stay on the staff side.
  */
 class TrainingProgressService
 {
@@ -147,6 +147,16 @@ class TrainingProgressService
     }
 
     /**
+     * Whether the applicant can still say they will attend: only while the
+     * session is ahead of them - not cancelled, not under way or over, and
+     * nothing yet recorded for them on the roster.
+     */
+    public function acceptsConfirmation(TrainingEnrollment $enrollment): bool
+    {
+        return $this->sessionState($enrollment) === 'scheduled';
+    }
+
+    /**
      * Where one session stands for this applicant.
      *
      * "In progress" is a session that has begun - the applicant was marked
@@ -179,11 +189,17 @@ class TrainingProgressService
             'training_code' => $training->training_code,
             'title' => $training->training_title,
             'date' => $training->training_date?->toDateString(),
+            // "08:00"; null for a session scheduled before times were kept.
+            'start_time' => $training->start_time,
+            'end_time' => $training->end_time,
             'location' => $training->location,
             'trainer_name' => $training->trainer_name,
             'state' => $state,
             'state_label' => self::SESSION_LABELS[$state],
             'attendance_status' => $enrollment->attendance_status,
+            // The applicant's own "I will attend", and whether it can be given.
+            'confirmed_at' => $enrollment->attendance_confirmed_at?->toIso8601String(),
+            'can_confirm' => $state === 'scheduled' && $enrollment->attendance_confirmed_at === null,
             'completion_status' => $enrollment->completion_status,
             'completed_on' => $enrollment->hasCompleted()
                 ? $enrollment->completion_recorded_at?->toDateString()

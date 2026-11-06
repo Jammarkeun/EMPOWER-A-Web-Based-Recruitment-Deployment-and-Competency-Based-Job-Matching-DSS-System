@@ -48,7 +48,7 @@ class ClientCompanyController extends Controller
             // Deployed means placed there today - the active deployments the
             // company page and the dashboard count - not everyone whose last
             // client this was, which counted people who had left.
-            ->withCount(['departments', 'jobRequests', 'deployments as deployed_count' => fn ($q) => $q->active()])
+            ->withCount(['departments', 'jobRequests', 'documents', 'deployments as deployed_count' => fn ($q) => $q->active()])
             ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(function ($sub) use ($v) {
                 $sub->whereContains('company_name', $v)
                     ->orWhereContains('company_code', $v)
@@ -74,9 +74,10 @@ class ClientCompanyController extends Controller
             'contact_number' => ['nullable', 'string', 'max:40', new PhoneNumber()],
             'email' => ['nullable', 'email:rfc,filter', 'max:190'],
             'office_address' => ['required', 'string', 'max:255'],
+            ...$this->locationRules(),
             'status' => ['nullable', Rule::in(['active', 'inactive'])],
             'notes' => ['nullable', 'string', 'max:5000'],
-        ]);
+        ], $this->locationMessages());
 
         $company = ClientCompany::create(array_merge($data, [
             'company_code' => $this->codes->client(),
@@ -110,9 +111,10 @@ class ClientCompanyController extends Controller
             'contact_number' => ['nullable', 'string', 'max:40', new PhoneNumber()],
             'email' => ['nullable', 'email:rfc,filter', 'max:190'],
             'office_address' => ['sometimes', 'string', 'max:255'],
+            ...$this->locationRules(),
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
             'notes' => ['nullable', 'string', 'max:5000'],
-        ]);
+        ], $this->locationMessages());
 
         $before = $client->only(array_keys($data));
         $client->update(array_merge($data, ['updated_by' => $request->user()->id]));
@@ -120,6 +122,31 @@ class ClientCompanyController extends Controller
         $this->audit->recordUpdate('clients', ClientCompany::class, $client->id, $before, $data);
 
         return ApiResponse::success(new ClientCompanyResource($client->fresh()), 'Client company updated');
+    }
+
+    /**
+     * The pinned location: optional, but a point is both coordinates or none.
+     *
+     * Left out of a request, the saved pin is untouched; sent as two nulls, it
+     * is removed. Nothing here derives a point from the address, or the
+     * address from a point.
+     */
+    private function locationRules(): array
+    {
+        return [
+            'latitude' => ['nullable', 'numeric', 'between:-90,90', 'required_with:longitude'],
+            'longitude' => ['nullable', 'numeric', 'between:-180,180', 'required_with:latitude'],
+        ];
+    }
+
+    private function locationMessages(): array
+    {
+        return [
+            'latitude.required_with' => 'A pinned location needs both a latitude and a longitude. Pin it again on the map.',
+            'longitude.required_with' => 'A pinned location needs both a latitude and a longitude. Pin it again on the map.',
+            'latitude.between' => 'The latitude must be between -90 and 90.',
+            'longitude.between' => 'The longitude must be between -180 and 180.',
+        ];
     }
 
     // --------------------------------------------------------------- departments

@@ -66,11 +66,16 @@ export default function AuditLogs() {
   const [page, setPage] = React.useState(1)
 
   const { data: facets } = useApi('/audit-logs/facets', undefined, { cacheKey: 'audit-facets', staleTime: 60_000 })
-  const { data, meta, loading, error, refetch } = useApi('/audit-logs', {
-    ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v)),
-    page,
-    per_page: 50,
-  })
+  const { data, meta, loading, error, refetch } = useApi(
+    '/audit-logs',
+    {
+      ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v)),
+      page,
+      per_page: 50,
+    },
+    // Every entry, sign-ins included, so it refreshes on those too.
+    { live: 'activity' }
+  )
 
   const filtered = Object.values(filters).some(Boolean)
 

@@ -212,6 +212,53 @@ class PortalTest extends TestCase
         ]);
     }
 
+    public function test_an_upload_notifies_the_office_and_not_the_applicant(): void
+    {
+        Storage::fake('documents');
+
+        $hr = $this->hrUser();
+        $admin = $this->adminUser();
+        $inactiveHr = $this->hrUser();
+        $inactiveHr->update(['is_active' => false]);
+        $applicant = $this->applicant($hr);
+        $portalUser = $this->portalUserFor($applicant);
+        $type = RequirementType::active()->primary()->where('has_expiry', false)->first();
+
+        Sanctum::actingAs($portalUser);
+
+        $this->postJson("/api/v1/portal/documents/{$type->id}/upload", [
+            'file' => UploadedFile::fake()->create('birth-certificate.pdf', 200, 'application/pdf'),
+        ])->assertOk();
+
+        foreach ([$hr, $admin] as $staff) {
+            $notification = $staff->notifications()->sole();
+            $this->assertSame('requirements', $notification->data['category']);
+            $this->assertSame("{$applicant->full_name} uploaded {$type->requirement_name}", $notification->data['title']);
+            $this->assertSame("/documents?applicant={$applicant->id}", $notification->data['link']);
+        }
+
+        $this->assertSame(0, $inactiveHr->notifications()->count());
+        $this->assertSame(0, $portalUser->notifications()->count());
+    }
+
+    public function test_staff_who_muted_document_alerts_are_not_notified_of_uploads(): void
+    {
+        Storage::fake('documents');
+
+        $hr = $this->hrUser();
+        $hr->forceFill(['notification_preferences' => ['requirements' => false]])->save();
+        $applicant = $this->applicant($hr);
+        $type = RequirementType::active()->primary()->where('has_expiry', false)->first();
+
+        Sanctum::actingAs($this->portalUserFor($applicant));
+
+        $this->postJson("/api/v1/portal/documents/{$type->id}/upload", [
+            'file' => UploadedFile::fake()->create('birth-certificate.pdf', 200, 'application/pdf'),
+        ])->assertOk();
+
+        $this->assertSame(0, $hr->notifications()->count());
+    }
+
     /**
      * The central guarantee of this feature. If an upload could reach "verified"
      * the office visit would be optional in practice, and an applicant could
@@ -226,7 +273,9 @@ class PortalTest extends TestCase
 
         Sanctum::actingAs($this->portalUserFor($applicant));
 
-        foreach (RequirementType::active()->where('is_required', true)->get() as $type) {
+        // The Bio-Data is filled in through its form now, not uploaded; that a
+        // submitted form is never verified either is pinned in BioDataTest.
+        foreach (RequirementType::active()->where('is_required', true)->where('requirement_code', '!=', 'bio_data')->get() as $type) {
             $this->postJson("/api/v1/portal/documents/{$type->id}/upload", [
                 'file' => UploadedFile::fake()->create('doc.pdf', 120, 'application/pdf'),
                 'expiry_date' => $type->has_expiry ? now()->addYear()->toDateString() : null,

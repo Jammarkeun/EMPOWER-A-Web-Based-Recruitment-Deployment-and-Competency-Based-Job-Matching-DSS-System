@@ -22,6 +22,11 @@ export default mergeConfig(
       css: false,
       restoreMocks: true,
       clearMocks: true,
+      // The default 5 s is too short for a dialog test when the whole suite
+      // builds 40 jsdom environments at once. Worse than the timeout itself:
+      // a timed-out test's remaining keystrokes keep firing into the next
+      // test's focused field, so one slow test failed two or three after it.
+      testTimeout: 20_000,
     },
   })
 )

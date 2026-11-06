@@ -8,8 +8,11 @@ use App\Models\ApplicantExperience;
 use App\Models\CriteriaCatalog;
 use App\Models\JobRequestMatch;
 use App\Models\RequestCriteria;
+use App\Services\ApplicantLifecycleService;
+use App\Services\DeploymentService;
 use App\Services\Matching\CompetencyScoringService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Laravel\Sanctum\Sanctum;
 use Tests\Support\SeedsDomainData;
 use Tests\TestCase;
 
@@ -90,8 +93,70 @@ class CompetencyScoringTest extends TestCase
 
         $this->assertFalse($score->passedAllGates);
         $this->assertSame('not_recommended', $score->recommendationLevel());
-        // Even a perfect score on every weighted criterion cannot override a gate.
-        $this->assertSame(100.0, $score->percentage());
+        // Even a perfect score on every weighted criterion cannot override a
+        // gate, and the overall match must not read as a perfect one.
+        $this->assertSame(100.0, $score->competencyPercentage());
+        $this->assertSame(0.0, $score->percentage());
+    }
+
+    /**
+     * Failing one of two mandatory requirements must not show 100% beside
+     * "Not recommended", and must still rank above failing both.
+     */
+    public function test_failed_gate_lowers_the_overall_match(): void
+    {
+        $hr = $this->hrUser();
+        $request = $this->jobRequest($this->department($this->clientCompany($hr), $hr), $hr);
+
+        $this->attachCriterion($request->id, 'age', $hr, [
+            'mandatory_flag' => true,
+            'min_value' => 18,
+            'max_value' => 35,
+        ]);
+        $this->attachCriterion($request->id, 'distance', $hr, [
+            'mandatory_flag' => true,
+            'min_value' => 0,
+            'max_value' => 10,
+        ]);
+        $this->attachCriterion($request->id, 'experience', $hr, [
+            'weight_score' => 100,
+            'min_value' => 0,
+            'max_value' => 36,
+        ]);
+
+        $oneMiss = $this->applicant($hr, [
+            'first_name' => 'One',
+            'birth_date' => now()->subYears(25)->toDateString(),
+            'distance_km' => 30,
+            'current_status' => 'ready_for_deployment',
+        ]);
+        $twoMisses = $this->applicant($hr, [
+            'first_name' => 'Two',
+            'birth_date' => now()->subYears(41)->toDateString(),
+            'distance_km' => 30,
+            'current_status' => 'ready_for_deployment',
+        ]);
+        foreach ([$oneMiss, $twoMisses] as $applicant) {
+            ApplicantExperience::create([
+                'applicant_id' => $applicant->id,
+                'company_name' => 'Previous Employer',
+                'position_title' => 'Operator',
+                'months_experience' => 36,
+            ]);
+        }
+
+        $scores = app(CompetencyScoringService::class)->evaluate($request->fresh(), $hr);
+        $byId = collect($scores)->keyBy(fn ($s) => $s->applicant->id);
+
+        $this->assertSame(100.0, $byId[$oneMiss->id]->competencyPercentage());
+        $this->assertSame(50.0, $byId[$oneMiss->id]->percentage());
+        $this->assertSame(0.0, $byId[$twoMisses->id]->percentage());
+        $this->assertSame('not_recommended', $byId[$oneMiss->id]->recommendationLevel());
+        $this->assertLessThan($byId[$twoMisses->id]->rank, $byId[$oneMiss->id]->rank);
+
+        $breakdown = $byId[$oneMiss->id]->breakdown();
+        $this->assertSame(1, $breakdown['gates_met']);
+        $this->assertSame(2, $breakdown['gates_total']);
     }
 
     /**
@@ -244,6 +309,139 @@ class CompetencyScoringTest extends TestCase
         $this->assertDatabaseCount('employees', 0);
         $this->assertSame('ready_for_deployment', $applicant->fresh()->current_status);
         $this->assertSame(0, $request->fresh()->workers_fulfilled);
+    }
+
+    /**
+     * A terminated worker used to keep the rank an earlier evaluation gave
+     * them, and stayed on the request's ranking until someone re-ran it.
+     */
+    public function test_termination_takes_the_applicant_off_every_ranking(): void
+    {
+        $hr = $this->hrUser();
+        $request = $this->jobRequest($this->department($this->clientCompany($hr), $hr), $hr);
+        $this->attachCriterion($request->id, 'distance', $hr, [
+            'weight_score' => 100, 'min_value' => 0, 'max_value' => 40,
+        ]);
+
+        $first = $this->applicant($hr, ['distance_km' => 2, 'current_status' => 'ready_for_deployment']);
+        $second = $this->applicant($hr, ['distance_km' => 10, 'current_status' => 'ready_for_deployment']);
+        $third = $this->applicant($hr, ['distance_km' => 20, 'current_status' => 'ready_for_deployment']);
+
+        app(CompetencyScoringService::class)->evaluate($request->fresh(), $hr);
+
+        app(ApplicantLifecycleService::class)->transitionForWorkflow(
+            $second, 'terminated', $hr, 'Terminated.', ['ready_for_deployment']
+        );
+
+        $ranks = JobRequestMatch::where('job_request_id', $request->id)->pluck('rank_order', 'applicant_id');
+
+        $this->assertFalse($ranks->has($second->id));
+        $this->assertSame(1, $ranks[$first->id]);
+        $this->assertSame(2, $ranks[$third->id], 'The ranks left behind close up.');
+
+        Sanctum::actingAs($hr);
+        $listed = $this->getJson("/api/v1/job-requests/{$request->id}/rankings")
+            ->assertOk()
+            ->json('data.*.applicant_id');
+
+        $this->assertEqualsCanonicalizing([$first->id, $third->id], $listed);
+    }
+
+    /**
+     * A worker deployed to one request kept their rank on every other
+     * request's ranking, still recommended though already placed.
+     */
+    public function test_deployment_takes_the_worker_off_every_ranking(): void
+    {
+        $hr = $this->hrUser();
+        $department = $this->department($this->clientCompany($hr), $hr);
+        $request = $this->jobRequest($department, $hr);
+        $elsewhere = $this->jobRequest($department, $hr, ['workers_needed' => 5]);
+        $this->attachCriterion($request->id, 'distance', $hr, [
+            'weight_score' => 100, 'min_value' => 0, 'max_value' => 40,
+        ]);
+
+        $first = $this->applicant($hr, ['distance_km' => 2, 'current_status' => 'ready_for_deployment']);
+        $placed = $this->applicant($hr, ['distance_km' => 10, 'current_status' => 'ready_for_deployment']);
+        $third = $this->applicant($hr, ['distance_km' => 20, 'current_status' => 'ready_for_deployment']);
+        $this->verifyRequirements($placed, $hr, 'all');
+        $this->completeTraining($placed, $hr);
+
+        app(CompetencyScoringService::class)->evaluate($request->fresh(), $hr);
+        $this->assertSame(2, JobRequestMatch::where('applicant_id', $placed->id)->value('rank_order'));
+
+        app(DeploymentService::class)->deploy($placed->fresh(), $elsewhere, [
+            'deployment_date' => now()->toDateString(),
+        ], $hr);
+
+        $ranks = JobRequestMatch::where('job_request_id', $request->id)->pluck('rank_order', 'applicant_id');
+
+        $this->assertFalse($ranks->has($placed->id));
+        $this->assertSame(1, $ranks[$first->id]);
+        $this->assertSame(2, $ranks[$third->id]);
+    }
+
+    /**
+     * A result left ranked by a path that skipped the lifecycle - or saved
+     * before the fix - is still not listed once the record is closed.
+     */
+    public function test_ranking_list_never_shows_a_closed_record(): void
+    {
+        $hr = $this->hrUser();
+        $request = $this->jobRequest($this->department($this->clientCompany($hr), $hr), $hr);
+        $this->attachCriterion($request->id, 'distance', $hr, [
+            'weight_score' => 100, 'min_value' => 0, 'max_value' => 40,
+        ]);
+
+        $kept = $this->applicant($hr, ['distance_km' => 2, 'current_status' => 'ready_for_deployment']);
+        $closed = $this->applicant($hr, ['distance_km' => 10, 'current_status' => 'ready_for_deployment']);
+
+        app(CompetencyScoringService::class)->evaluate($request->fresh(), $hr);
+        $closed->forceFill(['current_status' => 'terminated'])->save();
+
+        Sanctum::actingAs($hr);
+        $listed = $this->getJson("/api/v1/job-requests/{$request->id}/rankings")
+            ->assertOk()
+            ->json('data.*.applicant_id');
+
+        $this->assertSame([$kept->id], $listed);
+    }
+
+    /**
+     * The employment record is what says somebody is working; a status that
+     * disagrees with it does not put a placed worker back on a ranking.
+     */
+    public function test_ranking_list_never_shows_a_placed_worker_whatever_their_status(): void
+    {
+        $hr = $this->hrUser();
+        $department = $this->department($this->clientCompany($hr), $hr);
+        $request = $this->jobRequest($department, $hr);
+        $this->attachCriterion($request->id, 'distance', $hr, [
+            'weight_score' => 100, 'min_value' => 0, 'max_value' => 40,
+        ]);
+
+        $kept = $this->applicant($hr, ['distance_km' => 2, 'current_status' => 'ready_for_deployment']);
+        $placed = $this->applicant($hr, ['distance_km' => 10, 'current_status' => 'ready_for_deployment']);
+        $this->verifyRequirements($placed, $hr, 'all');
+        $this->completeTraining($placed, $hr);
+
+        app(CompetencyScoringService::class)->evaluate($request->fresh(), $hr);
+        $result = JobRequestMatch::where('applicant_id', $placed->id)->firstOrFail();
+
+        app(DeploymentService::class)->deploy($placed->fresh(), $this->jobRequest($department, $hr), [
+            'deployment_date' => now()->toDateString(),
+        ], $hr);
+
+        // The result put back, and the status knocked back, as drift would.
+        $result->replicate()->save();
+        $placed->forceFill(['current_status' => 'ready_for_deployment'])->save();
+
+        Sanctum::actingAs($hr);
+        $listed = $this->getJson("/api/v1/job-requests/{$request->id}/rankings")
+            ->assertOk()
+            ->json('data.*.applicant_id');
+
+        $this->assertSame([$kept->id], $listed);
     }
 
     public function test_request_without_criteria_cannot_be_evaluated(): void

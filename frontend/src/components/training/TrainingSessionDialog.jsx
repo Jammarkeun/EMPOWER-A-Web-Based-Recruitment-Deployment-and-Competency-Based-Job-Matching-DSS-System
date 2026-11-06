@@ -5,7 +5,7 @@ import { useToast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { Field, FormGrid } from '@/components/ui/form'
+import { Field, FormGrid, useFocusFirstError } from '@/components/ui/form'
 import {
   Dialog,
   DialogContent,
@@ -14,15 +14,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import { todayISO } from '@/lib/utils'
 
-const EMPTY = { training_title: '', training_date: '', location: '', trainer_name: '', remarks: '' }
+const EMPTY = {
+  training_title: '',
+  training_date: '',
+  start_time: '',
+  end_time: '',
+  location: '',
+  trainer_name: '',
+  remarks: '',
+}
 
 function formFrom(session) {
   if (!session) return { ...EMPTY, training_date: todayISO() }
   return {
     training_title: session.training_title ?? '',
     training_date: session.training_date ?? '',
+    start_time: session.start_time ?? '',
+    end_time: session.end_time ?? '',
     location: session.location ?? '',
     trainer_name: session.trainer_name ?? '',
     remarks: session.remarks ?? '',
@@ -41,25 +53,27 @@ function formFrom(session) {
 export default function TrainingSessionDialog({ open, onOpenChange, session = null, onSaved }) {
   const editing = Boolean(session)
   const toast = useToast()
-  const [form, setForm] = React.useState(() => formFrom(session))
+  // The session page refreshes in the background; that must not undo edits.
+  const { form, setForm, baseline, dirty } = useFormDraft(session, formFrom, { open, key: session?.id ?? 'new' })
   const [errors, setErrors] = React.useState({})
+  const [formRef, focusFirstError] = useFocusFirstError()
   const [submitting, setSubmitting] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(dirty)
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
-    if (open) {
-      setForm(formFrom(session))
-      setErrors({})
-    }
-  }, [open, session])
+    if (open) setErrors({})
+  }, [open])
 
   function set(key, value) {
     setForm((current) => ({ ...current, [key]: value }))
   }
 
+  // Against what the form opened with, so a field somebody else changed in
+  // the meantime is not sent back as if it were an edit.
   function changes() {
-    const original = formFrom(session)
     return Object.fromEntries(
-      Object.entries(form).filter(([key, value]) => value !== original[key])
+      Object.entries(form).filter(([key, value]) => value !== baseline[key])
     )
   }
 
@@ -80,16 +94,19 @@ export default function TrainingSessionDialog({ open, onOpenChange, session = nu
       onOpenChange(false)
       onSaved?.(response.data)
     } catch (error) {
-      if (error.isValidation) setErrors(error.errors)
-      else toast.error(editing ? 'Session not updated' : 'Could not schedule training', error.message)
+      if (error.isValidation) {
+        setErrors(error.errors)
+        focusFirstError()
+      } else toast.error(editing ? 'Session not updated' : 'Could not schedule training', error.message)
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={close}>
       <DialogContent>
+        {prompt}
         <DialogHeader>
           <DialogTitle>{editing ? 'Edit session details' : 'Schedule training'}</DialogTitle>
           <DialogDescription>
@@ -99,7 +116,7 @@ export default function TrainingSessionDialog({ open, onOpenChange, session = nu
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <form ref={formRef} onSubmit={handleSubmit} className="space-y-4" noValidate>
           <Field label="Title" htmlFor="training_title" required error={errors.training_title?.[0]}>
             <Input
               value={form.training_title}
@@ -119,6 +136,18 @@ export default function TrainingSessionDialog({ open, onOpenChange, session = nu
             </Field>
           </FormGrid>
 
+          {/* Shown to every enrolled applicant on their portal, so they know
+              when to arrive. Changing it asks them to confirm again. */}
+          <FormGrid>
+            <Field label="Start time" htmlFor="start_time" required error={errors.start_time?.[0]}>
+              <Input type="time" value={form.start_time} onChange={(e) => set('start_time', e.target.value)} />
+            </Field>
+
+            <Field label="End time" htmlFor="end_time" error={errors.end_time?.[0]} hint="Optional.">
+              <Input type="time" value={form.end_time} onChange={(e) => set('end_time', e.target.value)} />
+            </Field>
+          </FormGrid>
+
           <Field
             label="Location"
             htmlFor="location"
@@ -134,7 +163,7 @@ export default function TrainingSessionDialog({ open, onOpenChange, session = nu
           </Field>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => close(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>

@@ -10,6 +10,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use RuntimeException;
 use Spatie\Permission\Models\Role;
+use Tests\Support\ProcessesTerminations;
 use Tests\Support\SeedsDomainData;
 use Tests\TestCase;
 
@@ -26,6 +27,7 @@ class ClientPolicyTest extends TestCase
 {
     use RefreshDatabase;
     use SeedsDomainData;
+    use ProcessesTerminations;
 
     protected function setUp(): void
     {
@@ -223,9 +225,10 @@ class ClientPolicyTest extends TestCase
     }
 
     /**
-     * Only an administrator finalises. HR may prepare the case.
+     * Only an administrator decides a termination request. HR prepares it,
+     * and finalises it only once it has been approved and cleared.
      */
-    public function test_only_an_administrator_can_finalise_a_termination(): void
+    public function test_only_an_administrator_can_approve_a_termination_request(): void
     {
         $hr = $this->hrUser();
         $employee = $this->deployedEmployee($hr);
@@ -235,16 +238,20 @@ class ClientPolicyTest extends TestCase
         $termination = $this->postJson("/api/v1/employees/{$employee->id}/terminations", [
             'termination_date' => now()->toDateString(),
             'reason' => 'Reached the review threshold for absence without leave.',
+            'status' => 'for_review',
         ])->assertCreated()->json('data.id');
 
-        $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/finalise")
+        $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/review", ['decision' => 'approve'])
             ->assertForbidden();
+        $this->assertDatabaseHas('terminations', ['id' => $termination, 'status' => 'for_review']);
 
         $this->app['auth']->forgetGuards();
         Sanctum::actingAs($this->adminUser());
 
-        $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/finalise", ['confirm' => true])
+        $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/review", ['decision' => 'approve'])
             ->assertOk();
+        $this->assertDatabaseHas('terminations', ['id' => $termination, 'status' => 'approved']);
+        $this->assertSame('active', $employee->fresh()->employment_status);
     }
 
     // ==========================================  training before placement

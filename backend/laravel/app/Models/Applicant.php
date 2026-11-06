@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Services\Matching\CompetencyScoringService;
+use App\Support\DocumentCompliance;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -97,6 +98,19 @@ class Applicant extends Model
     }
 
     /**
+     * Still waiting for a posting, with a verified document that has lapsed -
+     * the people behind the dashboard's "Expired documents" figure. A deployed
+     * worker's or a closed record's lapse is not counted (CDE: clearances only
+     * matter upon employment; renewals while employed are counted apart).
+     */
+    public function scopeWithExpiredDocuments(Builder $query): Builder
+    {
+        return $query
+            ->whereNotIn('current_status', [...DocumentCompliance::EMPLOYED_STATUSES, ...DocumentCompliance::CLOSED_STATUSES])
+            ->whereHas('requirements', fn (Builder $requirement) => $requirement->lapsed());
+    }
+
+    /**
      * Records that something the matching engine scores has changed, so every
      * ranking scored against the earlier version shows as out of date (audit
      * S-02).
@@ -158,6 +172,23 @@ class Applicant extends Model
     public function requirements(): HasMany
     {
         return $this->hasMany(ApplicantRequirement::class);
+    }
+
+    /** The applicant's unsubmitted working copy of the digital Bio-Data. */
+    public function bioData(): HasOne
+    {
+        return $this->hasOne(ApplicantBioData::class);
+    }
+
+    /** Every digital Bio-Data they have submitted, newest first. */
+    public function bioDataVersions(): HasMany
+    {
+        return $this->hasMany(ApplicantBioDataVersion::class)->orderByDesc('version_number');
+    }
+
+    public function latestBioDataVersion(): HasOne
+    {
+        return $this->hasOne(ApplicantBioDataVersion::class)->latestOfMany('version_number');
     }
 
     public function statusHistory(): HasMany

@@ -6,13 +6,16 @@ import { useApi } from '@/hooks/useApi'
  * Screens that list or group statuses read them from here rather than keeping
  * their own copy (audit CQ-02): the applicant list once had a hand-typed list
  * of fifteen statuses that nothing kept in step with the lifecycle. Cached for
- * ten minutes, because the list only changes with a release.
+ * ten minutes, and not refetched on live updates, because the list only
+ * changes with a release: refetching it whenever any record changed was one
+ * wasted request per open screen each time.
  */
 export function useApplicantStatuses({ enabled = true } = {}) {
   const { data, loading, error } = useApi('/applicant-statuses', undefined, {
     enabled,
     cacheKey: 'applicant-statuses',
     staleTime: 10 * 60_000,
+    live: false,
   })
 
   return {

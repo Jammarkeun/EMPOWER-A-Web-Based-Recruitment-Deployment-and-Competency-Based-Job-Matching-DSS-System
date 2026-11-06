@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { get } from '@/lib/api'
+import { useLiveTick } from '@/contexts/LiveUpdatesContext'
 
 const responseCache = new Map()
 const DEFAULT_STALE_TIME = 60_000
@@ -32,7 +33,7 @@ const DEFAULT_STALE_TIME = 60_000
  * and therefore stays where the reader left it.
  */
 export function useApi(url, params, options = {}) {
-  const { enabled = true, cacheKey, staleTime = DEFAULT_STALE_TIME, retry = 2 } = options
+  const { enabled = true, cacheKey, staleTime = DEFAULT_STALE_TIME, retry = 2, live = true } = options
 
   const [data, setData] = React.useState(null)
   const [meta, setMeta] = React.useState(null)
@@ -134,6 +135,19 @@ export function useApi(url, params, options = {}) {
       controller.abort()
     }
   }, [load, cacheId, staleTime])
+
+  /*
+   * Live updates: when the server reports that something changed, fetch again
+   * in the background so the screen shows it without a browser refresh. Only
+   * once there is data on screen - a first load is already on its way - and
+   * never for a screen that copies the data into an editor (`live: false`),
+   * where a refresh would discard what the user has typed. `live: 'activity'`
+   * also refetches on sign-ins, for the few screens that show them.
+   */
+  const liveTick = useLiveTick(live === 'activity' ? 'activity' : 'data')
+  React.useEffect(() => {
+    if (live && liveTick > 0 && hasData.current) load({ background: true })
+  }, [live, liveTick, load])
 
   return { data, meta, loading, refreshing, error, updatedAt, refetch, setData }
 }

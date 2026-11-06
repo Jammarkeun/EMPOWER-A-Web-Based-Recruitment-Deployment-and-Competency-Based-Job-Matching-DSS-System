@@ -82,7 +82,7 @@ const STEP_WORDS = {
  * rather than from the notification. Shown only to somebody actually on a
  * session - or marked absent from one - never as a general prompt.
  */
-function TrainingReminderCard({ training }) {
+function TrainingReminderCard({ training, onConfirmed }) {
   const open = training.sessions
     .filter(isOpenSession)
     .sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
@@ -106,7 +106,7 @@ function TrainingReminderCard({ training }) {
 
       <CardContent className="space-y-3">
         {open.map((session) => (
-          <ApplicantSession key={session.enrollment_id} session={session} />
+          <ApplicantSession key={session.enrollment_id} session={session} onConfirmed={onConfirmed} />
         ))}
         <Button asChild variant={missed ? 'outline' : 'default'}>
           <Link to="/portal/training">
@@ -478,7 +478,12 @@ export default function PortalOverview() {
         </Card>
       )}
 
-      {training && !application.record_closed && <TrainingReminderCard training={training} />}
+      {training && !application.record_closed && (
+        <TrainingReminderCard
+          training={training}
+          onConfirmed={(next) => setData((current) => ({ ...current, training: next }))}
+        />
+      )}
 
       {application.office && (
         <Card>
@@ -578,7 +583,10 @@ export default function PortalOverview() {
             <div className="flex items-start gap-2.5">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
               <div className="min-w-0">
-                <p className="text-sm">Please bring the following to the office:</p>
+                {/* The two ways in, said together: My documents takes copies
+                    of the same list, and this card used to mention only the
+                    office. */}
+                <p className="text-sm">Still needed — bring these to the office, or send copies now:</p>
                 <ul className="mt-1.5 space-y-1">
                   {documents.outstanding.map((item) => (
                     <li key={item} className="text-sm text-muted-foreground">
@@ -586,6 +594,9 @@ export default function PortalOverview() {
                     </li>
                   ))}
                 </ul>
+                <Button asChild variant="outline" size="sm" className="mt-3">
+                  <Link to="/portal/documents">Send copies in My documents</Link>
+                </Button>
               </div>
             </div>
           )}

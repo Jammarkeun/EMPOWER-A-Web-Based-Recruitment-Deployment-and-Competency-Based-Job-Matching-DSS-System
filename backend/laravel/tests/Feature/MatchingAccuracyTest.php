@@ -229,8 +229,10 @@ class MatchingAccuracyTest extends TestCase
         $scoring->evaluate($request, $hr);
         JobRequestMatch::where('applicant_id', $shortlisted->id)->update(['is_shortlisted' => true]);
 
-        $leaving->forceFill(['current_status' => 'archived'])->save();
-        $shortlisted->forceFill(['current_status' => 'archived'])->save();
+        // Out of the pool without the record closing; a closed record is not
+        // listed at all (CompetencyScoringTest).
+        $leaving->forceFill(['current_status' => 'incomplete_requirements'])->save();
+        $shortlisted->forceFill(['current_status' => 'incomplete_requirements'])->save();
 
         $scoring->evaluate($request, $hr);
 

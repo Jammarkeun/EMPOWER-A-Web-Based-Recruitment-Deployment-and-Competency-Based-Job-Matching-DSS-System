@@ -6,7 +6,8 @@ import { useApplicantStatuses } from '@/hooks/useApplicantStatuses'
 import { useAuth } from '@/contexts/AuthContext'
 import { PageHeader } from '@/components/PageHeader'
 import PersonAvatar from '@/components/PersonAvatar'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { SortableHead, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { useTableSort } from '@/hooks/useTableSort'
 import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
@@ -24,6 +25,7 @@ const FILTER_KEYS = [
   'preferred_position_id',
   'awaiting_identity_check',
   'documents_lapsed',
+  'expired_documents',
   'exclude_deployed',
 ]
 
@@ -52,10 +54,19 @@ export default function Applicants() {
   const position = value('preferred_position_id')
   const awaiting = value('awaiting_identity_check') === '1'
   const lapsed = value('documents_lapsed') === '1'
+  // Waiting for a posting with a verified document that has since expired;
+  // the dashboard's "Expired documents" figure opens the list with it on.
+  const expired = value('expired_documents') === '1'
   // Leaves out anyone working under an active deployment; the dashboard's
   // "ready for deployment" figure opens the list with it on.
   const notDeployed = value('exclude_deployed') === '1'
   const page = Number(searchParams.get('page') ?? 1)
+  // Newest application first unless a column header says otherwise.
+  const sort = useTableSort(searchParams, setSearchParams, {
+    by: 'application_date',
+    dir: 'desc',
+    firstDirection: { application_date: 'desc' },
+  })
 
   const debouncedSearch = useDebounced(search)
   const { statuses } = useApplicantStatuses()
@@ -70,7 +81,9 @@ export default function Applicants() {
     preferred_position_id: position || undefined,
     awaiting_identity_check: awaiting ? 1 : undefined,
     documents_lapsed: lapsed ? 1 : undefined,
+    expired_documents: expired ? 1 : undefined,
     exclude_deployed: notDeployed ? 1 : undefined,
+    ...sort.params,
     page,
     per_page: 20,
   })
@@ -91,7 +104,7 @@ export default function Applicants() {
   }
 
   function clearFilters() {
-    setSearchParams(new URLSearchParams())
+    setSearchParams(sort.keep(new URLSearchParams()))
   }
 
   // The whole row opens the record for a pointer; the name stays a real link
@@ -181,8 +194,16 @@ export default function Applicants() {
           {
             id: 'documents_lapsed',
             label: 'Documents lapsed',
+            title: 'Reached their status with every document verified, but the folder now says one has lapsed or been rejected.',
             active: lapsed,
             onToggle: () => updateFilter('documents_lapsed', lapsed ? '' : '1'),
+          },
+          {
+            id: 'expired_documents',
+            label: 'Expired documents',
+            title: 'Still waiting for a posting, with a verified document past its expiry date.',
+            active: expired,
+            onToggle: () => updateFilter('expired_documents', expired ? '' : '1'),
           },
           {
             id: 'exclude_deployed',
@@ -279,11 +300,11 @@ export default function Applicants() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Applicant & Code</TableHead>
+                <SortableHead column="last_name" {...sort.head}>Applicant & Code</SortableHead>
                 <TableHead>Position Sought</TableHead>
-                <TableHead>Current Status</TableHead>
+                <SortableHead column="current_status" {...sort.head}>Current Status</SortableHead>
                 <TableHead>Folder Category</TableHead>
-                <TableHead>Application Date</TableHead>
+                <SortableHead column="application_date" {...sort.head}>Application Date</SortableHead>
                 <TableHead className="w-8">
                   <span className="sr-only">Open</span>
                 </TableHead>

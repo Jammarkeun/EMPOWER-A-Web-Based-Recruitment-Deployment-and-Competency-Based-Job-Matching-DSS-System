@@ -189,7 +189,17 @@ function OfficialFormDetails({ requisition: r, attachmentEndpoint }) {
         {/* EMPOWER's own context, not fields on CDE's form. */}
         <dl className="grid gap-x-6 gap-y-3 border-t pt-3 sm:grid-cols-2">
           <Item label="Client company">{r.company_name ?? '—'}</Item>
-          <Item label="Department (EMPOWER)">{r.department_name ?? 'Not specified'}</Item>
+          <Item label="Department (EMPOWER)">
+            {r.department_name ??
+              (r.job_request?.department_name ? (
+                <>
+                  {r.job_request.department_name}
+                  <span className="text-xs text-muted-foreground"> · not on the form, chosen by HR on approval</span>
+                </>
+              ) : (
+                <span className="text-muted-foreground">Not on the form · HR chooses it on approval</span>
+              ))}
+          </Item>
         </dl>
 
         <TemporaryFormFields requisition={r} attachmentEndpoint={attachmentEndpoint} />
@@ -202,7 +212,7 @@ function OfficialFormDetails({ requisition: r, attachmentEndpoint }) {
 function TemporaryFormDetails({ requisition: r, attachmentEndpoint }) {
   const rows = [
     ['Client company', r.company_name],
-    ['Department', r.department_name ?? 'Not specified'],
+    ['Department', r.department_name ?? (r.job_request?.department_name ? `${r.job_request.department_name} (chosen by HR)` : 'Not specified')],
     ['Position', r.position_title],
     ['Number of personnel needed', r.workers_needed],
     ['Date of request', formatDate(r.date_requested)],
@@ -346,7 +356,12 @@ export function RequisitionProgress({ requisition, requestLink }) {
 
         {r.job_request && (
           <div className="rounded-md border border-status-success-border bg-status-success-bg/40 p-3">
-            <p className="font-medium">Recorded as a manpower request</p>
+            <p className="font-medium">Manpower request created on approval</p>
+            <p className="text-xs text-muted-foreground">
+              Made automatically from this requisition
+              {r.job_request.created_by ? ` by ${r.job_request.created_by}` : ''}
+              {r.job_request.created_at ? `, ${formatDateTime(r.job_request.created_at)}` : ''}.
+            </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
               {requestLink ? (
                 <Link to={`/job-requests/${r.job_request.id}`} className="font-mono text-primary hover:underline">

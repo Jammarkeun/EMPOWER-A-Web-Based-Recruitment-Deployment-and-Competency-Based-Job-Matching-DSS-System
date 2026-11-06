@@ -17,7 +17,11 @@ import { Pagination } from '@/components/Pagination'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
 import AttendanceDayDialog from '@/components/attendance/AttendanceDayDialog'
 import DtrImportDialog from '@/components/attendance/DtrImportDialog'
+import DtrSubmissionInbox from '@/components/attendance/DtrSubmissionInbox'
+import DtrPeriodDialog, { DTR_PERIOD_STATUS, DtrPeriodStatusBadge } from '@/components/attendance/DtrPeriodDialog'
 import ExceptionDialog from '@/components/attendance/ExceptionDialog'
+import ScheduleSubmissionDialog from '@/components/attendance/ScheduleSubmissionDialog'
+import { ScheduleStatusBadge } from '@/components/attendance/ScheduleSubmissionParts'
 import {
   DATE_PATTERN,
   DISCREPANCIES,
@@ -34,7 +38,7 @@ import {
 } from '@/lib/attendance'
 import { cn, formatDate, formatDateTime } from '@/lib/utils'
 
-const TABS = ['review', 'employees', 'imports', 'exceptions']
+const TABS = ['review', 'employees', 'schedules', 'submissions', 'imports', 'exceptions']
 
 /**
  * Attendance (DTR): the one place the DTR is compared with the schedule.
@@ -47,6 +51,10 @@ const TABS = ['review', 'employees', 'imports', 'exceptions']
  *   close. A flagged day is a question, not a finding.
  * - Employees: each worker's month at a glance, and how much of it could be
  *   compared at all.
+ * - Schedules: the work schedules coordinators send in, for HR to approve or
+ *   return. Only an approved schedule is ever compared with the DTR.
+ * - DTR submission inbox: DTR files coordinators hand over, opened in the
+ *   importer below to be checked and imported.
  * - DTR imports: the files the client sent, and what became of every row.
  * - Leave and holidays: what the agency already knows about a day.
  *
@@ -81,11 +89,13 @@ export default function Attendance() {
         <TabsList>
           <TabsTrigger value="review">Review queue</TabsTrigger>
           <TabsTrigger value="employees">Employees</TabsTrigger>
+          <TabsTrigger value="schedules">Schedules</TabsTrigger>
+          {can('attendance.manage') && <TabsTrigger value="submissions">DTR submission inbox</TabsTrigger>}
           {can('attendance.manage') && <TabsTrigger value="imports">DTR imports</TabsTrigger>}
           <TabsTrigger value="exceptions">Leave &amp; holidays</TabsTrigger>
         </TabsList>
 
-        {tab !== 'imports' && tab !== 'exceptions' && (
+        {!['schedules', 'submissions', 'imports', 'exceptions'].includes(tab) && (
           <MonthPicker month={month} onChange={(value) => update({ month: value === currentMonth() ? '' : value })} />
         )}
 
@@ -95,6 +105,14 @@ export default function Attendance() {
         <TabsContent value="employees">
           <EmployeeSummary month={month} searchParams={searchParams} update={update} />
         </TabsContent>
+        <TabsContent value="schedules">
+          <ScheduleQueue searchParams={searchParams} update={update} />
+        </TabsContent>
+        {can('attendance.manage') && (
+          <TabsContent value="submissions">
+            <DtrSubmissionInbox searchParams={searchParams} update={update} />
+          </TabsContent>
+        )}
         {can('attendance.manage') && (
           <TabsContent value="imports">
             <Imports />
@@ -273,7 +291,7 @@ function ReviewQueue({ month, searchParams, update }) {
             {gaps.no_dtr > 0 && ` ${gaps.no_dtr} employee(s) have no DTR on file at all;`}
             {gaps.no_schedule > 0 && ` ${gaps.no_schedule} have no schedule;`}
             {gaps.awaiting_dtr_days > 0 && ` ${gaps.awaiting_dtr_days} scheduled day(s) are awaiting the DTR.`}{' '}
-            These are not flagged here — missing data is not an absence. Import the client’s DTR to compare them.
+            These are not flagged here — missing data is not an absence. Import the client’s DTR, and confirm its DTR period complete once every file is in, to compare them.
           </p>
         </div>
       )}
@@ -505,6 +523,176 @@ function Count({ value, hint, tone }) {
   )
 }
 
+// --------------------------------------------------------------- schedules
+
+const SCHEDULE_VIEWS = [
+  ['', 'Pending HR review'],
+  ['returned', 'Returned for correction'],
+  ['approved', 'Approved'],
+  ['withdrawn', 'Withdrawn'],
+  ['all', 'All schedules'],
+]
+
+/**
+ * Work schedules coordinators have sent in, oldest waiting first. Opening one
+ * shows it beside the schedule it would replace, with what the server's checks
+ * found; approving puts it in force. `?submission=` opens one directly, which
+ * is where HR's notification leads.
+ */
+function ScheduleQueue({ searchParams, update }) {
+  const companies = useCompanies()
+  const search = searchParams.get('search') ?? ''
+  const company = searchParams.get('client_company_id') ?? ''
+  const coordinator = searchParams.get('coordinator_id') ?? ''
+  const status = searchParams.get('status') ?? ''
+  const startsFrom = DATE_PATTERN.test(searchParams.get('starts_from') ?? '') ? searchParams.get('starts_from') : ''
+  const startsTo = DATE_PATTERN.test(searchParams.get('starts_to') ?? '') ? searchParams.get('starts_to') : ''
+  const page = Number(searchParams.get('page') ?? 1)
+  const debouncedSearch = useDebounced(search)
+  const linked = /^\d+$/.test(searchParams.get('submission') ?? '') ? Number(searchParams.get('submission')) : null
+
+  const { data, meta, loading, error, refetch } = useApi('/attendance/schedule-submissions', {
+    status: status || 'submitted',
+    search: debouncedSearch || undefined,
+    client_company_id: company || undefined,
+    coordinator_id: coordinator || undefined,
+    effective_from: startsFrom || undefined,
+    effective_to: startsTo || undefined,
+    page,
+    per_page: 25,
+  })
+
+  const counts = meta?.status_counts ?? {}
+  const countFor = (value) => counts[value || 'submitted']
+
+  return (
+    <div className="mt-4 space-y-4">
+      <p className="max-w-3xl text-sm text-muted-foreground">
+        Schedules the coordinators wrote from what each client gave. A schedule is compared with the DTR only once it is
+        approved here; one waiting or returned changes nothing.
+      </p>
+
+      <FilterToolbar
+        search={search}
+        onSearchChange={(value) => update({ search: value })}
+        searchPlaceholder="Search by name, employee no. or WS code…"
+        filters={[
+          {
+            id: 'status',
+            label: 'Pending HR review',
+            value: status,
+            onChange: (value) => update({ status: value }),
+            options: SCHEDULE_VIEWS.map(([value, label]) => ({
+              value,
+              label: countFor(value) ? `${label} (${countFor(value)})` : label,
+            })),
+          },
+          companyFilter(companies, company, (value) => update({ client_company_id: value })),
+          {
+            id: 'coordinator',
+            label: 'Any coordinator',
+            value: coordinator,
+            onChange: (value) => update({ coordinator_id: value }),
+            options: [
+              { value: '', label: 'Any coordinator' },
+              ...(meta?.coordinators ?? []).map((c) => ({ value: String(c.id), label: c.full_name })),
+            ],
+          },
+        ]}
+        resultCount={meta?.total}
+        resultLabel="schedules"
+        onClearFilters={() => update({ search: '', status: '', client_company_id: '', coordinator_id: '', starts_from: '', starts_to: '' })}
+      />
+
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <label htmlFor="starts_from" className="text-muted-foreground">
+          Starts between
+        </label>
+        <Input id="starts_from" type="date" value={startsFrom} onChange={(e) => update({ starts_from: e.target.value })} className="h-9 w-40" />
+        <label htmlFor="starts_to" className="text-muted-foreground">
+          and
+        </label>
+        <Input id="starts_to" type="date" value={startsTo} min={startsFrom || undefined} onChange={(e) => update({ starts_to: e.target.value })} className="h-9 w-40" />
+      </div>
+
+      {loading ? (
+        <div className="rounded-panel bg-card">
+          <SkeletonRows rows={6} columns={5} />
+        </div>
+      ) : error ? (
+        <ErrorState message={error.message} onRetry={refetch} />
+      ) : !data?.length ? (
+        <EmptyState
+          icon={CalendarClock}
+          title={status ? 'No schedules in this view' : 'No schedules waiting for review'}
+          description="Coordinators send schedules from their workspace; each one appears here until HR decides."
+        />
+      ) : (
+        <div className="space-y-3">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Schedule</TableHead>
+                  <TableHead>Employee</TableHead>
+                  <TableHead>Proposed hours</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="w-0" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>
+                      <p className="font-mono text-sm font-semibold">{row.submission_code}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {row.created_by} · {formatDateTime(row.submitted_at ?? row.created_at)}
+                      </p>
+                    </TableCell>
+                    <TableCell>
+                      <EmployeeName id={row.employee.id} name={row.employee.full_name} month={monthOf(row.effective_from)} />
+                      <p className="text-xs text-muted-foreground">
+                        <span className="font-mono">{row.employee.employee_number}</span>
+                        {row.company && ` · ${row.company}`}
+                        {row.department && ` · ${row.department}`}
+                      </p>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {row.description}
+                      <span className="block text-xs text-muted-foreground">
+                        From {formatDate(row.effective_from)}
+                        {row.effective_to && ` to ${formatDate(row.effective_to)}`}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <ScheduleStatusBadge status={row.status} />
+                      {row.reviewed_by && <p className="mt-1 text-xs text-muted-foreground">by {row.reviewed_by}</p>}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="ghost" size="sm" onClick={() => update({ submission: String(row.id), page: String(page) })}>
+                        {row.status === 'submitted' ? 'Review' : 'Open'}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <Pagination meta={meta} onPage={(p) => update({ page: String(p) })} />
+        </div>
+      )}
+
+      <ScheduleSubmissionDialog
+        key={linked ?? 'none'}
+        submissionId={linked}
+        open={linked !== null}
+        onOpenChange={(value) => !value && update({ submission: '', page: String(page) })}
+        onChanged={refetch}
+      />
+    </div>
+  )
+}
+
 // ----------------------------------------------------------------- imports
 
 const IMPORT_STATUS = {
@@ -517,9 +705,17 @@ function Imports() {
   const [page, setPage] = React.useState(1)
   const [dialog, setDialog] = React.useState(null)
   const { data, meta, loading, error, refetch } = useApi('/attendance/imports', { page, per_page: 20 })
+  const periodsRef = React.useRef(null)
+  const refreshAll = () => {
+    refetch()
+    periodsRef.current?.()
+  }
 
   return (
-    <div className="mt-4 space-y-4">
+    <div className="mt-4 space-y-6">
+      <DtrPeriods registerRefetch={(fn) => (periodsRef.current = fn)} onChanged={refetch} />
+
+      <h3 className="text-sm font-semibold">Files received</h3>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-2xl text-sm text-muted-foreground">
           Each file the client sent, who brought it in, and what happened to every row. A file is imported only after
@@ -569,6 +765,11 @@ function Imports() {
                     <span className="block text-xs text-muted-foreground">
                       {formatDate(row.period_from)} – {formatDate(row.period_to)}
                     </span>
+                    {row.dtr_period && (
+                      <span className="mt-1 block">
+                        <DtrPeriodStatusBadge status={row.dtr_period.status} label={row.dtr_period.status_label} />
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{row.imported_rows}</TableCell>
                   <TableCell className="text-right tabular-nums">{row.replaced_rows}</TableCell>
@@ -600,9 +801,120 @@ function Imports() {
         open={dialog !== null}
         onOpenChange={(value) => !value && setDialog(null)}
         draftId={dialog?.draftId}
-        onDone={refetch}
+        onDone={refreshAll}
       />
     </div>
+  )
+}
+
+const PERIOD_FILTERS = [['', 'All'], ...Object.entries(DTR_PERIOD_STATUS).map(([value, [label]]) => [value, label])]
+
+/**
+ * Each client's DTR for a run of days, and whether it has arrived in full.
+ * Files are filed under a period as they are uploaded; HR opens one to see
+ * who has rows on file and to confirm it complete or mark it incomplete.
+ */
+function DtrPeriods({ registerRefetch, onChanged }) {
+  const [page, setPage] = React.useState(1)
+  const [status, setStatus] = React.useState('')
+  const [open, setOpen] = React.useState(null)
+  const { data, meta, loading, error, refetch } = useApi('/attendance/dtr-periods', { page, per_page: 10, status: status || undefined })
+
+  React.useEffect(() => registerRefetch(refetch), [registerRefetch, refetch])
+
+  return (
+    <section className="space-y-3" aria-label="DTR periods">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">DTR periods</h3>
+          <p className="max-w-2xl text-sm text-muted-foreground">
+            Importing a file does not mean the client’s DTR for those days is complete. Confirm a period complete when
+            every file is in: only then does a scheduled day with nothing on file become “No DTR record”, for
+            verification — never an absence.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {PERIOD_FILTERS.map(([value, label]) => (
+            <Button
+              key={value || 'all'}
+              size="sm"
+              variant={status === value ? 'default' : 'outline'}
+              onClick={() => {
+                setStatus(value)
+                setPage(1)
+              }}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="rounded-panel bg-card">
+          <SkeletonRows rows={3} columns={4} />
+        </div>
+      ) : error ? (
+        <ErrorState message={error.message} onRetry={refetch} />
+      ) : !data?.length ? (
+        <p className="rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          {status ? 'No DTR period has this status.' : 'No DTR period yet. One is opened when a client’s DTR file is uploaded.'}
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Client and period</TableHead>
+                <TableHead className="text-right">Files imported</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-0" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell className="text-sm">
+                    {row.company}
+                    <span className="block text-xs text-muted-foreground">
+                      {formatDate(row.period_from)} – {formatDate(row.period_to)}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {row.files.imported}
+                    {row.files.drafts > 0 && <span className="block text-xs text-warning">{row.files.drafts} still being checked</span>}
+                  </TableCell>
+                  <TableCell>
+                    <DtrPeriodStatusBadge status={row.status} label={row.status_label} />
+                    {row.status_by && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        by {row.status_by}, {formatDate(row.status_at)}
+                      </p>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => setOpen(row.id)}>
+                      Open
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <Pagination meta={meta} onPage={setPage} />
+        </div>
+      )}
+
+      <DtrPeriodDialog
+        open={open !== null}
+        periodId={open}
+        onOpenChange={(value) => !value && setOpen(null)}
+        onDone={() => {
+          refetch()
+          onChanged?.()
+        }}
+      />
+    </section>
   )
 }
 

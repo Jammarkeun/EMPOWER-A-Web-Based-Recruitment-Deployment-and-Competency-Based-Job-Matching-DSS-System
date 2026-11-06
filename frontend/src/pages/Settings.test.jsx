@@ -124,6 +124,8 @@ describe('Settings › Job requirements', () => {
     let dialog = await screen.findByRole('dialog')
     await userEvent.type(within(dialog).getByLabelText(/^Name/), ' (draft)')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    // Something was typed, so cancelling asks before throwing it away.
+    await userEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     await userEvent.click(screen.getByRole('button', { name: 'Edit Distance from Worksite' }))

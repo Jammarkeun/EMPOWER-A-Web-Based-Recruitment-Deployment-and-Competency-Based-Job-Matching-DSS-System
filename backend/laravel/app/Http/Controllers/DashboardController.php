@@ -4,13 +4,17 @@ namespace App\Http\Controllers;
 
 use App\Http\Responses\ApiResponse;
 use App\Models\Applicant;
+use App\Models\ApplicantRequirement;
 use App\Models\ClientCompany;
 use App\Models\Deployment;
 use App\Models\Employee;
 use App\Models\EmployeeViolation;
+use App\Models\IncidentReport;
 use App\Models\JobRequest;
+use App\Models\ManpowerRequisition;
 use App\Models\Resignation;
 use App\Models\Termination;
+use App\Models\ViolationReport;
 use App\Support\ApplicantStatuses;
 use App\Support\DocumentCompliance;
 use Illuminate\Http\JsonResponse;
@@ -38,6 +42,15 @@ class DashboardController extends Controller
         $months = (int) ($data['months'] ?? 6);
         $since = now()->subMonths($months)->startOfMonth();
 
+        // The memoised aggregates are per request. The router keeps one
+        // instance of this controller, so without this a second request in
+        // the same process (a test, a long-running worker) got the first
+        // request's figures.
+        $this->applicantAggregate = $this->requestAggregate = null;
+        $this->resignationAggregate = $this->terminationAggregate = null;
+        $this->expiredDocuments = $this->overdueRenewals = $this->openViolations = null;
+        $this->reviewQueues = null;
+
         $summary = Cache::remember(
             'empower.dashboard.summary.'.($request->integer('months', 6)),
             now()->addSeconds(30),
@@ -55,7 +68,7 @@ class DashboardController extends Controller
             ]
         );
 
-        return ApiResponse::success($summary);
+        return ApiResponse::success($this->forViewer($summary, $request->user()));
     }
 
     /*
@@ -141,6 +154,9 @@ class DashboardController extends Controller
                  THEN 1 END) AS needing_documents',
                 ApplicantStatuses::AWAITING_DOCUMENTS
             )
+            // Registered online and not yet seen in person: the condition
+            // of Applicant::scopeAwaitingIdentityCheck, which the list uses.
+            ->selectRaw('COUNT(CASE WHEN self_registered_at IS NOT NULL AND identity_verified_at IS NULL THEN 1 END) AS awaiting_identity')
             ->first();
     }
 
@@ -219,6 +235,22 @@ class DashboardController extends Controller
                 'type' => 'resignation',
                 'status' => 'info_requested',
             ],
+            'terminations_for_review' => [
+                'type' => 'termination',
+                'status' => 'for_review',
+            ],
+            'overdue_requests' => ['overdue' => 1],
+            // These three count documents or violations; each list shows the
+            // people holding them, which attention() also counts.
+            'expired_documents' => ['expired_documents' => 1],
+            'employee_renewals_overdue' => ['renewal_overdue' => 1],
+            'open_violations' => ['open_violations' => 1],
+            // The review inboxes, each opened on its waiting view.
+            'documents_awaiting_review' => ['filter' => 'needs_review'],
+            'requisitions_awaiting_review' => ['status' => 'pending'],
+            'violation_reports_awaiting_review' => ['status' => 'pending'],
+            'incident_reports_open' => ['status' => 'open'],
+            'identity_checks' => ['awaiting_identity_check' => 1],
         ];
     }
 
@@ -229,29 +261,103 @@ class DashboardController extends Controller
     }
 
     /**
+     * Lapsed documents of applicants still waiting for a posting, and how many
+     * applicants hold them - one statement for both. The rule is the one the
+     * applicant list's `expired_documents` filter runs (ApplicantRequirement::
+     * scopeLapsed, Applicant::scopeWithExpiredDocuments), so the people
+     * figure is exactly the list's length.
+     */
+    private ?object $expiredDocuments = null;
+
+    private function expiredDocuments(): object
+    {
+        return $this->expiredDocuments ??= ApplicantRequirement::query()
+            ->lapsed()
+            ->whereHas('applicant', fn ($applicant) => $applicant->whereNotIn('current_status', [
+                ...DocumentCompliance::EMPLOYED_STATUSES,
+                ...DocumentCompliance::CLOSED_STATUSES,
+            ]))
+            ->selectRaw('COUNT(*) AS documents, COUNT(DISTINCT applicant_id) AS applicants')
+            ->toBase()
+            ->first();
+    }
+
+    /**
+     * Lapsed renew-while-employed documents of employed workers, and the
+     * employees holding them, as the employee list's `renewal_overdue`
+     * filter finds them (Employee::scopeRenewalOverdue). An applicant has at
+     * most one employee record, so the join cannot count a document twice.
+     */
+    private ?object $overdueRenewals = null;
+
+    private function overdueRenewals(): object
+    {
+        return $this->overdueRenewals ??= ApplicantRequirement::query()
+            ->renewalOverdue()
+            ->whereHas('applicant', fn ($applicant) => $applicant->whereIn('current_status', DocumentCompliance::EMPLOYED_STATUSES))
+            ->leftJoin('employees', fn ($join) => $join
+                ->on('employees.applicant_id', '=', 'applicant_requirements.applicant_id')
+                ->whereNull('employees.deleted_at'))
+            ->selectRaw('COUNT(*) AS documents, COUNT(DISTINCT employees.id) AS employees')
+            ->toBase()
+            ->first();
+    }
+
+    private ?object $openViolations = null;
+
+    private function openViolations(): object
+    {
+        return $this->openViolations ??= EmployeeViolation::query()
+            ->open()
+            // Whose violations, counted the way the employee list's
+            // `open_violations` filter finds them: a removed employee's
+            // record is not in that list, so it is not counted as a person.
+            ->leftJoin('employees', fn ($join) => $join
+                ->on('employees.id', '=', 'employee_violations.employee_id')
+                ->whereNull('employees.deleted_at'))
+            ->selectRaw('COUNT(*) AS violations, COUNT(DISTINCT employees.id) AS employees')
+            ->toBase()
+            ->first();
+    }
+
+    /**
+     * HR's review inboxes, in one statement of scalar subqueries rather than
+     * one per table: four more round trips to Supabase would have added about
+     * half a second to every uncached dashboard load (measured 2 November
+     * 2026: 21 statements before these figures, 22 with them).
+     *
+     * - Files sent in and waiting to be verified or rejected, the applicants
+     *   they belong to (the length of the document library's "Awaiting
+     *   review" list), and how many nobody has opened yet.
+     * - What coordinators have sent and HR has not yet decided: new (not yet
+     *   taken up) and in all, so the row can say how many are under review.
+     *   The statuses are each model's own PENDING_REVIEW / OPEN lists, which
+     *   the lists' "pending" and "open" views use.
+     */
+    private ?object $reviewQueues = null;
+
+    private function reviewQueues(): object
+    {
+        $documents = fn () => ApplicantRequirement::query()->awaitingReview()->whereHas('applicant');
+        $count = fn ($query, string $expression = 'COUNT(*)') => $query->selectRaw($expression);
+
+        return $this->reviewQueues ??= DB::query()
+            ->selectSub($count($documents()), 'documents')
+            ->selectSub($count($documents(), 'COUNT(DISTINCT applicant_id)'), 'document_applicants')
+            ->selectSub($count($documents()->where('status', 'submitted')->whereNull('first_viewed_at')), 'documents_unopened')
+            ->selectSub($count(ManpowerRequisition::where('status', 'submitted')), 'requisitions_new')
+            ->selectSub($count(ManpowerRequisition::whereIn('status', ManpowerRequisition::PENDING_REVIEW)), 'requisitions_waiting')
+            ->selectSub($count(ViolationReport::where('status', 'submitted')), 'violation_reports_new')
+            ->selectSub($count(ViolationReport::whereIn('status', ViolationReport::PENDING_REVIEW)), 'violation_reports_waiting')
+            ->selectSub($count(IncidentReport::where('status', 'submitted')), 'incident_reports_new')
+            ->selectSub($count(IncidentReport::whereIn('status', IncidentReport::OPEN)), 'incident_reports_waiting')
+            ->first();
+    }
+
+    /**
      * The queue of things that need a person to act, which is what HR actually
      * opens the dashboard to find out.
      */
-    /**
-     * Verified documents past their expiry date - marked expired by the daily
-     * check or not yet - of current applicants and employees, for document
-     * types still in use. Callers narrow it by lifecycle stage.
-     */
-    private function lapsedDocuments()
-    {
-        return DB::table('applicant_requirements')
-            ->join('applicants', 'applicants.id', '=', 'applicant_requirements.applicant_id')
-            ->join('requirement_types', 'requirement_types.id', '=', 'applicant_requirements.requirement_type_id')
-            ->whereNull('applicants.deleted_at')
-            ->where('requirement_types.active_flag', true)
-            ->whereNotNull('applicant_requirements.expiry_date')
-            ->where(fn ($q) => $q
-                ->where('applicant_requirements.status', 'expired')
-                ->orWhere(fn ($v) => $v
-                    ->where('applicant_requirements.status', 'verified')
-                    ->whereDate('applicant_requirements.expiry_date', '<', now())));
-    }
-
     private function attention(): array
     {
         return [
@@ -269,29 +375,93 @@ class DashboardController extends Controller
             // count only the unmarked ones, so the figure fell to zero every
             // night while the documents stayed lapsed. A deployed worker's
             // clearance is not counted (CDE: it only matters upon employment).
-            'expired_documents' => $this->lapsedDocuments()
-                ->whereNotIn('applicants.current_status', [
-                    ...DocumentCompliance::EMPLOYED_STATUSES,
-                    ...DocumentCompliance::CLOSED_STATUSES,
-                ])
-                ->count(),
+            'expired_documents' => (int) $this->expiredDocuments()->documents,
+            // Who holds them: the length of the list the figure opens.
+            'applicants_with_expired_documents' => (int) $this->expiredDocuments()->applicants,
 
             // Deployed workers whose annual medical or health card has lapsed:
             // renewed while employed, so it needs following up. Informational
             // only - nothing about their employment changes.
-            'employee_renewals_overdue' => $this->lapsedDocuments()
-                ->whereIn('applicants.current_status', DocumentCompliance::EMPLOYED_STATUSES)
-                ->where('requirement_types.post_deployment_rule', DocumentCompliance::RENEW_WHILE_EMPLOYED)
-                ->count(),
+            'employee_renewals_overdue' => (int) $this->overdueRenewals()->documents,
+            'employees_with_overdue_renewals' => (int) $this->overdueRenewals()->employees,
 
-            'open_violations' => EmployeeViolation::open()->count(),
+            'open_violations' => (int) $this->openViolations()->violations,
+            'employees_with_open_violations' => (int) $this->openViolations()->employees,
 
             'pending_clearance' => (int) $this->resignationAggregate()->pending_clearance,
 
             'resignations_awaiting_employee' => (int) $this->resignationAggregate()->awaiting_employee,
 
             'terminations_for_review' => (int) $this->terminationAggregate()->for_review,
+
+            // HR's review inboxes. The sidebar badges for these are unread
+            // notifications and clear once the page is opened; these count
+            // the records still waiting for a decision.
+            'documents_awaiting_review' => (int) $this->reviewQueues()->documents,
+            'applicants_with_documents_awaiting_review' => (int) $this->reviewQueues()->document_applicants,
+            'documents_unopened' => (int) $this->reviewQueues()->documents_unopened,
+
+            'requisitions_awaiting_review' => (int) $this->reviewQueues()->requisitions_waiting,
+            'requisitions_new' => (int) $this->reviewQueues()->requisitions_new,
+
+            'violation_reports_awaiting_review' => (int) $this->reviewQueues()->violation_reports_waiting,
+            'violation_reports_new' => (int) $this->reviewQueues()->violation_reports_new,
+
+            'incident_reports_open' => (int) $this->reviewQueues()->incident_reports_waiting,
+            'incident_reports_new' => (int) $this->reviewQueues()->incident_reports_new,
+
+            'identity_checks' => (int) $this->applicantAggregate()->awaiting_identity,
         ];
+    }
+
+    /**
+     * What a person needs to be shown each figure: the permissions that open
+     * its list and, for the review queues, act on it. The summary is cached
+     * for everybody, so this is applied per request afterwards. HR and the
+     * administrator hold all of these; a custom role sees only its own work.
+     */
+    private const ATTENTION_PERMISSIONS = [
+        'incomplete_requirements' => ['applicants.view'],
+        'expired_documents' => ['applicants.view'],
+        'applicants_with_expired_documents' => ['applicants.view'],
+        'employee_renewals_overdue' => ['employees.view'],
+        'employees_with_overdue_renewals' => ['employees.view'],
+        'overdue_requests' => ['job_requests.view'],
+        'open_violations' => ['employees.view'],
+        'employees_with_open_violations' => ['employees.view'],
+        'pending_clearance' => ['separation.view'],
+        'resignations_awaiting_employee' => ['separation.view'],
+        'terminations_for_review' => ['separation.view'],
+        'documents_awaiting_review' => ['applicants.view', 'requirements.view', 'requirements.verify'],
+        'applicants_with_documents_awaiting_review' => ['applicants.view', 'requirements.view', 'requirements.verify'],
+        'documents_unopened' => ['applicants.view', 'requirements.view', 'requirements.verify'],
+        'requisitions_awaiting_review' => ['requisitions.view', 'requisitions.review'],
+        'requisitions_new' => ['requisitions.view', 'requisitions.review'],
+        'violation_reports_awaiting_review' => ['violation_reports.view', 'violation_reports.review'],
+        'violation_reports_new' => ['violation_reports.view', 'violation_reports.review'],
+        'incident_reports_open' => ['incident_reports.view', 'incident_reports.review'],
+        'incident_reports_new' => ['incident_reports.view', 'incident_reports.review'],
+        'identity_checks' => ['applicants.view', 'applicants.change_status'],
+    ];
+
+    /** The figures, and their links, this person may see. */
+    private function forViewer(array $summary, $user): array
+    {
+        // Each permission asked about once, not once per figure naming it:
+        // this runs on every request, cached summary or not.
+        $granted = collect(self::ATTENTION_PERMISSIONS)->flatten()->unique()
+            ->mapWithKeys(fn (string $permission) => [$permission => $user->can($permission)]);
+        $allowed = fn (string $key) => collect(self::ATTENTION_PERMISSIONS[$key] ?? [])
+            ->every(fn (string $permission) => $granted[$permission]);
+
+        $summary['attention'] = array_filter($summary['attention'], $allowed, ARRAY_FILTER_USE_KEY);
+        $summary['links'] = array_filter(
+            $summary['links'],
+            fn (string $key) => ! array_key_exists($key, self::ATTENTION_PERMISSIONS) || $allowed($key),
+            ARRAY_FILTER_USE_KEY
+        );
+
+        return $summary;
     }
 
     /**
@@ -336,11 +506,37 @@ class DashboardController extends Controller
                 $this->attention()['incomplete_requirements'],
                 Applicant::query()->inStatuses(ApplicantStatuses::AWAITING_DOCUMENTS)->count(),
             ],
-            'overdue_requests' => [
-                $this->attention()['overdue_requests'],
-                JobRequest::open()->whereNotNull('deployment_deadline')
-                    ->whereDate('deployment_deadline', '<', now())->count(),
+            'overdue_requests' => [$this->attention()['overdue_requests'], JobRequest::overdue()->count()],
+            // The people figures against the list filters that show them.
+            'applicants_with_expired_documents' => [
+                $this->attention()['applicants_with_expired_documents'],
+                Applicant::withExpiredDocuments()->count(),
             ],
+            'employees_with_overdue_renewals' => [
+                $this->attention()['employees_with_overdue_renewals'],
+                Employee::renewalOverdue()->count(),
+            ],
+            'employees_with_open_violations' => [
+                $this->attention()['employees_with_open_violations'],
+                Employee::withOpenViolations()->count(),
+            ],
+            'applicants_with_documents_awaiting_review' => [
+                $this->attention()['applicants_with_documents_awaiting_review'],
+                Applicant::whereHas('requirements', fn ($q) => $q->awaitingReview())->count(),
+            ],
+            'requisitions_awaiting_review' => [
+                $this->attention()['requisitions_awaiting_review'],
+                ManpowerRequisition::whereIn('status', ManpowerRequisition::PENDING_REVIEW)->count(),
+            ],
+            'violation_reports_awaiting_review' => [
+                $this->attention()['violation_reports_awaiting_review'],
+                ViolationReport::whereIn('status', ViolationReport::PENDING_REVIEW)->count(),
+            ],
+            'incident_reports_open' => [
+                $this->attention()['incident_reports_open'],
+                IncidentReport::whereIn('status', IncidentReport::OPEN)->count(),
+            ],
+            'identity_checks' => [$this->attention()['identity_checks'], Applicant::awaitingIdentityCheck()->count()],
             'pending_clearance' => [
                 $this->attention()['pending_clearance'],
                 Resignation::whereIn('status', Resignation::AWAITING_HR)

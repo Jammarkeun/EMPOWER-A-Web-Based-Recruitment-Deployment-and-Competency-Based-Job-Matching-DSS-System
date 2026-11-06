@@ -42,6 +42,13 @@ final class ApplicantStatuses
     /** Statuses that close the record rather than sit on the path. */
     public const CLOSED = ['resigned', 'terminated', 'archived'];
 
+    /**
+     * Statuses never shown on a competency ranking: deployed, or closed. A
+     * deployed worker never returns to the pool - the transition map only
+     * leads on to a closed record - so neither is anybody's recommendation.
+     */
+    public const OFF_RANKINGS = ['deployed', 'active', 'resigned', 'terminated', 'archived'];
+
     /** The statuses a deployment can ever be recorded from (DeploymentService). */
     public const DEPLOYABLE_FROM = ['approved', 'ready_for_deployment'];
 
@@ -111,6 +118,11 @@ final class ApplicantStatuses
     public static function isClosed(string $status): bool
     {
         return in_array($status, self::CLOSED, true);
+    }
+
+    public static function isOffRankings(string $status): bool
+    {
+        return in_array($status, self::OFF_RANKINGS, true);
     }
 
     public static function isPastDocumentGate(string $status): bool

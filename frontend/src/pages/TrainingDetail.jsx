@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
+  CalendarCheck,
   CalendarClock,
   CheckCircle2,
   GraduationCap,
@@ -35,7 +36,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { cn, formatDate, formatDateTime } from '@/lib/utils'
+import { cn, formatDate, formatDateTime, formatTimeRange } from '@/lib/utils'
 
 /**
  * One training session and its roster (audit R-06).
@@ -118,7 +119,12 @@ export default function TrainingDetail() {
       <PageHeader
         breadcrumbs={breadcrumbs}
         title={session.training_title}
-        description={`${formatDate(session.training_date)} · ${session.location} · ${session.trainer_name}`}
+        description={[
+          formatDate(session.training_date),
+          session.start_time ? formatTimeRange(session.start_time, session.end_time) : 'No start time set',
+          session.location,
+          session.trainer_name,
+        ].join(' · ')}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={session.status} />
@@ -180,8 +186,9 @@ export default function TrainingDetail() {
         }
       />
 
-      <div className="mb-5 grid gap-3 sm:grid-cols-4">
+      <div className="mb-5 grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatTile label="Enrolled" value={session.counts.enrolled} icon={Users} />
+        <StatTile label="Confirmed" value={session.counts.confirmed ?? 0} icon={CalendarCheck} tone="info" />
         <StatTile label="Present" value={session.counts.present} icon={CheckCircle2} tone="success" />
         <StatTile label="Absent" value={session.counts.absent} icon={XCircle} />
         <StatTile label="Completed" value={session.counts.completed} icon={GraduationCap} tone="success" />
@@ -246,6 +253,12 @@ export default function TrainingDetail() {
                         <span className="font-mono text-xs text-muted-foreground">{enrollment.applicant.applicant_code}</span>
                         <StatusBadge status={enrollment.applicant.current_status} />
                       </div>
+                      {/* The applicant's own word from the portal, not attendance. */}
+                      {enrollment.attendance_confirmed_at && (
+                        <Badge tone="info" className="mt-1.5" title={`Confirmed ${formatDateTime(enrollment.attendance_confirmed_at)}`}>
+                          Will attend
+                        </Badge>
+                      )}
                     </TableCell>
 
                     <TableCell>

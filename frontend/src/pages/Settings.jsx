@@ -28,6 +28,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import NotificationPreferences from '@/components/NotificationPreferences'
 import ProfilePhotoUploader from '@/components/ProfilePhotoUploader'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input, MobileInput, NameInput, NumberInput } from '@/components/ui/input'
@@ -1121,32 +1123,22 @@ export function criterionProblems(form, editing) {
  */
 function CriterionDialog({ open, onOpenChange, criterion, onSaved }) {
   const editing = Boolean(criterion)
-  const [form, setForm] = React.useState(emptyCriterion())
+  // Every opening starts from what is saved, so a cancelled edit leaves
+  // nothing behind. Seeded as the dialog renders, so its first frame already
+  // shows this requirement rather than the previous one.
+  const { form, setForm, baseline, dirty } = useFormDraft(criterion, fromCriterion, { open, key: criterion?.id ?? 'new' })
   const [errors, setErrors] = React.useState({})
   const [saving, setSaving] = React.useState(false)
   const toast = useToast()
+  const { guard, prompt } = useUnsavedChanges(dirty)
+  const close = guard(onOpenChange)
 
-  // Every opening starts from what is saved, so a cancelled edit leaves
-  // nothing behind.
   React.useEffect(() => {
-    if (!open) return
-    setForm(
-      criterion
-        ? {
-            criteria_code: criterion.criteria_code,
-            criteria_name: criterion.criteria_name ?? '',
-            criteria_type: criterion.criteria_type,
-            value_type: criterion.value_type,
-            score_direction: criterion.score_direction,
-            description: criterion.description ?? '',
-          }
-        : emptyCriterion()
-    )
-    setErrors({})
-  }, [open, criterion])
+    if (open) setErrors({})
+  }, [open])
 
   const editable = ['criteria_name', 'criteria_type', 'score_direction', 'description']
-  const changed = editing ? editable.filter((key) => form[key] !== (criterion[key] ?? '')) : editable
+  const changed = editing ? editable.filter((key) => form[key] !== baseline[key]) : editable
   const inUse = (criterion?.request_criteria_count ?? 0) + (criterion?.company_criteria_count ?? 0)
   const scoringChanged = editing && (changed.includes('criteria_type') || changed.includes('score_direction'))
 
@@ -1187,8 +1179,9 @@ function CriterionDialog({ open, onOpenChange, criterion, onSaved }) {
   const valueOption = VALUE_OPTIONS.find((o) => o.value === form.value_type)
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
+    <Dialog open={open} onOpenChange={(next) => !saving && close(next)}>
       <DialogContent className="max-w-2xl">
+        {prompt}
         <DialogHeader>
           <DialogTitle>{editing ? 'Edit job requirement' : 'Add job requirement'}</DialogTitle>
           <DialogDescription>
@@ -1307,7 +1300,7 @@ function CriterionDialog({ open, onOpenChange, criterion, onSaved }) {
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            <Button type="button" variant="outline" onClick={() => close(false)} disabled={saving}>
               Cancel
             </Button>
             <Button type="submit" disabled={saving || (editing && changed.length === 0)}>
@@ -1347,6 +1340,18 @@ function emptyRequirement() {
     requirement_group: 'primary',
     is_required: true,
     has_expiry: false,
+  }
+}
+
+function fromCriterion(criterion) {
+  if (!criterion) return emptyCriterion()
+  return {
+    criteria_code: criterion.criteria_code,
+    criteria_name: criterion.criteria_name ?? '',
+    criteria_type: criterion.criteria_type,
+    value_type: criterion.value_type,
+    score_direction: criterion.score_direction,
+    description: criterion.description ?? '',
   }
 }
 

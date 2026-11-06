@@ -9,13 +9,14 @@ import ApplicantSession, { TRAINING_TONES, isOpenSession } from '@/components/tr
  * The applicant's own training: where the step stands and every session they
  * are on.
  *
- * Read-only. Attendance and completion are recorded by HR on the staff
- * Training screen, and only a recorded completion finishes the step - so this
- * page reports the record rather than offering anything to tick. Opening it
- * marks no notification read; the bell is the only place that does that.
+ * Attendance and completion are recorded by HR on the staff Training screen,
+ * and only a recorded completion finishes the step - so this page reports the
+ * record rather than offering anything to tick. The one thing the applicant
+ * can do here is tell the office they will attend an upcoming session. Opening
+ * it marks no notification read; the bell is the only place that does that.
  */
 export default function PortalTraining() {
-  const { data, loading, error, refetch } = useApi('/portal/training')
+  const { data, loading, error, refetch, setData } = useApi('/portal/training')
 
   if (loading) return <LoadingState label="Loading your training…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
@@ -50,13 +51,15 @@ export default function PortalTraining() {
           </CardHeader>
           <CardContent className="space-y-2.5">
             {open.map((session) => (
-              <ApplicantSession key={session.enrollment_id} session={session} />
+              <ApplicantSession key={session.enrollment_id} session={session} onConfirmed={setData} />
             ))}
-            {/* Sessions are recorded by date; a start time is not stored, so
-                none is shown. Saying where to ask beats leaving it unsaid. */}
-            <p className="text-xs text-muted-foreground">
-              Please contact the office if you have not been told what time to arrive.
-            </p>
+            {/* Sessions scheduled before times were kept have none. Saying
+                where to ask beats leaving it unsaid. */}
+            {open.some((session) => !session.start_time) && (
+              <p className="text-xs text-muted-foreground">
+                Please contact the office if you have not been told what time to arrive.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

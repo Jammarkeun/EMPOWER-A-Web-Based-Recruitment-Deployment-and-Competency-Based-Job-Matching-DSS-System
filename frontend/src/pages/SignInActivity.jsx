@@ -86,7 +86,8 @@ function DeviceCell({ device, isMobile, userAgent }) {
 function SignedInNow() {
   const { can } = useAuth()
   const toast = useToast()
-  const { data, loading, error, refetch } = useApi('/security/sessions')
+  // Shows sign-ins, so it also refreshes when somebody signs in or out.
+  const { data, loading, error, refetch } = useApi('/security/sessions', undefined, { live: 'activity' })
   const [ending, setEnding] = React.useState(null)
 
   async function signOut() {
@@ -185,12 +186,17 @@ function History() {
 
   React.useEffect(() => setPage(1), [result, debounced])
 
-  const { data, meta, loading, error, refetch } = useApi('/security/sign-ins', {
-    result: result || undefined,
-    search: debounced || undefined,
-    page,
-    per_page: 50,
-  })
+  const { data, meta, loading, error, refetch } = useApi(
+    '/security/sign-ins',
+    {
+      result: result || undefined,
+      search: debounced || undefined,
+      page,
+      per_page: 50,
+    },
+    // Shows sign-ins, so it also refreshes when somebody signs in or out.
+    { live: 'activity' }
+  )
 
   return (
     <div className="space-y-3">

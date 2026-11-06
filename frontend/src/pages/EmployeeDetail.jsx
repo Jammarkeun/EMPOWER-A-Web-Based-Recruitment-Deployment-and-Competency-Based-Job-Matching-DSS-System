@@ -14,7 +14,7 @@ import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Input, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { Field, FormGrid } from '@/components/ui/form'
+import { Field, FormGrid, useFocusFirstError } from '@/components/ui/form'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import {
   Dialog,
@@ -29,6 +29,7 @@ import { DOCUMENT_ACCEPT } from '@/lib/uploads'
 import SeparationPanel from '@/components/SeparationPanel'
 import AttendancePanel from '@/components/AttendancePanel'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
 import ReassignDialog from '@/components/dialogs/ReassignDialog'
 import ViolationDialog from '@/components/dialogs/ViolationDialog'
 
@@ -119,7 +120,7 @@ export default function EmployeeDetail() {
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
           <p>
             {openCases.termination
-              ? 'A termination is awaiting review.'
+              ? 'A termination request is open.'
               : 'A resignation is being processed.'}{' '}
             <button type="button" className="font-medium text-primary hover:underline" onClick={() => selectTab('assignment')}>
               See the separation below
@@ -367,6 +368,10 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
   const [submitting, setSubmitting] = React.useState(false)
   const [reviewing, setReviewing] = React.useState(false)
   const toast = useToast()
+  const [formRef, focusFirstError] = useFocusFirstError()
+  const dirty = open && (JSON.stringify(form) !== JSON.stringify(blank()) || file !== null)
+  const { guard, prompt } = useUnsavedChanges(dirty)
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
     if (open) {
@@ -415,15 +420,17 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
       if (type === 'resignation') {
         toast.success('Resignation filed', 'Record clearance and an exit date, then complete it.')
       } else {
-        toast.success('Termination filed for review', 'An administrator must finalise or withdraw it.')
+        toast.success('Termination request submitted', 'The administrators have been notified to review it.')
       }
 
       onOpenChange(false)
       onSaved()
     } catch (error) {
       setReviewing(false)
-      if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not file the separation', error.message)
+      if (error.isValidation) {
+        setErrors(error.errors)
+        focusFirstError()
+      } else toast.error('Could not file the separation', error.message)
     } finally {
       setSubmitting(false)
     }
@@ -434,6 +441,7 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
 
     if (!form.reason.trim()) {
       setErrors({ reason: ['A reason is required.'] })
+      focusFirstError()
       return
     }
 
@@ -449,17 +457,18 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
 
   return (
     <>
-      <Dialog open={open && !reviewing} onOpenChange={(next) => !submitting && onOpenChange(next)}>
+      <Dialog open={open && !reviewing} onOpenChange={(next) => !submitting && close(next)}>
         <DialogContent>
+          {prompt}
           <DialogHeader>
             <DialogTitle>File separation</DialogTitle>
             <DialogDescription>
               Filing records the intent. Employment does not end until the resignation is cleared and
-              completed, or the termination is finalised by an administrator.
+              completed, or the termination is approved by an administrator, cleared, and finalised by HR.
             </DialogDescription>
           </DialogHeader>
 
-          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          <form ref={formRef} onSubmit={handleSubmit} className="space-y-4" noValidate>
             <Field label="Type" htmlFor="type" required>
               <Select value={type} onChange={(e) => setType(e.target.value)}>
                 <option value="resignation" disabled={openCases.resignation}>
@@ -540,7 +549,7 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
             </Field>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              <Button type="button" variant="outline" onClick={() => close(false)}>
                 Cancel
               </Button>
               <Button type="submit" variant={type === 'termination' ? 'destructive' : 'default'} disabled={submitting}>
@@ -556,8 +565,8 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
         open={open && reviewing}
         onOpenChange={(next) => !next && setReviewing(false)}
         tone="warning"
-        title="File a termination for review?"
-        description="This does not end the employment yet. An administrator reviews it and either finalises or withdraws it."
+        title="Submit a termination request for review?"
+        description="This does not end the employment. An administrator approves, returns, or rejects the request; if approved, HR completes the clearance and then finalises it."
         details={[
           ['Employee', employee.full_name],
           ['Employee no.', employee.employee_number],
@@ -566,10 +575,10 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
           ['Attachment', file?.name],
         ]}
         consequences={[
-          'The termination is recorded as awaiting review, with you as the officer who filed it.',
-          'The employee stays active until it is finalised.',
+          'The request is recorded as awaiting review, with you as the officer who filed it, and the administrators are notified.',
+          'The employee stays active, and is not told, until it is finalised.',
         ]}
-        confirmLabel="File for review"
+        confirmLabel="Submit for review"
         onConfirm={submit}
       >
         <Button type="button" variant="link" size="sm" className="h-auto justify-start p-0" onClick={() => setReviewing(false)}>
@@ -590,7 +599,7 @@ function SeparationDialog({ open, onOpenChange, employee, openCases, onSaved }) 
  * screen has to say which is which before anybody acts on it.
  *
  * Reaching the threshold is stated as a prompt to review, never as an outcome.
- * The system does not terminate anybody; an administrator decides.
+ * The system does not terminate anybody; an administrator decides on HR's request.
  */
 function ViolationPolicySummary({ violations }) {
   const rows = violations ?? []

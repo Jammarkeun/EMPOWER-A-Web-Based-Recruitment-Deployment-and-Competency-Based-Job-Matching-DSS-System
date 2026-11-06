@@ -10,6 +10,7 @@ use App\Models\RequirementType;
 use App\Notifications\RequirementReviewed;
 use App\Services\ApplicantLifecycleService;
 use App\Services\AuditService;
+use App\Services\BioDataService;
 use App\Services\DocumentReviewService;
 use App\Services\DocumentStorageService;
 use App\Services\FolderCategoryService;
@@ -26,6 +27,7 @@ class RequirementController extends Controller
         private readonly FolderCategoryService $folders,
         private readonly ApplicantLifecycleService $lifecycle,
         private readonly AuditService $audit,
+        private readonly BioDataService $bioData,
     ) {
     }
 
@@ -76,7 +78,7 @@ class RequirementController extends Controller
             'remarks' => ['nullable', 'string', 'max:1000'],
             // How the document was checked. Optional: when it is not given the
             // system infers it below, so existing callers keep working.
-            'verification_method' => ['nullable', Rule::in(['online_upload', 'walk_in', 'other'])],
+            'verification_method' => ['nullable', Rule::in(self::VERIFICATION_METHODS)],
             'verification_note' => ['nullable', 'string', 'max:255'],
             'expiry_override_reason' => ['nullable', 'string', 'max:255'],
         ]);
@@ -125,13 +127,16 @@ class RequirementController extends Controller
                 // officer was looking at an upload, no file means they were
                 // looking at the original in their hand.
                 'verification_method' => $isVerified
-                    ? ($data['verification_method']
-                        ?? ($requirement->file_path ? 'online_upload' : 'walk_in'))
+                    ? ($data['verification_method'] ?? $this->inferredMethod($requirement))
                     : null,
                 'verification_note' => $isVerified
                     ? ($data['verification_note'] ?? $data['expiry_override_reason'] ?? null)
                     : null,
             ])->save();
+
+            // A digital Bio-Data decided here rather than in its own review
+            // still closes the submission and reaches the profile.
+            $this->bioData->syncFromChecklist($requirement, $request->user());
 
             $applicant->unsetRelation('requirements');
             $this->folders->recalculate($applicant);
@@ -229,7 +234,7 @@ class RequirementController extends Controller
         $data = $request->validate([
             'requirement_type_ids' => ['required', 'array', 'min:1'],
             'requirement_type_ids.*' => ['integer', 'exists:requirement_types,id'],
-            'verification_method' => ['nullable', Rule::in(['online_upload', 'walk_in', 'other'])],
+            'verification_method' => ['nullable', Rule::in(self::VERIFICATION_METHODS)],
             'verification_note' => ['nullable', 'string', 'max:255'],
             'expiry_override_reason' => ['nullable', 'string', 'max:255'],
         ]);
@@ -267,12 +272,13 @@ class RequirementController extends Controller
                     'rejection_reason' => null,
                     'verified_at' => now(),
                     'verified_by' => $request->user()->id,
-                    'verification_method' => $data['verification_method']
-                        ?? ($requirement->file_path ? 'online_upload' : 'walk_in'),
+                    'verification_method' => $data['verification_method'] ?? $this->inferredMethod($requirement),
                     'verification_note' => $data['verification_note']
                         ?? $data['expiry_override_reason']
                         ?? null,
                 ])->save();
+
+                $this->bioData->syncFromChecklist($requirement, $request->user());
 
                 $verified[] = $requirement->requirementType?->requirement_name;
             }
@@ -310,6 +316,23 @@ class RequirementController extends Controller
         ], count($verified) === 1
             ? '1 document verified'
             : count($verified).' documents verified');
+    }
+
+    /** online_form is a digital Bio-Data, checked from what the applicant entered. */
+    private const VERIFICATION_METHODS = ['online_upload', 'online_form', 'walk_in', 'other'];
+
+    /**
+     * How a document was checked, when the officer does not say: a digital
+     * form was read on screen, a stored file was an upload, and anything
+     * else was the original in their hand.
+     */
+    private function inferredMethod(ApplicantRequirement $requirement): string
+    {
+        return match (true) {
+            $requirement->isDigitalSubmission() => 'online_form',
+            (bool) $requirement->file_path => 'online_upload',
+            default => 'walk_in',
+        };
     }
 
     /**

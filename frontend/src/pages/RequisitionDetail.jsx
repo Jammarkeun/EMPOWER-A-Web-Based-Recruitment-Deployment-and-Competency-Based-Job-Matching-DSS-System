@@ -2,12 +2,13 @@ import * as React from 'react'
 import { useParams } from 'react-router-dom'
 import { Loader2, Eye, CornerUpLeft, CheckCircle2, Ban, PackageCheck, ClipboardList, Printer } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
-import { post } from '@/lib/api'
+import { get, post } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Field } from '@/components/ui/form'
+import { Select } from '@/components/ui/select'
 import { LoadingState, ErrorState } from '@/components/ui/states'
 import {
   Dialog,
@@ -17,16 +18,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import NewJobRequestDialog from '@/components/dialogs/NewJobRequestDialog'
 import {
   ProvisionalFormNotice,
   RequisitionDetails,
   RequisitionPrintSheet,
   RequisitionProgress,
-  manpowerSummary,
-  reasonText,
 } from '@/components/coordination/RequisitionParts'
 import { ReportStatus } from './coordinator/CoordinatorEmployeeDetail'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
 import { formatDate, formatDateTime } from '@/lib/utils'
 
 const ACTIONS = {
@@ -52,7 +51,17 @@ const ACTIONS = {
     icon: CheckCircle2,
     variant: 'default',
     title: 'Approve this requisition',
-    description: 'Approving starts nothing by itself. Record it as a manpower request next, to set criteria and recruit.',
+    description:
+      'Approving creates the manpower request from this requisition straight away. You then set its matching criteria on the request.',
+    converts: true,
+  },
+  convert: {
+    label: 'Create manpower request',
+    icon: ClipboardList,
+    variant: 'default',
+    title: 'Create the manpower request',
+    description: 'This requisition was approved before approval created requests. Its request is made from what the form says.',
+    converts: true,
   },
   fulfil: {
     label: 'Mark fulfilled',
@@ -61,24 +70,6 @@ const ACTIONS = {
     title: 'Mark this requisition fulfilled',
     description: 'Use when the client has the people it asked for.',
   },
-}
-
-/**
- * What the manpower request keeps of the requisition, as its remarks. On CDE's
- * form that is the reason, the qualifications and the remarks; a temporary-form
- * requisition only ever had its free-text reason.
- */
-export function requestRemarks(r) {
-  if (r.provisional) return r.reason
-
-  return [
-    `Total Manpower Needed: ${manpowerSummary(r)}`,
-    `Reason of Request: ${reasonText(r)}`,
-    r.qualifications && `Required Qualification(s): ${r.qualifications}`,
-    r.other_remarks && `Other Remarks: ${r.other_remarks}`,
-  ]
-    .filter(Boolean)
-    .join('\n')
 }
 
 /**
@@ -93,7 +84,6 @@ export default function RequisitionDetail() {
   const { data: r, loading, error, refetch } = useApi(`/requisitions/${id}`)
   const [action, setAction] = React.useState(null)
   const [busy, setBusy] = React.useState(false)
-  const [recording, setRecording] = React.useState(false)
 
   if (loading) return <LoadingState label="Loading requisition…" />
   if (error) return <ErrorState message={error.message} onRetry={refetch} />
@@ -142,10 +132,10 @@ export default function RequisitionDetail() {
                 </Button>
               )
             })}
-            {r.can_record_request && (
-              <Button onClick={() => setRecording(true)}>
+            {r.can_convert && (
+              <Button onClick={() => setAction('convert')}>
                 <ClipboardList className="h-4 w-4" />
-                Record as manpower request
+                Create manpower request
               </Button>
             )}
           </>
@@ -163,7 +153,7 @@ export default function RequisitionDetail() {
 
       <ReviewDialog
         action={action}
-        requisitionId={r.id}
+        requisition={r}
         onOpenChange={(open) => !open && setAction(null)}
         onDone={() => {
           setAction(null)
@@ -171,41 +161,44 @@ export default function RequisitionDetail() {
         }}
       />
 
-      <NewJobRequestDialog
-        open={recording}
-        onOpenChange={setRecording}
-        onCreated={refetch}
-        initial={{
-          manpower_requisition_id: r.id,
-          client_company_id: String(r.client_company_id),
-          client_department_id: r.client_department_id ? String(r.client_department_id) : '',
-          job_position_id: r.job_position_id ? String(r.job_position_id) : '',
-          position_title: r.job_position_id ? '' : r.position_title,
-          workers_needed: String(r.workers_needed),
-          date_requested: r.date_requested,
-          deployment_deadline: r.required_by,
-          request_source: `Coordinator requisition ${r.requisition_code}`,
-          remarks: requestRemarks(r),
-        }}
-        sourceLabel={r.requisition_code}
-      />
     </div>
     {!r.provisional && <RequisitionPrintSheet requisition={r} />}
     </>
   )
 }
 
-function ReviewDialog({ action, requisitionId, onOpenChange, onDone }) {
+function ReviewDialog({ action, requisition, onOpenChange, onDone }) {
   const toast = useToast()
   const config = action ? ACTIONS[action] : null
+  const needs = requisition.conversion ?? {}
   const [note, setNote] = React.useState('')
+  const [departmentId, setDepartmentId] = React.useState('')
+  const [positionChoice, setPositionChoice] = React.useState('')
+  const [departments, setDepartments] = React.useState([])
+  const [positions, setPositions] = React.useState([])
   const [errors, setErrors] = React.useState({})
   const [busy, setBusy] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(Boolean(action) && (note.trim() !== '' || departmentId !== '' || positionChoice !== ''))
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
-    if (action) {
-      setNote('')
-      setErrors({})
+    if (!action) return
+    setNote('')
+    setErrors({})
+    setDepartmentId('')
+    setPositionChoice('')
+    if (!ACTIONS[action]?.converts) return
+
+    // Only what the form leaves open is asked for; the rest comes from it.
+    if (needs.needs_department) {
+      get(`/clients/${requisition.client_company_id}/departments`)
+        .then((response) => setDepartments(response.data.filter((d) => d.status === 'active')))
+        .catch((err) => toast.error('Could not load departments', err.message))
+    }
+    if (needs.needs_position) {
+      get('/positions', { client_company_id: requisition.client_company_id, status: 'active' })
+        .then((response) => setPositions(response.data.positions ?? []))
+        .catch(() => setPositions([]))
     }
   }, [action])
 
@@ -215,9 +208,18 @@ function ReviewDialog({ action, requisitionId, onOpenChange, onDone }) {
     event.preventDefault()
     setBusy(true)
     setErrors({})
+    const payload = { note: note || null }
+    if (config.converts) {
+      if (departmentId) payload.client_department_id = Number(departmentId)
+      if (positionChoice === 'new') payload.confirm_new_position = true
+      else if (positionChoice) payload.job_position_id = Number(positionChoice)
+    }
     try {
-      const response = await post(`/requisitions/${requisitionId}/review`, { action, note: note || null })
-      toast.success(response.message, 'The coordinator has been told.')
+      const response =
+        action === 'convert'
+          ? await post(`/requisitions/${requisition.id}/convert`, payload)
+          : await post(`/requisitions/${requisition.id}/review`, { action, ...payload })
+      toast.success(response.message, action === 'convert' ? undefined : 'The coordinator has been told.')
       onDone()
     } catch (err) {
       if (err.isValidation) setErrors(err.errors)
@@ -228,23 +230,83 @@ function ReviewDialog({ action, requisitionId, onOpenChange, onDone }) {
   }
 
   return (
-    <Dialog open onOpenChange={(open) => !busy && onOpenChange(open)}>
+    <Dialog open onOpenChange={(open) => !busy && close(open)}>
       <DialogContent className="max-w-md">
+        {prompt}
         <DialogHeader>
           <DialogTitle>{config.title}</DialogTitle>
           <DialogDescription>{config.description}</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4" noValidate>
-          <Field
-            label={config.noteRequired ? 'Reason' : 'Note (optional)'}
-            htmlFor="requisition_note"
-            required={config.noteRequired}
-            error={errors.note?.[0]}
-          >
-            <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
-          </Field>
+          {config.converts && (
+            <div className="rounded-row bg-inset px-3 py-2 text-xs text-muted-foreground">
+              The request takes this requisition's client, position, {requisition.workers_needed} worker(s), dates and
+              wording. Nothing is typed in again.
+            </div>
+          )}
+
+          {config.converts && needs.needs_department && (
+            <Field
+              label="Department"
+              htmlFor="conversion_department"
+              required
+              error={errors.client_department_id?.[0]}
+              hint="CDE's form has no department and the coordinator chose none. Pick the client department these workers are for."
+            >
+              <Select
+                id="conversion_department"
+                value={departmentId}
+                onChange={(e) => setDepartmentId(e.target.value)}
+                placeholder="Select a department"
+              >
+                {departments.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.department_name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+
+          {config.converts && needs.needs_position && (
+            <Field
+              label={`Position for "${requisition.position_title}"`}
+              htmlFor="conversion_position"
+              required
+              error={errors.job_position_id?.[0]}
+              hint="Not one of this client's positions yet. Pick the one it means, or confirm it is a new position."
+            >
+              <Select
+                id="conversion_position"
+                value={positionChoice}
+                onChange={(e) => setPositionChoice(e.target.value)}
+                placeholder="Select a position"
+              >
+                <option value="new">
+                  New position: {requisition.position_title}
+                  {needs.matching_position ? ' (bring back the withdrawn one)' : ''}
+                </option>
+                {positions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.position_title}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+
+          {action !== 'convert' && (
+            <Field
+              label={config.noteRequired ? 'Reason' : 'Note (optional)'}
+              htmlFor="requisition_note"
+              required={config.noteRequired}
+              error={errors.note?.[0]}
+            >
+              <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
+            </Field>
+          )}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            <Button type="button" variant="outline" onClick={() => close(false)} disabled={busy}>
               Cancel
             </Button>
             <Button type="submit" variant={action === 'reject' ? 'destructive' : 'default'} disabled={busy}>

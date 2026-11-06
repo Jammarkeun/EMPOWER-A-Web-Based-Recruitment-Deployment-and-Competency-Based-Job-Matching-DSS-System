@@ -385,7 +385,7 @@ class FilterAccuracyTest extends TestCase
         $this->getJson('/api/v1/employees?employment_status=fired')->assertStatus(422);
         $this->getJson('/api/v1/deployments?deployment_status=done')->assertStatus(422);
         $this->getJson('/api/v1/job-requests?request_status=opened')->assertStatus(422);
-        $this->getJson('/api/v1/separations?status=rejected')->assertStatus(422);
+        $this->getJson('/api/v1/separations?status=dismissed')->assertStatus(422);
         // Values the schema once listed but nothing ever wrote.
         $this->getJson('/api/v1/employees?employment_status=archived')->assertStatus(422);
         $this->getJson('/api/v1/deployments?deployment_status=completed')->assertStatus(422);

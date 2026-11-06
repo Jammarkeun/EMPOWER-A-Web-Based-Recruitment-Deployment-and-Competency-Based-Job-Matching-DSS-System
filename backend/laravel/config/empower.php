@@ -259,6 +259,48 @@ return [
     */
     'separation' => [
         'notice_days' => 30,
+
+        /*
+        | The pre-termination clearance HR completes after an administrator has
+        | approved a termination request, and before it can be finalised.
+        |
+        | Two checks. Obligations: EMPOWER keeps no loan or cash-advance
+        | records, so whatever is owed is verified with whoever keeps them and
+        | the outcome written down here; nothing is computed, deducted or
+        | settled by the system. The violation history is a record to be read
+        | before deciding, not a condition: marking it reviewed says it was
+        | read, whatever it contains.
+        |
+        | An office-by-office signed clearance was listed here until
+        | 2026-11-03. It was our assumption, not a step CDE described, and was
+        | removed; requests approved before then keep their copy of it on file,
+        | no longer shown or counted (TerminationClearanceItem::RETIRED).
+        |
+        | Copied onto each request when it is approved, so editing this list
+        | changes later cases only. Pending CDE's confirmation (C7).
+        |
+        | kind: obligation | record_review
+        | requires_remarks: what was verified, with whom, must be written down
+        | before the item can be marked cleared - used where EMPOWER holds no
+        | record of its own to show.
+        */
+        'termination_clearance' => [
+            'outstanding_obligations' => [
+                'label' => 'Outstanding obligations verified',
+                'kind' => 'obligation',
+                'mandatory' => true,
+                'requires_remarks' => true,
+                'description' => 'Loans, salary or cash advances, and anything else owed. EMPOWER keeps no record of these: '
+                    .'confirm with the office that does, and record what it found and how any balance will be settled.',
+            ],
+            'violation_history_reviewed' => [
+                'label' => 'Violation history reviewed',
+                'kind' => 'record_review',
+                'mandatory' => true,
+                'requires_remarks' => false,
+                'description' => 'Confirms the disciplinary record below was read. What it contains neither blocks nor justifies the termination.',
+            ],
+        ],
     ],
 
     /*
@@ -304,6 +346,20 @@ return [
     | been moved to "approved" by an officer first. Change it once CDE answers.
     */
     'require_client_approval_before_deployment' => false,
+
+    /*
+    | The digital Bio-Data (adviser's recommendation, November 2026).
+    |
+    | Whether CDE still wants a printed copy signed by the applicant has not
+    | been confirmed. Off: the form is complete once HR verifies it, and the
+    | PDF carries no signature line. On: the portal asks the applicant to
+    | print, sign and bring the PDF, and the PDF gains a signature line. In
+    | neither case does the system collect an electronic signature. Change it
+    | from Settings once CDE answers.
+    */
+    'bio_data' => [
+        'signed_copy_required' => false,
+    ],
 
     /*
     | Record retention.
@@ -400,6 +456,8 @@ return [
         'incident_report' => 'IR',
         'requisition' => 'MRF',
         'attendance_import' => 'DTR',
+        'schedule_submission' => 'WS',
+        'dtr_submission' => 'DTRS',
     ],
 
     /*

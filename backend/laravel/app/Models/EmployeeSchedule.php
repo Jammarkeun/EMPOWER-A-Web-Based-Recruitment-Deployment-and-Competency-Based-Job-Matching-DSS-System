@@ -6,6 +6,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * What an employee is meant to work, from a given date, at a given placement.
@@ -90,6 +91,15 @@ class EmployeeSchedule extends Model
     public function voider(): BelongsTo
     {
         return $this->belongsTo(User::class, 'voided_by');
+    }
+
+    /**
+     * The coordinator's submission this schedule was approved from, if it
+     * came that way rather than being entered by HR.
+     */
+    public function submission(): HasOne
+    {
+        return $this->hasOne(ScheduleSubmission::class, 'employee_schedule_id');
     }
 
     public function scopeInForce(Builder $query): Builder

@@ -3,6 +3,7 @@
 namespace App\Services\Attendance;
 
 use App\Models\AttendanceCoveragePeriod;
+use App\Models\AttendanceDtrPeriod;
 use App\Models\AttendanceException;
 use App\Models\AttendanceRecord;
 use App\Models\EmployeeSchedule;
@@ -14,7 +15,7 @@ use Illuminate\Support\Collection;
  *
  * A workforce summary compares every deployed worker over a month. Loading
  * schedules, time records, coverage, exceptions and placements per person
- * would cost six queries each; loading them for the whole set costs six in all.
+ * would cost six queries each; loading them for the whole set costs seven in all.
  */
 final class AttendanceContext
 {
@@ -31,6 +32,8 @@ final class AttendanceContext
         public readonly Collection $clientExceptions,
         /** employee id => PlacementTimeline */
         public readonly Collection $placements,
+        /** client company id => DTR periods HR confirmed complete */
+        public readonly Collection $confirmedPeriods = new Collection(),
     ) {
     }
 
@@ -73,6 +76,14 @@ final class AttendanceContext
             ->where(fn ($q) => $q->whereIn('employee_id', $ids)->orWhereNull('employee_id'))
             ->get();
 
+        // Few rows - one per client per cutoff - so not narrowed by employee.
+        $confirmed = AttendanceDtrPeriod::query()
+            ->where('status', 'complete')
+            ->whereDate('period_from', '<=', $toDate)
+            ->whereDate('period_to', '>=', $fromDate)
+            ->get()
+            ->groupBy('client_company_id');
+
         return new self(
             $schedules,
             $records,
@@ -80,6 +91,7 @@ final class AttendanceContext
             $exceptions->whereNotNull('employee_id')->groupBy('employee_id'),
             $exceptions->whereNull('employee_id')->values(),
             PlacementTimeline::forEmployees($ids),
+            $confirmed,
         );
     }
 
@@ -96,6 +108,16 @@ final class AttendanceContext
     public function coverageFor(int $employeeId): Collection
     {
         return $this->coverage->get($employeeId, collect());
+    }
+
+    /**
+     * Whether HR has confirmed the client's DTR complete for a day: every
+     * employee placed there that day is then covered, file or no file.
+     */
+    public function dtrConfirmed(?int $clientCompanyId, CarbonImmutable $date): bool
+    {
+        return $clientCompanyId !== null
+            && $this->confirmedPeriods->get($clientCompanyId, collect())->contains(fn (AttendanceDtrPeriod $p) => $p->covers($date));
     }
 
     public function exceptionsFor(int $employeeId): Collection

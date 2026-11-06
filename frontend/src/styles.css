@@ -32,12 +32,16 @@
     --text-subtle: 215 20% 65%;      /* #94A3B8 */
     --border-strong: 215 28% 82%;    /* #C3CEDD */
 
-    /* Base Surfaces */
-    --background: 220 33% 98%;       /* #F7F9FC */
+    /* Base Surfaces. The canvas sits a step below white so the white panels
+       on it read as white rather than blending into the page. */
+    --background: 216 30% 94%;       /* #EBEFF4 */
     --foreground: 216 57% 15%;       /* #10213A */
 
     --card: 0 0% 100%;               /* #FFFFFF */
     --card-foreground: 216 57% 15%;
+    /* A hairline and a soft lift for a white panel on the canvas. */
+    --card-edge: 0 0 0 1px hsl(215 25% 89% / 0.8), 0 1px 2px 0 rgb(16 33 58 / 0.04),
+      0 6px 16px -8px rgb(16 33 58 / 0.10);
 
     --popover: 0 0% 100%;
     --popover-foreground: 216 57% 15%;
@@ -49,7 +53,11 @@
     --secondary-foreground: 216 57% 15%;
 
     --muted: 215 25% 95%;            /* #F1F5F9 */
-    --muted-foreground: 215 16% 45%; /* #64748B */
+    /* #5E6D82. One step darker than 45% (#607085), which measured 4.38:1 on
+       the canvas and on selected rows, under the 4.5:1 WCAG AA minimum for
+       body text. Same hue and saturation, so the theme does not change; now
+       at least 4.54:1 on every light surface (usability audit, 2 Nov 2026). */
+    --muted-foreground: 215 16% 44%;
 
     --accent: 216 28% 95%;
     --accent-foreground: 216 57% 15%;
@@ -127,6 +135,7 @@
 
     --card: 222 40% 11%;
     --card-foreground: 210 30% 92%;
+    --card-edge: none;
 
     --popover: 222 40% 11%;
     --popover-foreground: 210 30% 92%;
@@ -221,6 +230,22 @@
 }
 
 @layer components {
+  /*
+   * Every white panel on the canvas - the Card component and the panels drawn
+   * by hand with rounded-panel bg-card - gets the light-mode edge. Anything
+   * nested inside a panel is already recessed into grey and stays flat.
+   * Declared in this layer so a page's own shadow utility still wins.
+   */
+  [data-surface='card'],
+  .rounded-panel.bg-card {
+    box-shadow: var(--card-edge);
+  }
+
+  [data-surface='card'] [data-surface='card'],
+  [data-surface='card'] .rounded-panel.bg-card {
+    box-shadow: none;
+  }
+
   /* The one highlighted figure on a screen: brand blue deepening into navy. */
   .surface-highlight {
     background-image: linear-gradient(180deg, hsl(var(--brand)), hsl(var(--navy-900)));

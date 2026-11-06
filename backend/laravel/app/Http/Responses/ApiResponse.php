@@ -74,6 +74,7 @@ class ApiResponse
     public static function paginated(
         LengthAwarePaginator|ResourceCollection $paginator,
         string $message = 'Request completed',
+        array $extraMeta = [],
     ): JsonResponse {
         $resolved = $paginator instanceof ResourceCollection
             ? $paginator->resource
@@ -90,6 +91,6 @@ class ApiResponse
             'last_page' => $resolved->lastPage(),
             'from' => $resolved->firstItem(),
             'to' => $resolved->lastItem(),
-        ]);
+        ] + $extraMeta);
     }
 }

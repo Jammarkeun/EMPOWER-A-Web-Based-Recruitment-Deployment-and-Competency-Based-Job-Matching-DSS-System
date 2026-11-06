@@ -59,7 +59,8 @@ class ReportBuilder
             return 12; // one row per month
         }
 
-        return $this->{Str::camel($type).'Query'}($filters)->count();
+        // Without the report's ORDER BY: Postgres refuses one beside count(*).
+        return $this->{Str::camel($type).'Query'}($filters)->reorder()->count();
     }
 
     public function build(string $type, array $filters = []): array
@@ -373,8 +374,7 @@ class ReportBuilder
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '<=', $v))
-            ->orderByDesc('training_date')
-            ->orderByDesc('id');
+            ->alphabetical();
     }
 
     private function buildTraining(array $filters): array

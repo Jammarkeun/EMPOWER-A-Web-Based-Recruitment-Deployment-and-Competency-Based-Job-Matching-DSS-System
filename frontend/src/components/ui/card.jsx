@@ -2,7 +2,8 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 /**
- * A white panel floating on the canvas, with no border and no shadow.
+ * A white panel floating on the canvas. In light mode it carries a hairline
+ * edge and a soft lift (--card-edge in styles.css) so it stands off the page.
  *
  * The surface marks itself with data-surface="card" so anything inside that
  * would otherwise be white on white - a nested card, a list row, a field - can

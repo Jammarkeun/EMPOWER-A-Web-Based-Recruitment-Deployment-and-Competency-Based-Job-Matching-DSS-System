@@ -13,6 +13,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
 use ReflectionMethod;
+use Tests\Support\ProcessesTerminations;
 use RuntimeException;
 use Tests\Support\SeedsDomainData;
 use Tests\TestCase;
@@ -30,6 +31,7 @@ class DeploymentGuardsTest extends TestCase
 {
     use RefreshDatabase;
     use SeedsDomainData;
+    use ProcessesTerminations;
 
     protected function setUp(): void
     {
@@ -141,8 +143,7 @@ class DeploymentGuardsTest extends TestCase
             'status' => 'for_review',
         ])->assertCreated()->json('data.id');
 
-        $this->app['auth']->forgetGuards();
-        Sanctum::actingAs($this->adminUser());
+        $this->approveAndClearTermination($employee->id, $termination, $hr);
         $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/finalise", ['confirm' => true])
             ->assertOk();
 

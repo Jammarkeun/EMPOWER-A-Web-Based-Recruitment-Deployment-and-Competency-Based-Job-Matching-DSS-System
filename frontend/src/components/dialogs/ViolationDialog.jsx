@@ -15,6 +15,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import { todayISO } from '@/lib/utils'
 
 /**
@@ -33,17 +35,18 @@ export default function ViolationDialog({ open, onOpenChange, employeeId, initia
     description: '',
     penalty: '',
   })
-  const [form, setForm] = React.useState(blank)
+  // The prefill is rebuilt whenever the day's review refreshes; what has been
+  // typed over it is kept (useFormDraft).
+  const { form, setForm, dirty } = useFormDraft(initial, (prefill) => ({ ...blank(), ...(prefill ?? {}) }), { open })
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
   const toast = useToast()
+  const { guard, prompt } = useUnsavedChanges(dirty)
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
-    if (open) {
-      setForm({ ...blank(), ...(initial ?? {}) })
-      setErrors({})
-    }
-  }, [open, initial])
+    if (open) setErrors({})
+  }, [open])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -67,8 +70,9 @@ export default function ViolationDialog({ open, onOpenChange, employeeId, initia
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !submitting && close(next)}>
       <DialogContent>
+        {prompt}
         <DialogHeader>
           <DialogTitle>Record violation</DialogTitle>
           <DialogDescription>
@@ -128,7 +132,7 @@ export default function ViolationDialog({ open, onOpenChange, employeeId, initia
           </Field>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => close(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>

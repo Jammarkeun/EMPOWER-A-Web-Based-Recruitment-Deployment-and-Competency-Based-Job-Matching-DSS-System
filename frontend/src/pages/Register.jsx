@@ -17,7 +17,7 @@ import AuthLayout from '@/components/AuthLayout'
 import { Input, MobileInput, NameInput, PasswordInput } from '@/components/ui/input'
 import { formProblems, latestBirthDate } from '@/lib/validation'
 import { Select } from '@/components/ui/select'
-import { Field } from '@/components/ui/form'
+import { Field, useFocusFirstError } from '@/components/ui/form'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 
@@ -91,6 +91,7 @@ export default function Register() {
 
   const [showPassword, setShowPassword] = React.useState(false)
   const [errors, setErrors] = React.useState({})
+  const [formRef, focusFirstError] = useFocusFirstError()
   const [formError, setFormError] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
 
@@ -135,7 +136,7 @@ export default function Register() {
     // Named beside the field before sending; the server checks again.
     const problems = formProblems(form, { mobiles: ['contact_number'], names: ['first_name', 'middle_name', 'last_name'] })
     setErrors(problems)
-    if (Object.keys(problems).length) return
+    if (Object.keys(problems).length) return focusFirstError()
 
     setFormError('')
     setSubmitting(true)
@@ -158,6 +159,7 @@ export default function Register() {
     } catch (error) {
       if (error.isValidation) {
         setErrors(error.errors)
+        focusFirstError()
         setFormError('Please check the highlighted fields.')
         toast.error('Check the form', 'Some details need correcting before we can continue.')
       } else {
@@ -208,7 +210,7 @@ export default function Register() {
           {step === 'form' && (
             <Card className="shadow-sm">
               <CardContent className="pt-5">
-                <form onSubmit={handleSubmit} className="space-y-6" noValidate>
+                <form ref={formRef} onSubmit={handleSubmit} className="space-y-6" noValidate>
                   <section className="space-y-4">
                     <h2 className="text-sm font-semibold">Your details</h2>
 

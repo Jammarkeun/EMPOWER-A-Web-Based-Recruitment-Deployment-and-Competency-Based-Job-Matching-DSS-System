@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import { formatMinutes } from '@/lib/attendance'
+import { ScheduleStatusBadge } from '@/components/attendance/ScheduleSubmissionParts'
 import { cn, formatDate } from '@/lib/utils'
 
 /**
@@ -94,7 +95,7 @@ export default function CoordinatorEmployeeDetail() {
               Attendance this month
             </CardTitle>
             <CardDescription>
-              {attendance.schedule ? `Schedule: ${attendance.schedule}.` : 'No schedule set by HR.'} The DTR comes from the
+              {attendance.schedule ? `Approved schedule: ${attendance.schedule}.` : 'No approved schedule.'} The DTR comes from the
               client's records and is checked by HR; a day with nothing on file is not counted as an absence.
             </CardDescription>
           </CardHeader>
@@ -124,6 +125,13 @@ export default function CoordinatorEmployeeDetail() {
           </CardContent>
         </Card>
       </div>
+
+      <WorkScheduleCard
+        employee={employee}
+        schedules={data.schedules ?? []}
+        currentId={data.current_schedule_id}
+        submissions={data.schedule_submissions ?? []}
+      />
 
       <Card>
         <CardHeader className="pb-3">
@@ -211,6 +219,81 @@ export default function CoordinatorEmployeeDetail() {
         </Card>
       </div>
     </div>
+  )
+}
+
+/**
+ * The worker's schedule as approved by HR, and the ones the coordinators here
+ * have written for them. Only an approved schedule is compared with the DTR;
+ * a change is written as a new schedule from a later date.
+ */
+function WorkScheduleCard({ employee, schedules, currentId, submissions }) {
+  const current = schedules.find((s) => s.id === currentId)
+  const open = submissions.find((s) => ['draft', 'submitted', 'returned'].includes(s.status))
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CalendarClock className="h-4 w-4 text-muted-foreground" />
+              Work schedule
+            </CardTitle>
+            <CardDescription>The hours the client gave this worker. HR approves each schedule you send.</CardDescription>
+          </div>
+          {employee.employment_status === 'active' &&
+            (open ? (
+              <Button variant="outline" size="sm" asChild>
+                <Link to={`/coordinator/schedules/${open.id}`}>Open {open.submission_code}</Link>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" asChild>
+                <Link to={`/coordinator/schedules/new?employee=${employee.id}`}>
+                  {current ? 'Propose a change' : 'Propose schedule'}
+                </Link>
+              </Button>
+            ))}
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 text-sm md:grid-cols-2">
+        <div>
+          <p className="text-xs text-muted-foreground">Approved, in force today</p>
+          {current ? (
+            <>
+              <p className="font-medium">{current.description}</p>
+              <p className="text-xs text-muted-foreground">
+                Since {formatDate(current.effective_from)}
+                {current.effective_to && ` until ${formatDate(current.effective_to)}`}
+                {current.submission ? ` · approved by ${current.submission.approved_by}` : current.set_by && ` · set by ${current.set_by}`}
+              </p>
+            </>
+          ) : (
+            <p className="text-muted-foreground">None. Until one is approved, the DTR has nothing to be compared with.</p>
+          )}
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Sent to HR</p>
+          {submissions.length === 0 ? (
+            <p className="text-muted-foreground">None yet.</p>
+          ) : (
+            <ul className="divide-y">
+              {submissions.slice(0, 5).map((s) => (
+                <li key={s.id} className="py-1.5">
+                  <Link to={`/coordinator/schedules/${s.id}`} className="flex items-center justify-between gap-2 hover:text-brand">
+                    <span>
+                      <span className="font-mono text-xs">{s.submission_code}</span> · {s.description}
+                      <span className="block text-xs text-muted-foreground">from {formatDate(s.effective_from)}</span>
+                    </span>
+                    <ScheduleStatusBadge status={s.status} />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 

@@ -78,6 +78,46 @@ class DocumentsByApplicantTest extends TestCase
         $this->assertCount(1, $this->getJson('/api/v1/documents/applicants?needs_review=1')->json('data'));
     }
 
+    public function test_an_upload_nobody_has_opened_is_marked_new_and_listed_first(): void
+    {
+        $hr = $this->hrUser();
+        Sanctum::actingAs($hr);
+
+        // Waiting for review, but somebody has already opened it.
+        $andrea = $this->applicant($hr, ['first_name' => 'Andrea', 'last_name' => 'Abad']);
+        $this->upload($andrea, 'resume')->markFirstViewedBy($hr);
+        $this->upload($andrea, 'birth_certificate')->markFirstViewedBy($hr);
+
+        $carlo = $this->applicant($hr, ['first_name' => 'Carlo', 'last_name' => 'Cruz']);
+        $this->upload($carlo, 'resume')->forceFill(['submitted_at' => now()->subDay()])->save();
+
+        $zeny = $this->applicant($hr, ['first_name' => 'Zeny', 'last_name' => 'Zamora']);
+        $this->upload($zeny, 'resume');
+        $this->upload($zeny, 'birth_certificate');
+        // Accepted documents are not new, whoever has or has not opened them.
+        $this->upload($zeny, 'police_clearance', 'verified');
+
+        $rows = $this->getJson('/api/v1/documents/applicants')->assertOk()->json('data');
+
+        // Unopened uploads first, the most recent first; Andrea has more
+        // waiting but nothing nobody has seen.
+        $this->assertSame(['Zeny Zamora', 'Carlo Cruz', 'Andrea Abad'], array_column($rows, 'full_name'));
+        $this->assertSame([2, 1, 0], array_map(fn ($r) => $r['documents']['unopened'], $rows));
+        $this->assertNull($rows[2]['documents']['newest_unopened_at']);
+
+        $this->assertSame(
+            ['Zeny Zamora', 'Carlo Cruz'],
+            array_column($this->getJson('/api/v1/documents/applicants?new_uploads=1')->json('data'), 'full_name')
+        );
+
+        // Opening it is what clears the mark.
+        $carlo->requirements()->first()->markFirstViewedBy($hr);
+        $this->assertSame(
+            ['Zeny Zamora'],
+            array_column($this->getJson('/api/v1/documents/applicants?new_uploads=1')->json('data'), 'full_name')
+        );
+    }
+
     public function test_a_name_opens_every_document_that_person_has(): void
     {
         $hr = $this->hrUser();

@@ -4,7 +4,8 @@ import { IdCard, AlertTriangle, ChevronRight } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { PageHeader } from '@/components/PageHeader'
 import PersonAvatar from '@/components/PersonAvatar'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { SortableHead, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { useTableSort } from '@/hooks/useTableSort'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import { Button } from '@/components/ui/button'
@@ -17,12 +18,29 @@ export default function Employees() {
 
   const search = searchParams.get('search') ?? ''
   const status = searchParams.get('employment_status') ?? ''
+  // The dashboard's "renewals overdue" and "unresolved violations" figures
+  // open the list on these.
+  const renewalOverdue = searchParams.get('renewal_overdue') === '1'
+  const openViolations = searchParams.get('open_violations') === '1'
+  const client = searchParams.get('client_company_id') ?? ''
   const page = Number(searchParams.get('page') ?? 1)
   const debouncedSearch = useDebounced(search)
+  // The most recent hire first unless a column header says otherwise.
+  const sort = useTableSort(searchParams, setSearchParams, {
+    by: 'hire_date',
+    dir: 'desc',
+    firstDirection: { hire_date: 'desc', name: 'asc' },
+  })
+  // Inactive clients too: someone may still be employed at one.
+  const { data: clients } = useApi('/clients', { per_page: 100 }, { cacheKey: 'clients-all' })
 
   const { data, meta, loading, error, refetch } = useApi('/employees', {
     search: debouncedSearch || undefined,
     employment_status: status || undefined,
+    renewal_overdue: renewalOverdue ? 1 : undefined,
+    open_violations: openViolations ? 1 : undefined,
+    client_company_id: client || undefined,
+    ...sort.params,
     page,
     per_page: 20,
   })
@@ -36,10 +54,10 @@ export default function Employees() {
   }
 
   function clearFilters() {
-    setSearchParams(new URLSearchParams())
+    setSearchParams(sort.keep(new URLSearchParams()))
   }
 
-  const filtered = Boolean(search || status)
+  const filtered = Boolean(search || status || client || renewalOverdue || openViolations)
   useClampPage(meta, (p) => updateFilter('page', String(p)))
 
   return (
@@ -68,6 +86,32 @@ export default function Employees() {
               // Archives and leaves the status as it was, so it never matched.
             ],
           },
+          {
+            id: 'client_company_id',
+            label: 'Any client',
+            value: client,
+            onChange: (val) => updateFilter('client_company_id', val),
+            options: [
+              { value: '', label: 'Any client' },
+              ...(clients ?? []).map((c) => ({ value: String(c.id), label: `Working at ${c.company_name}` })),
+            ],
+          },
+        ]}
+        viewToggles={[
+          {
+            id: 'renewal_overdue',
+            label: 'Renewal overdue',
+            title: 'Employed, with an annual medical or health card past its expiry date.',
+            active: renewalOverdue,
+            onToggle: () => updateFilter('renewal_overdue', renewalOverdue ? '' : '1'),
+          },
+          {
+            id: 'open_violations',
+            label: 'Unresolved violations',
+            title: 'With a violation still open, under review, or escalated.',
+            active: openViolations,
+            onToggle: () => updateFilter('open_violations', openViolations ? '' : '1'),
+          },
         ]}
         resultCount={meta?.total}
         resultLabel="employees"
@@ -88,7 +132,9 @@ export default function Employees() {
           title={filtered ? 'No employees match these filters' : 'No employees recorded yet'}
           description={
             filtered
-              ? 'Try another status, or search for part of the name or employee number.'
+              ? renewalOverdue || openViolations
+                ? 'Nobody matches right now. Clear the filters to see every employee.'
+                : 'Try another status, or search for part of the name or employee number.'
               : 'Employees will appear here once an applicant is deployed to a client company.'
           }
           action={
@@ -104,10 +150,10 @@ export default function Employees() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Employee</TableHead>
+                <SortableHead column="name" {...sort.head}>Employee</SortableHead>
                 <TableHead>Current Assignment</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Date Hired</TableHead>
+                <SortableHead column="hire_date" {...sort.head}>Date Hired</SortableHead>
                 <TableHead>Violations</TableHead>
                 <TableHead className="w-8"></TableHead>
               </TableRow>
@@ -165,7 +211,7 @@ export default function Employees() {
 
                   {/* Action Link */}
                   <TableCell className="text-right">
-                    <Link to={`/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open ${employee.full_name}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

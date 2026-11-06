@@ -27,6 +27,8 @@
 - docs/07-project-management/client-questions-part-3.md (open questions after the October 2026 build)
 - docs/07-project-management/cde-requirements-integration.md (26 October 2026 meeting: what was built, CDE's Manpower Requisition Form (29 October), decisions waiting on CDE)
 - docs/07-project-management/separation-portal-workflow.md (resignation requests and termination notices in the portal: workflow, our default rules, questions for CDE)
+- docs/07-project-management/work-schedule-approval.md (coordinator writes a work schedule, HR approves it, the DTR is compared with it)
+- docs/07-project-management/dtr-submissions.md (coordinator hands the client's DTR file to HR; HR imports it with the existing importer)
 
 8. Backend Executable Assets:
 - backend/database/migrations/2026_08_04_000000_create_empower_schema.php
@@ -36,6 +38,9 @@
 - backend/database/seeders/sql/seed-data.sql
 - backend/postman/EMPOWER.postman_collection.json
 - backend/README.md
+
+9. Testing:
+- docs/09-testing/dtr-samples/README.md (synthetic DTR files for the import and DTR-to-schedule comparison, with expected results)
 
 ## Recommended Build Order
 1. Create Laravel project and configure MySQL connection.

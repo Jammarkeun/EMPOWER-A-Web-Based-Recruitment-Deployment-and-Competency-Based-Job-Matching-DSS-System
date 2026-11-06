@@ -8,18 +8,29 @@ use App\Models\EmployeeStatusHistory;
 use App\Models\Resignation;
 use App\Models\SeparationEvent;
 use App\Models\Termination;
+use App\Models\TerminationClearanceItem;
 use App\Models\User;
 use App\Notifications\ResignationRequestActivity;
 use App\Notifications\ResignationUpdate;
+use App\Notifications\TerminationFinalised;
 use App\Notifications\TerminationNotice;
+use App\Notifications\TerminationRequestReviewed;
+use App\Notifications\TerminationRequestSubmitted;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
 /**
  * Resignation, termination, and archiving.
+ *
+ * A termination is two stages. HR requests it; an administrator approves,
+ * returns, or rejects the request; and HR finalises an approved request only
+ * once its pre-termination clearance is complete. Approval changes nothing
+ * about the employee - finalisation is the one step that does.
  *
  * Separation records carry legal weight: they are the agency's evidence if a
  * dismissal is ever questioned. Nothing here is deleted, and finalising a
@@ -358,52 +369,334 @@ class SeparationService
 
     // ------------------------------------------------------------ terminations
 
+    /**
+     * HR's termination request: kept as a draft, or sent to an administrator.
+     *
+     * A request, never the termination itself. The employee stays active and is
+     * told nothing. The administrators who review terminations are told, once
+     * the request has been saved, that one is waiting for them.
+     */
     public function fileTermination(Employee $employee, array $data, User $actor): Termination
     {
-        if (! $employee->isActive()) {
-            throw new RuntimeException(sprintf(
-                'Only an active employee can be terminated. This employee is %s.',
-                $employee->employment_status
-            ));
+        $duplicate = 'A termination request for this employee is already open. Continue with that one instead of filing another.';
+
+        try {
+            $termination = DB::transaction(function () use ($employee, $data, $actor, $duplicate) {
+                // Locked so two submissions at once cannot both pass the checks.
+                $locked = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
+
+                if (! $locked->isActive()) {
+                    throw new RuntimeException(sprintf(
+                        'Only an active employee can be terminated. This employee is %s.',
+                        $locked->employment_status
+                    ));
+                }
+
+                // One case at a time, for the same reason as resignations: a
+                // second open termination would be reviewed while the first
+                // still waited.
+                if ($locked->terminations()->whereIn('status', Termination::OPEN_STATUSES)->exists()) {
+                    throw new RuntimeException($duplicate);
+                }
+
+                $submitting = ($data['status'] ?? 'draft') === 'for_review';
+
+                $termination = Termination::create(array_merge(
+                    Arr::only($data, ['reason', 'termination_date', 'remarks', 'documents_path']),
+                    [
+                        'employee_id' => $locked->id,
+                        // The placement the request concerns, as it stood when filed.
+                        'deployment_id' => $locked->activeDeployment()?->id,
+                        'status' => $submitting ? 'for_review' : 'draft',
+                        'created_by' => $actor->id,
+                        'submitted_at' => $submitting ? now() : null,
+                    ]
+                ));
+
+                // HR's history only. A request is not a decision.
+                $this->event($termination, 'filed', $actor, null, $termination->status, visible: false);
+
+                $this->audit->record(
+                    'termination',
+                    'separation',
+                    Termination::class,
+                    $termination->id,
+                    null,
+                    [
+                        'employee_number' => $locked->employee_number,
+                        'reason' => $data['reason'],
+                        'termination_date' => $data['termination_date'],
+                        'status' => $termination->status,
+                    ]
+                );
+
+                return $termination;
+            });
+        } catch (UniqueConstraintViolationException) {
+            // The database's own one-open-case guard, for the race the row lock
+            // cannot cover on an engine without row locks.
+            throw new RuntimeException($duplicate);
         }
 
-        // One case at a time, for the same reason as resignations: a second
-        // open termination would be reviewed while the first still waited.
-        if ($employee->terminations()->whereIn('status', Termination::OPEN_STATUSES)->exists()) {
-            throw new RuntimeException(
-                'A termination for this employee is already awaiting review. Finalise or withdraw it first.'
-            );
+        if ($termination->status === 'for_review') {
+            $this->notifyReviewers($termination, 'submitted');
         }
-
-        $termination = Termination::create(array_merge($data, [
-            'employee_id' => $employee->id,
-            'status' => $data['status'] ?? 'draft',
-            'created_by' => $actor->id,
-        ]));
-
-        // HR's history only. A case under review is not a decision, and the
-        // employee is told nothing until an administrator finalises it.
-        $this->event($termination, 'filed', $actor, null, $termination->status, visible: false);
-
-        $this->audit->record(
-            'termination',
-            'separation',
-            Termination::class,
-            $termination->id,
-            null,
-            [
-                'employee_number' => $employee->employee_number,
-                'reason' => $data['reason'],
-                'termination_date' => $data['termination_date'],
-            ]
-        );
 
         return $termination;
     }
 
     /**
-     * Finalises a termination. Separate from filing so that a dismissal passes
-     * through review rather than taking effect the moment it is typed in.
+     * HR corrects a request that is still with HR: a draft, or one an
+     * administrator returned for correction.
+     */
+    public function updateTermination(Termination $termination, array $data, User $actor): Termination
+    {
+        return DB::transaction(function () use ($termination, $data, $actor) {
+            $termination = Termination::query()->whereKey($termination->getKey())->lockForUpdate()->firstOrFail();
+
+            if (! $termination->isEditable()) {
+                throw new RuntimeException(sprintf(
+                    'This request is %s. It can be edited only as a draft or after it is returned for correction.',
+                    strtolower(Termination::LABELS[$termination->status] ?? $termination->status)
+                ), 409);
+            }
+
+            $fields = ['reason', 'termination_date', 'remarks', 'documents_path'];
+            $before = $this->terminationSnapshot($termination);
+
+            $termination->fill(Arr::only($data, $fields));
+
+            $changed = array_keys(array_diff_assoc(
+                array_map('strval', $this->terminationSnapshot($termination)),
+                array_map('strval', $before)
+            ));
+
+            // Saved again with nothing different: no history entry, no audit row.
+            if ($changed === []) {
+                return $termination;
+            }
+
+            $termination->save();
+
+            $this->event($termination, 'updated', $actor, null, null, visible: false, details: ['fields' => $changed]);
+
+            $after = $this->terminationSnapshot($termination);
+            $this->audit->recordUpdate('separation', Termination::class, $termination->id,
+                Arr::only($before, $changed), Arr::only($after, $changed));
+
+            return $termination->fresh();
+        });
+    }
+
+    /**
+     * Sends a draft, or a corrected request, to the administrators.
+     */
+    public function submitTermination(Termination $termination, User $actor): Termination
+    {
+        [$termination, $kind] = DB::transaction(function () use ($termination, $actor) {
+            $termination = Termination::query()->whereKey($termination->getKey())->lockForUpdate()->firstOrFail();
+
+            if (! $termination->isEditable()) {
+                throw new RuntimeException(match ($termination->status) {
+                    'for_review' => 'This request is already awaiting an administrator\'s review.',
+                    default => sprintf(
+                        'This request is %s and cannot be submitted again.',
+                        strtolower(Termination::LABELS[$termination->status] ?? $termination->status)
+                    ),
+                }, 409);
+            }
+
+            if (! $termination->employee->isActive()) {
+                throw new RuntimeException(sprintf(
+                    'The employee is no longer active (%s). Withdraw this request instead.',
+                    $termination->employee->employment_status
+                ), 409);
+            }
+
+            $from = $termination->status;
+            $kind = $from === 'returned' ? 'resubmitted' : 'submitted';
+
+            $termination->forceFill(['status' => 'for_review', 'submitted_at' => now()])->save();
+
+            $this->event($termination, $kind, $actor, $from, 'for_review', visible: false);
+
+            $this->audit->record('update', 'separation', Termination::class, $termination->id,
+                ['status' => $from], ['status' => 'for_review']);
+
+            return [$termination, $kind];
+        });
+
+        $this->notifyReviewers($termination, $kind);
+
+        return $termination;
+    }
+
+    /**
+     * The administrator's decision on a request: approve it for clearance and
+     * final processing, return it to HR for correction, or reject it.
+     *
+     * Approving terminates nobody. It hands the case back to HR with the
+     * pre-termination clearance to complete, and the employee stays active,
+     * and untold, until HR finalises it.
+     *
+     * @param  'approve'|'return'|'reject'  $decision
+     */
+    public function reviewTermination(Termination $termination, string $decision, ?string $note, User $actor): Termination
+    {
+        $to = ['approve' => 'approved', 'return' => 'returned', 'reject' => 'rejected'][$decision]
+            ?? throw new RuntimeException('Choose approve, return, or reject.', 422);
+        $note = filled($note) ? trim($note) : null;
+
+        $termination = DB::transaction(function () use ($termination, $to, $note, $actor) {
+            $termination = Termination::query()->whereKey($termination->getKey())->lockForUpdate()->firstOrFail();
+
+            // Also what makes a second click, or a second administrator acting
+            // at the same moment, a refusal rather than a second decision.
+            if ($termination->status !== 'for_review') {
+                throw new RuntimeException(match ($termination->status) {
+                    'approved', 'finalized' => 'This request has already been approved.',
+                    'rejected' => 'This request has already been rejected.',
+                    'returned' => 'This request was returned to HR for correction and is not awaiting review.',
+                    'draft' => 'This request has not been submitted for review yet.',
+                    default => 'This request was withdrawn and can no longer be reviewed.',
+                }, 409);
+            }
+
+            // The decision is not made by the person who asked for it.
+            if ((int) $termination->created_by === (int) $actor->id) {
+                throw new RuntimeException('You filed this request, so another administrator must review it.', 403);
+            }
+
+            if ($to !== 'approved' && blank($note)) {
+                throw new RuntimeException($to === 'returned'
+                    ? 'Say what HR needs to correct.'
+                    : 'Give the reason for rejecting the request.', 422);
+            }
+
+            if ($to === 'approved' && ! $termination->employee->isActive()) {
+                throw new RuntimeException(sprintf(
+                    'The employee is no longer active (%s), so there is nothing to approve. Return or reject the request.',
+                    $termination->employee->employment_status
+                ), 409);
+            }
+
+            $termination->forceFill(array_merge(
+                [
+                    'status' => $to,
+                    'reviewed_by' => $actor->id,
+                    'reviewed_at' => now(),
+                    'review_note' => $note,
+                ],
+                $to === 'approved' ? ['approved_by' => $actor->id, 'approved_at' => now()] : [],
+            ))->save();
+
+            if ($to === 'approved') {
+                $this->createClearanceChecklist($termination);
+            }
+
+            $this->event($termination, $to, $actor, 'for_review', $to, visible: false,
+                details: $note ? ['note' => $note] : null);
+
+            $this->audit->record('update', 'separation', Termination::class, $termination->id,
+                ['status' => 'for_review'], ['status' => $to, 'review_note' => $note]);
+
+            return $termination;
+        });
+
+        $this->notifyFiler($termination->load('employee', 'creator'), $to);
+
+        return $termination;
+    }
+
+    /**
+     * Records one line of the pre-termination clearance.
+     *
+     * Internal to the office: nothing here is sent to the employee, who has
+     * not been told of the case.
+     */
+    public function updateClearanceItem(Termination $termination, TerminationClearanceItem $item, array $data, User $actor): TerminationClearanceItem
+    {
+        return DB::transaction(function () use ($termination, $item, $data, $actor) {
+            $termination = Termination::query()->whereKey($termination->getKey())->lockForUpdate()->firstOrFail();
+            $item = TerminationClearanceItem::query()->whereKey($item->getKey())->lockForUpdate()->firstOrFail();
+
+            if ((int) $item->termination_id !== (int) $termination->id) {
+                throw new RuntimeException('That clearance item belongs to another request.', 404);
+            }
+
+            if ($item->isRetired()) {
+                throw new RuntimeException(sprintf(
+                    '"%s" is no longer part of the clearance. It is kept on file as it was, and does not need to be completed.',
+                    $item->label
+                ), 409);
+            }
+
+            if ($termination->status !== 'approved') {
+                throw new RuntimeException(sprintf(
+                    'Clearance is recorded while an approved request awaits finalisation. This request is %s.',
+                    strtolower(Termination::LABELS[$termination->status] ?? $termination->status)
+                ), 409);
+            }
+
+            $status = $data['status'] ?? $item->status;
+            $remarks = array_key_exists('remarks', $data) ? (trim((string) $data['remarks']) ?: null) : $item->remarks;
+
+            if (! in_array($status, $item->allowedStatuses(), true)) {
+                throw new RuntimeException(sprintf(
+                    '"%s" cannot be marked %s.',
+                    $item->label,
+                    strtolower(TerminationClearanceItem::LABELS[$status] ?? $status)
+                ), 422);
+            }
+
+            if ($status === 'not_applicable' && blank($remarks)) {
+                throw new RuntimeException(sprintf('Say why "%s" does not apply to this employee.', $item->label), 422);
+            }
+
+            if ($status === 'cleared' && $item->requires_remarks && blank($remarks)) {
+                throw new RuntimeException(sprintf(
+                    'Record what was verified, and with whom, before marking "%s" cleared. EMPOWER holds no record of its own to show for it.',
+                    $item->label
+                ), 422);
+            }
+
+            $before = $item->only(['status', 'remarks']);
+            $item->fill(['status' => $status, 'remarks' => $remarks]);
+
+            if (! $item->isDirty()) {
+                return $item->load('verifier');
+            }
+
+            // A resolved item names whoever last confirmed it. Moving it back
+            // to an unresolved status clears the verification.
+            $resolved = $item->isResolved();
+            $item->forceFill([
+                'updated_by' => $actor->id,
+                'verified_by' => $resolved ? $actor->id : null,
+                'verified_at' => $resolved ? now() : null,
+            ])->save();
+
+            $this->event($termination, 'clearance_item_updated', $actor, null, null, visible: false, details: [
+                'item' => $item->item_key,
+                'label' => $item->label,
+                'from' => $before['status'],
+                'to' => $status,
+            ]);
+
+            $this->audit->recordUpdate('separation', TerminationClearanceItem::class, $item->id,
+                $before, $item->only(['status', 'remarks']));
+
+            return $item->load('verifier');
+        });
+    }
+
+    /**
+     * Finalises an approved termination once its clearance is complete.
+     *
+     * Everything that gates it is checked again here, under a lock, whatever
+     * the screen showed: the administrator's approval, every mandatory
+     * clearance item, and the employee still being active. Any one failing
+     * leaves everything exactly as it was.
      *
      * This is the one point at which the employee is told. The notice carries
      * the message written for them, if any; the reason and remarks stay with
@@ -411,14 +704,6 @@ class SeparationService
      */
     public function finaliseTermination(Termination $termination, User $actor, ?string $employeeMessage = null): Termination
     {
-        if ($termination->isFinalized()) {
-            throw new RuntimeException('This termination has already been finalised.');
-        }
-
-        if (! $termination->isOpen()) {
-            throw new RuntimeException('This termination was withdrawn and can no longer be finalised.');
-        }
-
         // Fixed before the notice is sent, so the termination can say which
         // notification carried it and HR can see whether it has been read.
         $noticeId = (string) Str::uuid();
@@ -426,42 +711,64 @@ class SeparationService
         $termination = DB::transaction(function () use ($termination, $actor, $employeeMessage, $noticeId) {
             $termination = Termination::query()->whereKey($termination->getKey())->lockForUpdate()->firstOrFail();
 
-            if (! $termination->isOpen()) {
-                throw new RuntimeException('This termination is no longer awaiting review. Reload the record and try again.', 409);
+            if ($termination->status !== 'approved') {
+                throw new RuntimeException(match ($termination->status) {
+                    'finalized' => 'This termination has already been finalised.',
+                    'withdrawn' => 'This termination was withdrawn and can no longer be finalised.',
+                    'rejected' => 'An administrator rejected this request, so it cannot be finalised.',
+                    default => 'An administrator has not approved this request. Only an approved request can be finalised.',
+                }, 409);
             }
 
-            $from = $termination->status;
+            $employee = Employee::query()->whereKey($termination->employee_id)->lockForUpdate()->firstOrFail();
+
+            if (! $employee->isActive()) {
+                throw new RuntimeException(sprintf(
+                    'The employee is no longer active (%s), so this termination cannot be finalised. Withdraw the request instead.',
+                    $employee->employment_status
+                ), 409);
+            }
+
+            $outstanding = $termination->outstandingClearance();
+
+            if ($outstanding->isNotEmpty()) {
+                throw ValidationException::withMessages([
+                    'clearance' => $outstanding->map(fn (TerminationClearanceItem $item) => sprintf(
+                        '%s: %s', $item->label, strtolower($item->statusLabel())
+                    ))->prepend('The clearance is not complete. Resolve every mandatory item before finalising:')->all(),
+                ]);
+            }
 
             $termination->update([
                 'status' => 'finalized',
-                'approved_by' => $actor->id,
+                'finalized_by' => $actor->id,
                 'finalized_at' => now(),
-                // CDE's clearance follows every separation, a dismissal included.
-                'clearance_status' => 'pending',
+                // Completed before finalisation, item by item.
+                'clearance_status' => 'cleared',
                 'employee_message' => filled($employeeMessage) ? trim($employeeMessage) : $termination->employee_message,
                 'notice_notification_id' => $noticeId,
             ]);
 
-            $this->event($termination, 'finalised', $actor, $from, 'finalized', visible: true,
+            $this->event($termination, 'finalised', $actor, 'approved', 'finalized', visible: true,
                 note: $termination->employee_message);
 
             $this->audit->record('update', 'separation', Termination::class, $termination->id,
-                ['status' => $from], ['status' => 'finalized', 'notice_issued' => true]);
+                ['status' => 'approved'], ['status' => 'finalized', 'notice_issued' => true]);
 
             $this->changeEmploymentStatus(
-                $termination->employee,
+                $employee,
                 'terminated',
                 $actor,
                 'Terminated: '.$termination->reason,
                 $termination->termination_date->toDateString(),
             );
 
-            $this->archive($termination->employee, 'Terminated: '.$termination->reason, $actor);
+            $this->archive($employee, 'Terminated: '.$termination->reason, $actor);
 
             // The applicant history is what the portal's activity list reads,
             // so it records the fact and the date, not the internal reason.
             $this->closeApplicantRecord(
-                $termination->employee,
+                $employee,
                 'terminated',
                 $actor,
                 'Employment ended by a termination decision effective '.$termination->termination_date->toDateString().'.'
@@ -474,51 +781,63 @@ class SeparationService
         $notice->id = $noticeId;
         $termination->employee->notify($notice);
 
+        $termination->load('employee', 'finalizer');
+        $this->users([$termination->approved_by, $termination->created_by], except: $actor)
+            ->each->notify(new TerminationFinalised($termination));
+
         return $termination;
     }
 
     /**
      * Closes a termination without dismissing anybody.
      *
-     * The other way a review can end. Nothing about the employee changes; the
-     * termination stays on file, marked withdrawn, with who withdrew it and
-     * why, so a case that was opened and dropped is still visible later. The
-     * employee was never told of the case, and is not told of this either.
+     * Possible at any point before it is finalised. Nothing about the employee
+     * changes; the termination stays on file, marked withdrawn, with who
+     * withdrew it and why, so a case that was opened and dropped is still
+     * visible later. The employee was never told of the case, and is not told
+     * of this either.
      */
     public function withdrawTermination(Termination $termination, string $reason, User $actor): Termination
     {
-        if (! $termination->isOpen()) {
-            throw new RuntimeException(sprintf(
-                'Only a termination awaiting review can be withdrawn. This one is %s.',
-                $termination->status
-            ));
-        }
+        return DB::transaction(function () use ($termination, $reason, $actor) {
+            $termination = Termination::query()->whereKey($termination->getKey())->lockForUpdate()->firstOrFail();
 
-        $before = $termination->status;
+            if (! $termination->isOpen()) {
+                throw new RuntimeException(sprintf(
+                    'Only an open termination request can be withdrawn. This one is %s.',
+                    strtolower(Termination::LABELS[$termination->status] ?? $termination->status)
+                ));
+            }
 
-        $termination->update([
-            'status' => 'withdrawn',
-            'withdrawn_by' => $actor->id,
-            'withdrawn_at' => now(),
-            'withdrawal_reason' => $reason,
-        ]);
+            $before = $termination->status;
 
-        $this->event($termination, 'withdrawn', $actor, $before, 'withdrawn', visible: false, details: ['reason' => $reason]);
+            $termination->update([
+                'status' => 'withdrawn',
+                'withdrawn_by' => $actor->id,
+                'withdrawn_at' => now(),
+                'withdrawal_reason' => $reason,
+            ]);
 
-        $this->audit->record(
-            'update',
-            'separation',
-            Termination::class,
-            $termination->id,
-            ['status' => $before],
-            ['status' => 'withdrawn', 'reason' => $reason]
-        );
+            $this->event($termination, 'withdrawn', $actor, $before, 'withdrawn', visible: false, details: ['reason' => $reason]);
 
-        return $termination->fresh();
+            $this->audit->record(
+                'update',
+                'separation',
+                Termination::class,
+                $termination->id,
+                ['status' => $before],
+                ['status' => 'withdrawn', 'reason' => $reason]
+            );
+
+            return $termination->fresh();
+        });
     }
 
     /**
-     * The clearance after a finalised termination.
+     * The clearance of a termination finalised under the one-step process,
+     * which was recorded after the fact. A termination finalised since then
+     * was cleared item by item before it was finalised, and that is not
+     * reopened.
      */
     public function updateTerminationClearance(Termination $termination, string $status, User $actor): Termination
     {
@@ -526,7 +845,11 @@ class SeparationService
             $termination = Termination::query()->whereKey($termination->getKey())->lockForUpdate()->firstOrFail();
 
             if (! $termination->isFinalized()) {
-                throw new RuntimeException('Clearance is recorded once a termination has been finalised.', 409);
+                throw new RuntimeException('Before a termination is finalised, its clearance is recorded item by item on the request.', 409);
+            }
+
+            if (! $termination->isLegacy()) {
+                throw new RuntimeException('This termination was cleared before it was finalised. Its clearance is complete.', 409);
             }
 
             $from = $termination->clearance_status;
@@ -785,6 +1108,96 @@ class SeparationService
             'remarks' => $resignation->remarks,
             'employee_message' => $resignation->employee_message,
         ];
+    }
+
+    /**
+     * The request's fields HR can change, as plain values to compare.
+     *
+     * @return array<string, string|null>
+     */
+    private function terminationSnapshot(Termination $termination): array
+    {
+        return [
+            'reason' => $termination->reason,
+            'termination_date' => $termination->termination_date?->toDateString(),
+            'remarks' => $termination->remarks,
+            'documents_path' => $termination->documents_path,
+        ];
+    }
+
+    /**
+     * Copies the checklist in force onto an approved request, so a later
+     * change to the checklist leaves this case as it was approved.
+     */
+    private function createClearanceChecklist(Termination $termination): void
+    {
+        foreach (config('empower.separation.termination_clearance', []) as $key => $definition) {
+            TerminationClearanceItem::firstOrCreate(
+                ['termination_id' => $termination->id, 'item_key' => $key],
+                [
+                    'label' => $definition['label'],
+                    'kind' => $definition['kind'] ?? 'clearance',
+                    'description' => $definition['description'] ?? null,
+                    'is_mandatory' => (bool) ($definition['mandatory'] ?? true),
+                    'requires_remarks' => (bool) ($definition['requires_remarks'] ?? false),
+                    'status' => 'pending_review',
+                ]
+            );
+        }
+    }
+
+    /**
+     * The administrators who decide termination requests, told one is waiting.
+     *
+     * Whoever filed it is left out, since they may not decide it themselves.
+     * Coordinators and portal accounts never hold the permission, so they are
+     * never among the recipients; nor is the employee concerned.
+     */
+    private function notifyReviewers(Termination $termination, string $kind): void
+    {
+        $termination->loadMissing('employee.applicant', 'creator');
+
+        User::permission('separation.review_termination')
+            ->where('is_active', true)
+            ->whereKeyNot($termination->created_by)
+            ->get()
+            ->each->notify(new TerminationRequestSubmitted($termination, $kind));
+    }
+
+    /**
+     * The HR officer who filed the request, told the administrator's decision.
+     * If their account is no longer active, whoever can finalise terminations
+     * is told instead, so an approved case is not left waiting unseen.
+     */
+    private function notifyFiler(Termination $termination, string $decision): void
+    {
+        $recipients = $this->users([$termination->created_by]);
+
+        if ($recipients->isEmpty()) {
+            $recipients = User::permission('separation.finalize_termination')
+                ->where('is_active', true)
+                ->whereKeyNot($termination->reviewed_by)
+                ->get();
+        }
+
+        $recipients->each->notify(new TerminationRequestReviewed($termination, $decision));
+    }
+
+    /**
+     * Active staff accounts among the given ids, once each, without the person
+     * who just acted - they know already.
+     *
+     * @param  array<int, int|null>  $ids
+     */
+    private function users(array $ids, ?User $except = null): Collection
+    {
+        return User::query()
+            ->whereIn('id', array_values(array_unique(array_filter($ids))))
+            ->where('is_active', true)
+            ->when($except, fn ($q) => $q->whereKeyNot($except->id))
+            ->get()
+            ->reject(fn (User $user) => $user->isPortalAccount())
+            ->values();
     }
 
     /**

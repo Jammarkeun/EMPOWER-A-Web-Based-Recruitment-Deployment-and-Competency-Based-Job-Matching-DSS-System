@@ -67,6 +67,12 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
                   </span>
                 )}
               </div>
+              {!hard_filter_pass && breakdown?.gates_total > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {breakdown.competency_percentage}% competency × {breakdown.gates_met} of{' '}
+                  {breakdown.gates_total} mandatory met
+                </p>
+              )}
             </div>
 
             <div className="space-y-1 rounded-row bg-inset p-4">
@@ -194,8 +200,8 @@ export default function MatchBreakdownDialog({ open, onOpenChange, candidate, jo
           <p className="flex items-start gap-2 text-xs text-muted-foreground">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             Mandatory requirements decide eligibility and carry no points. The score is the points
-            awarded over the points available on the scored criteria. It is a recommendation; nobody is
-            deployed until HR records it.
+            awarded over the points available on the scored criteria, scaled by the share of mandatory
+            requirements met. It is a recommendation; nobody is deployed until HR records it.
           </p>
         </div>
       </DialogContent>

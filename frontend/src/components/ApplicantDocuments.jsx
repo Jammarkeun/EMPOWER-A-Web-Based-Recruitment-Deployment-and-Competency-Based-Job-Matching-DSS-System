@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, ChevronRight, ExternalLink, FolderOpen, Loader2 } from 'lucide-react'
+import { ArrowLeft, ChevronRight, ExternalLink, FolderOpen, Loader2, Upload } from 'lucide-react'
 import { useApi, useDebounced } from '@/hooks/useApi'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import { FilterToolbar } from '@/components/FilterToolbar'
 import PersonAvatar from '@/components/PersonAvatar'
 import { FolderStatus, RequirementsPanel } from '@/components/applicant/RequirementsPanel'
 import { Pagination } from '@/components/Pagination'
-import { formatDate } from '@/lib/utils'
+import { formatDate, formatDateTime } from '@/lib/utils'
 
 /**
  * The document library, by applicant.
@@ -27,7 +27,7 @@ import { formatDate } from '@/lib/utils'
  * The open applicant can be held by the caller (the Documents page keeps it in
  * the URL so it survives a refresh and the back button); otherwise it is local.
  */
-export default function ApplicantDocuments({ clientCompanyId = null, selectedId, onSelect }) {
+export default function ApplicantDocuments({ clientCompanyId = null, selectedId, onSelect, listView, onListViewChange }) {
   const [localSelected, setLocalSelected] = React.useState(null)
   const controlled = onSelect !== undefined
   const selected = controlled ? selectedId : localSelected
@@ -37,12 +37,17 @@ export default function ApplicantDocuments({ clientCompanyId = null, selectedId,
     return <ApplicantFolder applicantId={selected} onBack={() => select(null)} />
   }
 
-  return <ApplicantList clientCompanyId={clientCompanyId} onOpen={select} />
+  return <ApplicantList clientCompanyId={clientCompanyId} onOpen={select} view={listView} onViewChange={onListViewChange} />
 }
 
-function ApplicantList({ clientCompanyId, onOpen }) {
+const LIST_VIEWS = ['with_documents', 'new_uploads', 'needs_review', 'everyone']
+
+function ApplicantList({ clientCompanyId, onOpen, view: heldView, onViewChange }) {
   const [search, setSearch] = React.useState('')
-  const [view, setView] = React.useState('with_documents')
+  // Held by the caller when it keeps the view in the URL; otherwise local.
+  const [localView, setLocalView] = React.useState('with_documents')
+  const view = onViewChange ? (LIST_VIEWS.includes(heldView) ? heldView : 'with_documents') : localView
+  const setView = onViewChange ?? setLocalView
   const [page, setPage] = React.useState(1)
   const debounced = useDebounced(search)
 
@@ -52,11 +57,11 @@ function ApplicantList({ clientCompanyId, onOpen }) {
     search: debounced || undefined,
     client_company_id: clientCompanyId ?? undefined,
     needs_review: view === 'needs_review' ? 1 : undefined,
+    new_uploads: view === 'new_uploads' ? 1 : undefined,
     include_empty: view === 'everyone' ? 1 : undefined,
     page,
     per_page: 25,
   })
-
   return (
     <div className="space-y-3">
       <FilterToolbar
@@ -65,6 +70,7 @@ function ApplicantList({ clientCompanyId, onOpen }) {
         searchPlaceholder="Search by applicant name or code…"
         viewToggles={[
           { id: 'with_documents', label: 'With documents', active: view === 'with_documents', onToggle: () => setView('with_documents') },
+          { id: 'new_uploads', label: 'New uploads', active: view === 'new_uploads', onToggle: () => setView('new_uploads') },
           { id: 'needs_review', label: 'Awaiting review', active: view === 'needs_review', onToggle: () => setView('needs_review') },
           ...(clientCompanyId ? [] : [{ id: 'everyone', label: 'Everyone', active: view === 'everyone', onToggle: () => setView('everyone') }]),
         ]}
@@ -81,7 +87,13 @@ function ApplicantList({ clientCompanyId, onOpen }) {
       ) : !data?.length ? (
         <EmptyState
           icon={FolderOpen}
-          title={view === 'needs_review' ? 'Nothing is waiting for review' : 'No applicant documents yet'}
+          title={
+            view === 'needs_review'
+              ? 'Nothing is waiting for review'
+              : view === 'new_uploads'
+                ? 'No new uploads'
+                : 'No applicant documents yet'
+          }
           description={
             clientCompanyId
               ? 'Nobody placed with this client has documents on file.'
@@ -103,6 +115,10 @@ function ApplicantList({ clientCompanyId, onOpen }) {
             <TableBody>
               {data.map((row) => {
                 const docs = row.documents
+                // A file sent through the portal that no one has opened yet.
+                // Opening it clears the mark for everyone, not just the
+                // person who opened it - it is the office's to-do, not theirs.
+                const fresh = docs.unopened > 0
 
                 return (
                   <TableRow
@@ -111,11 +127,25 @@ function ApplicantList({ clientCompanyId, onOpen }) {
                     onClick={() => onOpen(row.id)}
                     onKeyDown={(event) => event.key === 'Enter' && onOpen(row.id)}
                     tabIndex={0}
-                    aria-label={`Open ${row.full_name}'s documents`}
+                    aria-label={
+                      fresh
+                        ? `Open ${row.full_name}'s documents, ${docs.unopened} new upload${docs.unopened === 1 ? '' : 's'}`
+                        : `Open ${row.full_name}'s documents`
+                    }
                   >
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <PersonAvatar src={row.photo_url} name={row.full_name} size="sm" />
+                        <div className="relative shrink-0">
+                          <PersonAvatar src={row.photo_url} name={row.full_name} size="sm" />
+                          {/* Stays until every upload has been decided on -
+                              verified, or sent back - not merely opened. */}
+                          {docs.awaiting_review > 0 && (
+                            <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 flex h-3 w-3">
+                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand opacity-60 motion-reduce:hidden" />
+                              <span className="relative inline-flex h-3 w-3 rounded-full border-2 border-card bg-brand" />
+                            </span>
+                          )}
+                        </div>
                         <div className="min-w-0">
                           <p className="truncate font-semibold text-foreground transition-colors group-hover:text-brand">
                             {row.full_name}
@@ -133,6 +163,15 @@ function ApplicantList({ clientCompanyId, onOpen }) {
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                        {fresh && (
+                          <span
+                            className="inline-flex items-center gap-1 whitespace-nowrap rounded-badge bg-brand px-2.5 py-1 font-semibold leading-4 text-white"
+                            title="Sent through the applicant portal and not opened by anyone yet"
+                          >
+                            <Upload aria-hidden="true" className="h-3 w-3" />
+                            {docs.unopened} new upload{docs.unopened === 1 ? '' : 's'}
+                          </span>
+                        )}
                         <span className="tabular-nums text-muted-foreground">
                           <span className="font-semibold text-foreground">{docs.verified}</span> of{' '}
                           {docs.checklist} verified
@@ -145,7 +184,11 @@ function ApplicantList({ clientCompanyId, onOpen }) {
                       </div>
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                      {formatDate(docs.last_submitted_at)}
+                      {fresh ? (
+                        <span className="font-semibold text-brand">{formatDateTime(docs.newest_unopened_at)}</span>
+                      ) : (
+                        formatDate(docs.last_submitted_at)
+                      )}
                     </TableCell>
                     <TableCell className="text-right">
                       <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-brand" />

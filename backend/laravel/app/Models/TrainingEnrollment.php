@@ -20,11 +20,14 @@ class TrainingEnrollment extends Model
 
     /*
      * Who marked attendance and who recorded completion are set by the training
-     * workflow itself, never from request input, so they are not fillable.
+     * workflow itself, never from request input, so they are not fillable. Nor
+     * is the applicant's own confirmation: only the portal's confirm action
+     * writes it.
      */
     protected function casts(): array
     {
         return [
+            'attendance_confirmed_at' => 'datetime',
             'attendance_recorded_at' => 'datetime',
             'completion_recorded_at' => 'datetime',
         ];

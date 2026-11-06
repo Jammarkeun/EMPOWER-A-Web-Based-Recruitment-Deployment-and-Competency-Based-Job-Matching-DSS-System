@@ -51,7 +51,8 @@ class ApplicantRequirementResource extends JsonResource
             'review_state' => $this->displayState(),
             'review_state_label' => match ($this->displayState()) {
                 'not_uploaded' => 'Not yet sent',
-                'uploaded' => 'Upload successful',
+                // A form has no file, so "upload" would be the wrong word.
+                'uploaded' => $this->isDigitalSubmission() ? 'Submitted' : 'Upload successful',
                 'under_review' => 'Being checked',
                 'verified' => 'Accepted',
                 'rejected' => 'Needs resubmitting',
@@ -67,6 +68,7 @@ class ApplicantRequirementResource extends JsonResource
             'verification_method' => $this->verification_method,
             'verification_method_label' => match ($this->verification_method) {
                 'online_upload' => 'Online upload',
+                'online_form' => 'Digital form',
                 'walk_in' => 'Walk-in / physical',
                 'other' => 'Other',
                 default => null,
@@ -80,6 +82,13 @@ class ApplicantRequirementResource extends JsonResource
             'file_size_bytes' => $this->file_size_bytes,
 
             'submitted_at' => $this->submitted_at?->toIso8601String(),
+            // portal_upload | digital_form | null (older rows). A Bio-Data sent
+            // through the form has no file and is opened with its own viewer.
+            'submitted_via' => $this->submitted_via,
+            'is_digital_form' => $this->isDigitalSubmission(),
+            // A form waiting for HR - also while the requirement is still
+            // complete through an earlier paper copy or upload.
+            'digital_form_pending' => $this->hasPendingDigitalForm(),
             'verified_at' => $this->verified_at?->toIso8601String(),
             'verified_by' => $this->whenLoaded('verifier', fn () => $this->verifier?->full_name),
             'expiry_date' => $this->expiry_date?->toDateString(),

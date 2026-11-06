@@ -22,6 +22,7 @@ import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Field, FormGrid } from '@/components/ui/form'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import ApplicantDocuments from '@/components/ApplicantDocuments'
+import CompanyDocuments from '@/components/companyDocuments/CompanyDocuments'
 import CriteriaValueEditor from '@/components/CriteriaValueEditor'
 import RangeSummary from '@/components/RangeSummary'
 import { formProblems } from '@/lib/validation'
@@ -34,6 +35,8 @@ import {
   unitFor,
 } from '@/lib/requirementRange'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -49,6 +52,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { CompanyLocationCard, CompanyLocationField } from '@/components/map/CompanyLocation'
 
 /**
  * One client company's workspace.
@@ -148,6 +152,10 @@ export default function ClientDetail() {
         </div>
       )}
 
+      <div className="mb-5">
+        <CompanyLocationCard company={data} canEdit={can('clients.update')} onEdit={() => setEditOpen(true)} />
+      </div>
+
       {/* The client at a glance, so the first question — how much is
           outstanding for them — is answered without opening a tab. */}
       <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -213,9 +221,23 @@ export default function ClientDetail() {
         )}
 
         <TabsContent value="documents">
-          {/* By person, as everywhere else: the documents of the people
-              placed with this client, each opened by name. */}
-          <ApplicantDocuments clientCompanyId={id} />
+          <div className="space-y-6">
+            {/* The company's own papers first: its registration, permits,
+                licences, each under the title it was given. */}
+            <CompanyDocuments clientId={id} companyName={data.company_name} />
+
+            {/* By person, as everywhere else: the documents of the people
+                placed with this client, each opened by name. */}
+            <section aria-labelledby="worker-documents-heading">
+              <h3 id="worker-documents-heading" className="text-sm font-semibold">
+                Workers&apos; documents
+              </h3>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Requirements of the people placed with this client, opened by name.
+              </p>
+              <ApplicantDocuments clientCompanyId={id} />
+            </section>
+          </div>
         </TabsContent>
       </Tabs>
 
@@ -702,7 +724,8 @@ const IMPORTANCE_LIMIT = 100
 function CompanyRequirements({ clientId, onSaved }) {
   const { can } = useAuth()
   const toast = useToast()
-  const { data, loading, error, refetch } = useApi(`/clients/${clientId}/criteria`)
+  // Not live: the rows below are an editor, and a refresh would reset them.
+  const { data, loading, error, refetch } = useApi(`/clients/${clientId}/criteria`, null, { live: false })
 
   const [rows, setRows] = React.useState([])
   const [saving, setSaving] = React.useState(false)
@@ -987,6 +1010,25 @@ function CompanyRequirements({ clientId, onSaved }) {
   )
 }
 
+const COMPANY_FIELDS = ['company_name', 'business_type', 'contact_person', 'contact_number', 'email', 'office_address', 'status', 'notes']
+
+function fromCompany(company) {
+  return {
+    ...Object.fromEntries(COMPANY_FIELDS.map((f) => [f, company?.[f] ?? ''])),
+    // The saved pin as it stands, or none. Saved back unchanged unless the
+    // person moves or removes it.
+    latitude: company?.latitude ?? null,
+    longitude: company?.longitude ?? null,
+  }
+}
+
+function fromDepartment(department) {
+  return {
+    department_code: department?.department_code ?? '',
+    department_name: department?.department_name ?? '',
+    status: department?.status ?? 'active',
+  }
+}
 
 /**
  * Adds a department, or edits one when given it.
@@ -997,21 +1039,17 @@ function CompanyRequirements({ clientId, onSaved }) {
  */
 function DepartmentDialog({ open, onOpenChange, clientId, department, onSaved }) {
   const editing = Boolean(department)
-  const [form, setForm] = React.useState({ department_code: '', department_name: '', status: 'active' })
+  // The client page refreshes in the background; edits survive it.
+  const { form, setForm, dirty } = useFormDraft(department, fromDepartment, { open, key: department?.id ?? 'new' })
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
   const toast = useToast()
+  const { guard, prompt } = useUnsavedChanges(dirty)
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
-    if (open) {
-      setForm({
-        department_code: department?.department_code ?? '',
-        department_name: department?.department_name ?? '',
-        status: department?.status ?? 'active',
-      })
-      setErrors({})
-    }
-  }, [open, department])
+    if (open) setErrors({})
+  }, [open])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -1037,8 +1075,9 @@ function DepartmentDialog({ open, onOpenChange, clientId, department, onSaved })
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !submitting && close(next)}>
       <DialogContent>
+        {prompt}
         <DialogHeader>
           <DialogTitle>{editing ? 'Edit department' : 'Add department'}</DialogTitle>
           <DialogDescription>
@@ -1086,7 +1125,7 @@ function DepartmentDialog({ open, onOpenChange, clientId, department, onSaved })
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => close(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>
@@ -1111,21 +1150,21 @@ function DepartmentDialog({ open, onOpenChange, clientId, department, onSaved })
  */
 function EditCompanyDialog({ open, onOpenChange, company, onSaved }) {
   const toast = useToast()
-  const fields = ['company_name', 'business_type', 'contact_person', 'contact_number', 'email', 'office_address', 'status', 'notes']
-  const fromCompany = () => Object.fromEntries(fields.map((f) => [f, company?.[f] ?? '']))
-
-  const [form, setForm] = React.useState(fromCompany)
+  // A background refresh of the client keeps the edits, and does not close
+  // the deactivation confirmation (useFormDraft).
+  const { form, setForm, dirty } = useFormDraft(company, fromCompany, { open, key: company?.id })
   const [errors, setErrors] = React.useState({})
   const [saving, setSaving] = React.useState(false)
   const [confirming, setConfirming] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(dirty && !confirming)
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
     if (open) {
-      setForm(fromCompany())
       setErrors({})
       setConfirming(false)
     }
-  }, [open, company])
+  }, [open])
 
   const deactivating = company?.status === 'active' && form.status === 'inactive'
 
@@ -1167,8 +1206,9 @@ function EditCompanyDialog({ open, onOpenChange, company, onSaved }) {
 
   return (
     <>
-      <Dialog open={open && !confirming} onOpenChange={(next) => !saving && onOpenChange(next)}>
+      <Dialog open={open && !confirming} onOpenChange={(next) => !saving && close(next)}>
         <DialogContent className="max-w-2xl">
+          {prompt}
           <DialogHeader>
             <DialogTitle>Edit client company</DialogTitle>
             <DialogDescription>Changes are recorded in the audit trail.</DialogDescription>
@@ -1201,12 +1241,19 @@ function EditCompanyDialog({ open, onOpenChange, company, onSaved }) {
             <Field label="Office address" htmlFor="office_address" required error={errors.office_address?.[0]}>
               <Input value={form.office_address} onChange={set('office_address')} />
             </Field>
+            <CompanyLocationField
+              latitude={form.latitude}
+              longitude={form.longitude}
+              companyName={form.company_name}
+              error={errors.latitude?.[0] ?? errors.longitude?.[0]}
+              onChange={(location) => setForm((current) => ({ ...current, ...location }))}
+            />
             <Field label="Notes" htmlFor="company_notes" error={errors.notes?.[0]}>
               <Textarea value={form.notes} onChange={set('notes')} />
             </Field>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+              <Button type="button" variant="outline" onClick={() => close(false)} disabled={saving}>
                 Cancel
               </Button>
               <Button type="submit" disabled={saving}>
@@ -1329,7 +1376,7 @@ function CompanyRequests({ clientId }) {
                     <StatusBadge status={request.request_status} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/job-requests/${request.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/job-requests/${request.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open request ${request.request_code}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>
@@ -1433,7 +1480,7 @@ function CompanyEmployees({ clientId }) {
                     <StatusBadge status={employee.employment_status} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open ${employee.full_name}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

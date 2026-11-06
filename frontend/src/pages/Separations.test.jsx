@@ -49,4 +49,30 @@ describe('Separations list', () => {
     await waitFor(() => expect(lastQuery().status).toBeUndefined())
     expect(lastQuery()).toMatchObject({ type: 'resignation' })
   })
+
+  it('opens a termination request on its own case page and marks one awaiting review', async () => {
+    const request = {
+      ...WAITING,
+      type: 'termination',
+      id: 7,
+      source: 'office',
+      reason: 'Fourth AWOL',
+      status: 'for_review',
+      stage: 'for_review',
+      stage_label: 'Submitted for administrator review',
+      reference: 'TRM-00007',
+      filed_by: 'Helen HR',
+      clearance_status: null,
+      clearance_outstanding: null,
+    }
+    api.get.mockImplementation((url) => (url === '/separations' ? ok([request]) : ok(null)))
+
+    renderAt(<Separations />, { path: '/separations', route: '/separations?type=termination&stage=awaiting_review' })
+
+    expect(await screen.findByText('TRM-00007')).toBeInTheDocument()
+    expect(lastQuery()).toMatchObject({ type: 'termination', stage: 'awaiting_review' })
+    expect(screen.getByText('Requested by Helen HR')).toBeInTheDocument()
+    expect(screen.getByText('Pending administrator review')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /review/i })).toHaveAttribute('href', '/separations/terminations/7')
+  })
 })

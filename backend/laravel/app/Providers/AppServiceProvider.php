@@ -133,6 +133,7 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('document-scan', fn (Request $request) => Limit::perMinute(20)->by($account($request)));
         RateLimiter::for('violation-report', fn (Request $request) => Limit::perMinute(30)->by($account($request)));
         RateLimiter::for('portal-upload', fn (Request $request) => Limit::perMinute(30)->by($account($request)));
+        RateLimiter::for('company-document-upload', fn (Request $request) => Limit::perMinute(30)->by($account($request)));
         // Each check is about forty seconds of the recognition service's CPU.
         RateLimiter::for('readability-check', fn (Request $request) => Limit::perHour(10)->by($account($request)));
         RateLimiter::for('profile-photo', fn (Request $request) => Limit::perMinute(20)->by($account($request)));

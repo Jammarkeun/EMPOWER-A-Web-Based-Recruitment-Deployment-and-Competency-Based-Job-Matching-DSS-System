@@ -52,6 +52,15 @@ final class AttendancePresenter
             'voided_at' => $schedule->voided_at?->toIso8601String(),
             'voided_by' => $schedule->relationLoaded('voider') ? $schedule->voider?->full_name : null,
             'void_reason' => $schedule->void_reason,
+            // Approved from a coordinator's submission, or entered by HR.
+            'submission' => $schedule->relationLoaded('submission') && $schedule->submission ? [
+                'id' => $schedule->submission->id,
+                'submission_code' => $schedule->submission->submission_code,
+                'proposed_by' => $schedule->submission->creator?->full_name,
+                'approved_by' => $schedule->submission->reviewer?->full_name,
+                'approved_at' => $schedule->submission->reviewed_at?->toIso8601String(),
+                'source_note' => $schedule->submission->source_note,
+            ] : null,
         ];
     }
 
@@ -218,6 +227,18 @@ final class AttendancePresenter
             'completed_by' => $import->completer?->full_name,
             'completed_at' => $import->completed_at?->toIso8601String(),
             'discarded_at' => $import->discarded_at?->toIso8601String(),
+            'dtr_period' => $import->dtrPeriod ? [
+                'id' => $import->dtrPeriod->id,
+                'period_from' => $import->dtrPeriod->period_from->toDateString(),
+                'period_to' => $import->dtrPeriod->period_to->toDateString(),
+                'status' => $import->dtrPeriod->status,
+                'status_label' => $import->dtrPeriod->label(),
+            ] : null,
+            // Opened from a coordinator's DTR submission rather than uploaded by HR.
+            'dtr_submission' => $import->relationLoaded('dtrSubmission') && $import->dtrSubmission ? [
+                'id' => $import->dtrSubmission->id,
+                'submission_code' => $import->dtrSubmission->submission_code,
+            ] : null,
         ] + ($withResults ? ['results' => $import->results, 'column_mapping' => $import->column_mapping] : []);
     }
 }

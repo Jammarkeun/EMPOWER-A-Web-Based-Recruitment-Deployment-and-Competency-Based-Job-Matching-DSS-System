@@ -17,10 +17,10 @@ use App\Models\ManpowerRequisition;
 use App\Models\RequestCriteria;
 use App\Rules\NotBelow;
 use App\Services\AuditService;
+use App\Services\JobRequestFactory;
 use App\Services\JobRequestLifecycleService;
-use App\Services\ManpowerRequisitionService;
 use App\Services\Matching\CompetencyScoringService;
-use App\Services\ReferenceCodeService;
+use App\Support\ApplicantStatuses;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -30,11 +30,10 @@ use Illuminate\Validation\ValidationException;
 class JobRequestController extends Controller
 {
     public function __construct(
-        private readonly ReferenceCodeService $codes,
         private readonly CompetencyScoringService $scoring,
         private readonly AuditService $audit,
         private readonly JobRequestLifecycleService $requests,
-        private readonly ManpowerRequisitionService $requisitions,
+        private readonly JobRequestFactory $factory,
     ) {
     }
 
@@ -49,11 +48,22 @@ class JobRequestController extends Controller
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'only_open' => ['nullable', 'boolean'],
+            // Still needing workers past the deployment deadline.
+            'overdue' => ['nullable', 'boolean'],
+            // Created from a coordinator requisition, or recorded directly by HR.
+            'source' => ['nullable', Rule::in(['requisition', 'direct'])],
+            'sort_by' => ['nullable', Rule::in(['date_requested', 'deployment_deadline'])],
+            'sort_dir' => ['nullable', Rule::in(['asc', 'desc'])],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
+        $sortBy = $filters['sort_by'] ?? 'date_requested';
+        $direction = $filters['sort_dir'] ?? ($sortBy === 'deployment_deadline' ? 'asc' : 'desc');
+
         $requests = JobRequest::query()
-            ->with(['company', 'department'])
+            ->with(['company', 'department', 'requisition:id,requisition_code,status'])
+            ->when(($filters['source'] ?? null) === 'requisition', fn ($q) => $q->whereNotNull('manpower_requisition_id'))
+            ->when(($filters['source'] ?? null) === 'direct', fn ($q) => $q->whereNull('manpower_requisition_id'))
             ->withCount(['criteria', 'matches'])
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('client_company_id', $v))
             ->when($filters['client_department_id'] ?? null, fn ($q, $v) => $q->where('client_department_id', $v))
@@ -61,13 +71,24 @@ class JobRequestController extends Controller
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('date_requested', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('date_requested', '<=', $v))
             ->when($filters['only_open'] ?? false, fn ($q) => $q->open())
-            ->orderByDesc('date_requested')
-            ->orderByDesc('id')
+            ->when($filters['overdue'] ?? false, fn ($q) => $q->overdue())
+            // A request with no deadline goes last either way. MySQL puts NULL
+            // first and PostgreSQL last, so it is said rather than left to the
+            // database.
+            ->when($sortBy === 'deployment_deadline', fn ($q) => $q->orderByRaw('CASE WHEN deployment_deadline IS NULL THEN 1 ELSE 0 END'))
+            ->orderBy($sortBy, $direction)
+            ->orderBy('id', $direction)
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(JobRequestResource::collection($requests), 'Manpower requests retrieved');
     }
 
+    /**
+     * A manpower request HR records directly - one that did not come through
+     * a coordinator's requisition (a client without a coordinator, an email
+     * or a call to the office). A coordinator's requisition becomes its
+     * request when HR approves it, never through this form.
+     */
     public function store(Request $request): JsonResponse
     {
         $this->authorize('create', JobRequest::class);
@@ -92,10 +113,13 @@ class JobRequestController extends Controller
             'workers_needed' => ['required', 'integer', 'min:1', 'max:1000'],
             'date_requested' => ['required', 'date'],
             'deployment_deadline' => ['nullable', 'date', 'after_or_equal:date_requested'],
-            'request_source' => ['nullable', 'string', 'max:80'],
+            // How the client asked, since it was not by requisition.
+            'request_source' => ['required', 'string', 'max:80'],
             'remarks' => ['nullable', 'string', 'max:5000'],
-            // The approved coordinator requisition this request records, if any.
-            'manpower_requisition_id' => ['nullable', 'integer', 'exists:manpower_requisitions,id'],
+            'manpower_requisition_id' => ['prohibited'],
+        ], [
+            'request_source.required' => 'Say how the client asked for these workers.',
+            'manpower_requisition_id.prohibited' => 'A coordinator requisition becomes a manpower request when HR approves it.',
         ]);
 
         $company = ClientCompany::findOrFail($data['client_company_id']);
@@ -109,38 +133,20 @@ class JobRequestController extends Controller
             return ApiResponse::error('The selected department does not belong to that client company.', 422);
         }
 
-        $requisition = isset($data['manpower_requisition_id'])
-            ? ManpowerRequisition::findOrFail($data['manpower_requisition_id'])
-            : null;
-        unset($data['manpower_requisition_id']);
-
-        if ($requisition) {
-            $this->requisitions->assertLinkable($requisition, $company->id);
+        if ($pending = $this->requisitionFor($company, $data)) {
+            return ApiResponse::error(sprintf(
+                'Coordinator requisition %s already asks for this position at this client (%s). %s',
+                $pending->requisition_code,
+                strtolower(ManpowerRequisition::LABELS[$pending->status] ?? $pending->status),
+                $pending->status === 'approved'
+                    ? 'Create its manpower request from the requisition instead.'
+                    : 'Approving it creates the manpower request, so it is not recorded twice.'
+            ), 409);
         }
 
-        // The request and its link to the requisition land together or not at all.
-        $jobRequest = DB::transaction(function () use ($company, $data, $request, $requisition) {
-            $position = $this->resolvePosition($company, $data, $request->user()->id);
+        $jobRequest = $this->factory->create($company, $data, $request->user());
 
-            $jobRequest = JobRequest::create(array_merge($data, [
-                'request_code' => $this->codes->jobRequest(),
-                'job_position_id' => $position->id,
-                // Kept in step with the position when one was chosen, so the two
-                // never disagree about what the job is called.
-                'position_title' => $position->position_title,
-                'created_by' => $request->user()->id,
-            ]));
-
-            if ($requisition) {
-                $this->requisitions->linkJobRequest($requisition, $jobRequest, $request->user());
-            }
-
-            return $jobRequest;
-        });
-
-        $this->audit->record('create', 'job_requests', JobRequest::class, $jobRequest->id, null, $data + array_filter([
-            'requisition' => $requisition?->requisition_code,
-        ]));
+        $this->audit->record('create', 'job_requests', JobRequest::class, $jobRequest->id, null, $data + ['source' => 'direct']);
 
         return ApiResponse::created(
             new JobRequestResource($jobRequest->load(['company', 'department'])),
@@ -149,56 +155,26 @@ class JobRequestController extends Controller
     }
 
     /**
-     * The position this request is for, creating it if the title is a new one.
-     *
-     * The find-or-create is the mechanism that keeps the applicant's list of
-     * positions honest without anyone having to maintain it as a separate
-     * chore. A client asks for a role the agency has not placed before, HR
-     * records the request in the ordinary way, and the role is on the
-     * application form from that moment.
-     *
-     * Matching is case-insensitive so "Production Helper" typed one day and
-     * "production helper" the next remain a single job rather than two.
+     * A coordinator requisition for the same client and position that is
+     * still on its way to becoming a request - waiting on HR, or approved
+     * before approval created requests - so recording it here would count the
+     * same workers twice.
      */
-    private function resolvePosition(ClientCompany $company, array $data, int $actorId): JobPosition
+    private function requisitionFor(ClientCompany $company, array $data): ?ManpowerRequisition
     {
-        if (! empty($data['job_position_id'])) {
-            $position = JobPosition::findOrFail($data['job_position_id']);
+        $title = filled($data['job_position_id'] ?? null)
+            ? JobPosition::whereKey($data['job_position_id'])->value('position_title')
+            : trim((string) ($data['position_title'] ?? ''));
 
-            abort_if(
-                ! is_null($position->client_company_id)
-                    && (int) $position->client_company_id !== (int) $company->id,
-                422,
-                'That position belongs to a different client company.'
-            );
-
-            return $position;
-        }
-
-        $title = trim($data['position_title']);
-
-        $existing = JobPosition::where('client_company_id', $company->id)
-            ->whereRaw('LOWER(position_title) = ?', [mb_strtolower($title)])
+        return ManpowerRequisition::query()
+            ->where('client_company_id', $company->id)
+            ->where(fn ($q) => $q->whereIn('status', ManpowerRequisition::PENDING_REVIEW)
+                ->orWhere(fn ($q) => $q->where('status', 'approved')->whereNull('job_request_id')))
+            ->where(fn ($q) => $q
+                ->when(filled($data['job_position_id'] ?? null), fn ($q) => $q->where('job_position_id', $data['job_position_id']))
+                ->orWhereRaw('LOWER(position_title) = ?', [mb_strtolower((string) $title)]))
+            ->orderBy('id')
             ->first();
-
-        if ($existing) {
-            // A role being asked for again is a role the agency still places,
-            // so a previously withdrawn position comes back into use rather
-            // than leaving the request pointing at something switched off.
-            if (! $existing->isActive()) {
-                $existing->update(['status' => 'active']);
-            }
-
-            return $existing;
-        }
-
-        return JobPosition::create([
-            'position_code' => $this->codes->position(),
-            'client_company_id' => $company->id,
-            'position_title' => $title,
-            'status' => 'active',
-            'created_by' => $actorId,
-        ]);
     }
 
     public function show(JobRequest $jobRequest): JsonResponse
@@ -230,6 +206,21 @@ class JobRequestController extends Controller
             'deployment_deadline' => ['nullable', 'date', 'after_or_equal:'.$jobRequest->date_requested?->toDateString()],
             'remarks' => ['nullable', 'string', 'max:5000'],
         ]);
+
+        // A request created from a coordinator requisition keeps the position
+        // and headcount HR approved on it. A different need is a new or
+        // corrected requisition, so the two records never disagree.
+        if ($jobRequest->isFromRequisition()) {
+            $locked = array_filter(['position_title', 'workers_needed'], fn ($field) => array_key_exists($field, $data)
+                && (string) $data[$field] !== (string) $jobRequest->{$field});
+
+            if ($locked !== []) {
+                return ApiResponse::error(sprintf(
+                    'The position and workers needed come from approved requisition %s and cannot be changed here.',
+                    $jobRequest->requisition?->requisition_code
+                ), 422);
+            }
+        }
 
         // Reducing the headcount below what has already been deployed would make
         // the remaining count negative and the request permanently inconsistent.
@@ -288,7 +279,7 @@ class JobRequestController extends Controller
      */
     private function presentWithHistory(JobRequest $jobRequest): array
     {
-        $jobRequest->loadMissing(['company', 'department', 'statusHistory.changedBy']);
+        $jobRequest->loadMissing(['company', 'department', 'statusHistory.changedBy', 'requisition.requester', 'requisition.history.changedBy']);
 
         return array_merge((new JobRequestResource($jobRequest))->resolve(), [
             'status_history' => $jobRequest->statusHistory->map(fn ($h) => [
@@ -698,6 +689,13 @@ class JobRequestController extends Controller
         return $jobRequest->matches()
             ->reorder()
             ->with('applicant')
+            // Deployed workers and terminated, resigned or archived records are
+            // never listed, even if a result was left behind by a path that
+            // skipped the lifecycle - or a status that disagrees with the
+            // employment record.
+            ->whereHas('applicant', fn ($q) => $q
+                ->whereNotIn('current_status', ApplicantStatuses::OFF_RANKINGS)
+                ->notCurrentlyDeployed())
             ->when($filter, $filter)
             ->orderByRaw('CASE WHEN rank_order IS NULL THEN 1 ELSE 0 END')
             ->orderBy('rank_order')

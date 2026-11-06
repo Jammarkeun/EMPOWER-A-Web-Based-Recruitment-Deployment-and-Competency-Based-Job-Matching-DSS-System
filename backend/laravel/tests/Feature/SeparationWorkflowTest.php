@@ -8,6 +8,7 @@ use App\Services\DeploymentService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Laravel\Sanctum\Sanctum;
+use Tests\Support\ProcessesTerminations;
 use Tests\Support\SeedsDomainData;
 use Tests\TestCase;
 
@@ -25,6 +26,7 @@ class SeparationWorkflowTest extends TestCase
 {
     use RefreshDatabase;
     use SeedsDomainData;
+    use ProcessesTerminations;
 
     protected function setUp(): void
     {
@@ -113,8 +115,7 @@ class SeparationWorkflowTest extends TestCase
             'status' => 'for_review',
         ])->assertCreated()->json('data.id');
 
-        $this->app['auth']->forgetGuards();
-        Sanctum::actingAs($this->adminUser());
+        $this->approveAndClearTermination($employee->id, $termination, $hr);
 
         $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/finalise", ['confirm' => true])
             ->assertOk();
@@ -217,11 +218,8 @@ class SeparationWorkflowTest extends TestCase
         $this->assertSame('active', $employee->fresh()->employment_status);
 
         // A withdrawn termination cannot be finalised afterwards.
-        $this->app['auth']->forgetGuards();
-        Sanctum::actingAs($this->adminUser());
-
         $this->postJson("/api/v1/employees/{$employee->id}/terminations/{$termination}/finalise", ['confirm' => true])
-            ->assertStatus(400);
+            ->assertStatus(409);
 
         $this->assertSame('active', $employee->fresh()->employment_status);
     }

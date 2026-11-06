@@ -109,12 +109,22 @@ class EmployeePolicy
     /**
      * Withdrawing a termination that should not go ahead.
      *
-     * Open to whoever filed it and to whoever reviews it. A review that can
-     * only ever end in a dismissal is not a review.
+     * Open to HR, who filed it, and to the administrators who review it.
      */
     public function withdrawTermination(User $user, Employee $employee): bool
     {
-        return $user->can('separation.create') || $user->can('separation.finalize_termination');
+        return $user->can('separation.create') || $user->can('separation.review_termination');
+    }
+
+    /**
+     * Deciding HR's termination request: approve, return, or reject.
+     *
+     * An administrator's decision, held apart from filing. Approval ends
+     * nobody's employment; it sends the case back to HR for clearance.
+     */
+    public function reviewTermination(User $user, Employee $employee): bool
+    {
+        return $user->can('separation.review_termination');
     }
 
     public function approveSeparation(User $user, Employee $employee): bool
@@ -125,11 +135,11 @@ class EmployeePolicy
     }
 
     /**
-     * Finalising a dismissal is held apart from completing a resignation.
+     * The processing after an administrator has approved a termination: the
+     * pre-termination clearance, and the final step that ends the employment.
      *
-     * A termination ends someone's livelihood and becomes the agency's evidence
-     * if it is ever challenged, so it requires an administrator rather than the
-     * same HR officer who filed it.
+     * The permission opens the door; SeparationService still refuses any
+     * request that is not approved, or whose clearance is incomplete.
      */
     public function finaliseTermination(User $user, Employee $employee): bool
     {

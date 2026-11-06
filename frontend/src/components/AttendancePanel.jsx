@@ -8,8 +8,8 @@ import { useToast } from '@/components/ui/toast'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Input, NumberInput } from '@/components/ui/input'
-import { Field, FormGrid } from '@/components/ui/form'
+import { Input } from '@/components/ui/input'
+import { Field } from '@/components/ui/form'
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
@@ -22,17 +22,21 @@ import {
 } from '@/components/ui/dialog'
 import AttendanceDayDialog from '@/components/attendance/AttendanceDayDialog'
 import ExceptionDialog from '@/components/attendance/ExceptionDialog'
+import ScheduleFields, { scheduleBody } from '@/components/attendance/ScheduleFields'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import {
   DAY_STATUS,
   DISCREPANCIES,
   REVIEW_STATUS,
-  WEEKDAYS,
+  SCHEDULE_STATUS,
   currentMonth,
   discrepancyText,
   formatMinutes,
   monthBounds,
   monthParam,
   reviewQueuePath,
+  scheduleReviewPath,
   shiftMonth,
   shiftText,
 } from '@/lib/attendance'
@@ -94,6 +98,7 @@ export default function AttendancePanel({ employee }) {
   if (!data) return null
 
   const { summary, days, policy, current_schedule: schedule, schedules, schedule_changes: changes, exceptions, review_counts: reviewCounts } = data
+  const submissions = data.schedule_submissions ?? []
   const grace = policy?.late_grace_minutes ?? 0
   const latest = schedules.find((s) => s.status === 'active')
 
@@ -131,8 +136,13 @@ export default function AttendancePanel({ employee }) {
                   Since {formatDate(schedule.effective_from)}
                   {schedule.company && ` · ${schedule.company}`}
                   {schedule.department && `, ${schedule.department}`}
-                  {schedule.set_by && ` · set by ${schedule.set_by}`}
+                  {schedule.submission
+                    ? ` · proposed by ${schedule.submission.proposed_by}, approved by ${schedule.submission.approved_by}`
+                    : schedule.set_by && ` · set by ${schedule.set_by}`}
                 </p>
+                {schedule.submission?.source_note && (
+                  <p className="text-xs text-muted-foreground">Source: {schedule.submission.source_note}</p>
+                )}
                 {schedule.remarks && <p className="mt-1 text-xs text-muted-foreground">{schedule.remarks}</p>}
                 {mayManage && (
                   <div className="mt-2 flex gap-1.5">
@@ -153,6 +163,31 @@ export default function AttendancePanel({ employee }) {
               <p className="text-muted-foreground">
                 No schedule in force today. Without one, the DTR has nothing to be compared with.
               </p>
+            )}
+
+            {submissions.length > 0 && (
+              <ul className="space-y-2" aria-label="Schedules waiting for HR">
+                {submissions.map((s) => (
+                  <li key={s.id} className="rounded-md border border-dashed px-3 py-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone={SCHEDULE_STATUS[s.status]?.tone}>{SCHEDULE_STATUS[s.status]?.label}</Badge>
+                      <span className="font-mono text-muted-foreground">{s.submission_code}</span>
+                    </div>
+                    <p className="mt-1 text-sm text-foreground">{s.description}</p>
+                    <p className="text-muted-foreground">
+                      From {formatDate(s.effective_from)}
+                      {s.effective_to && ` to ${formatDate(s.effective_to)}`} · proposed by {s.created_by}
+                    </p>
+                    {s.status === 'returned' && s.review_note && <p className="mt-1">Returned: “{s.review_note}”</p>}
+                    <p className="mt-1 text-muted-foreground">Not compared with the DTR until HR approves it.</p>
+                    {s.status === 'submitted' && (
+                      <Link to={scheduleReviewPath(s.id)} className="mt-1 inline-block text-brand hover:underline">
+                        {mayManage ? 'Review in the schedule queue' : 'Open in the schedule queue'}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ul>
             )}
 
             {schedules.filter((s) => s.id !== schedule?.id).length > 0 && (
@@ -259,8 +294,9 @@ export default function AttendancePanel({ employee }) {
         <p>
           Late is counted from the scheduled start
           {grace > 0 ? `, once past the ${grace}-minute allowance set in Settings` : ' to the minute (no grace period is set — CDE has not stated one)'}.
-          A day with nothing on file is <strong>awaiting DTR</strong>, not an absence; it becomes “No DTR record” only once
-          the client's DTR for it has been imported or marked complete. Time after the scheduled end is information,
+          A day with nothing on file is <strong>awaiting DTR</strong>, not an absence; it becomes “No DTR record”, for
+          verification, only once HR confirms the client's DTR period for it complete or marks the hand-encoded DTR
+          complete — importing a file alone does not. Time after the scheduled end is information,
           not approved overtime. Breaks are shown, never deducted. This system does not connect to the biometric device.
         </p>
       </div>
@@ -669,38 +705,26 @@ function ScheduleDialog({ state, onClose, employee, current, onSaved }) {
     [current, target, correcting, employee.hire_date, today]
   )
 
-  const [form, setForm] = React.useState(blank)
+  // `current` and `target` are refetched in the background; a refresh must
+  // not reset a schedule being entered (useFormDraft).
+  const { form, setForm, dirty } = useFormDraft(null, blank, {
+    open,
+    key: `${state?.mode ?? ''}:${state?.schedule?.id ?? ''}`,
+  })
   const [errors, setErrors] = React.useState({})
   const [saving, setSaving] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(dirty)
+  const close = guard((next) => !next && onClose())
 
   React.useEffect(() => {
-    if (open) {
-      setForm(blank())
-      setErrors({})
-    }
-  }, [open, blank])
-
-  const crossesMidnight = form.shift_end && form.shift_start && form.shift_end <= form.shift_start
-
-  function toggleDay(day) {
-    setForm((f) => ({
-      ...f,
-      work_days: f.work_days.includes(day) ? f.work_days.filter((d) => d !== day) : [...f.work_days, day].sort(),
-    }))
-  }
+    if (open) setErrors({})
+  }, [open])
 
   async function handleSubmit(event) {
     event.preventDefault()
     setSaving(true)
     setErrors({})
-    const body = {
-      work_days: form.work_days,
-      shift_start: form.shift_start,
-      shift_end: form.shift_end,
-      break_start: form.break_start || null,
-      break_minutes: form.break_minutes === '' ? null : Number(form.break_minutes),
-      remarks: form.remarks || null,
-    }
+    const body = scheduleBody(form)
     try {
       if (correcting) {
         await patch(`/employees/${employee.id}/schedules/${target.id}`, { ...body, reason: form.reason })
@@ -720,8 +744,9 @@ function ScheduleDialog({ state, onClose, employee, current, onSaved }) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !saving && !next && onClose()}>
+    <Dialog open={open} onOpenChange={(next) => !saving && close(next)}>
       <DialogContent>
+        {prompt}
         <DialogHeader>
           <DialogTitle>{correcting ? 'Correct schedule' : current ? 'Change schedule' : 'Set schedule'}</DialogTitle>
           <DialogDescription>
@@ -745,55 +770,7 @@ function ScheduleDialog({ state, onClose, employee, current, onSaved }) {
             </Field>
           )}
 
-          <Field label="Work days" htmlFor="work_days" required error={errors.work_days?.[0]}>
-            <div className="flex flex-wrap gap-1.5">
-              {WEEKDAYS.map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => toggleDay(value)}
-                  aria-pressed={form.work_days.includes(value)}
-                  className={cn(
-                    'h-8 w-12 rounded-control border text-xs font-medium transition-colors',
-                    form.work_days.includes(value)
-                      ? 'border-primary bg-primary text-primary-foreground'
-                      : 'bg-card text-muted-foreground hover:bg-accent'
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <FormGrid>
-            <Field label="Shift starts" htmlFor="shift_start" required error={errors.shift_start?.[0]}>
-              <Input type="time" value={form.shift_start} onChange={(e) => setForm({ ...form, shift_start: e.target.value })} />
-            </Field>
-            <Field
-              label="Shift ends"
-              htmlFor="shift_end"
-              required
-              error={errors.shift_end?.[0]}
-              hint={crossesMidnight ? 'Ends the next day (night shift).' : undefined}
-            >
-              <Input type="time" value={form.shift_end} onChange={(e) => setForm({ ...form, shift_end: e.target.value })} />
-            </Field>
-          </FormGrid>
-
-          <FormGrid>
-            <Field label="Break starts" htmlFor="break_start" error={errors.break_start?.[0]} hint="Optional.">
-              <Input type="time" value={form.break_start} onChange={(e) => setForm({ ...form, break_start: e.target.value })} />
-            </Field>
-            <Field label="Break length (minutes)" htmlFor="break_minutes" error={errors.break_minutes?.[0]} hint="Shown only; never deducted.">
-              <NumberInput
-                value={form.break_minutes}
-                onChange={(e) => setForm({ ...form, break_minutes: e.target.value })}
-                min={1}
-                max={600}
-              />
-            </Field>
-          </FormGrid>
+          <ScheduleFields form={form} setForm={setForm} errors={errors} />
 
           <Field label="Remarks" htmlFor="schedule_remarks" error={errors.remarks?.[0]}>
             <Input
@@ -814,7 +791,7 @@ function ScheduleDialog({ state, onClose, employee, current, onSaved }) {
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+            <Button type="button" variant="outline" onClick={() => close(false)} disabled={saving}>
               Cancel
             </Button>
             <Button type="submit" disabled={saving || form.work_days.length === 0 || (correcting && form.reason.trim().length < 5)}>

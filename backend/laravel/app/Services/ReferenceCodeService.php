@@ -69,6 +69,16 @@ class ReferenceCodeService
         return $this->next('attendance_imports', 'import_code', config('empower.code_prefixes.attendance_import', 'DTR'));
     }
 
+    public function scheduleSubmission(): string
+    {
+        return $this->next('schedule_submissions', 'submission_code', config('empower.code_prefixes.schedule_submission', 'WS'));
+    }
+
+    public function dtrSubmission(): string
+    {
+        return $this->next('dtr_submissions', 'submission_code', config('empower.code_prefixes.dtr_submission', 'DTRS'));
+    }
+
     private function next(string $table, string $column, string $prefix): string
     {
         $year = now()->year;

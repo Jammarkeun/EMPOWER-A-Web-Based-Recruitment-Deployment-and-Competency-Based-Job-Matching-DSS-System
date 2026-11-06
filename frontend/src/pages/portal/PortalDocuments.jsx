@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { Link } from 'react-router-dom'
 import {
   CheckCircle2,
   XCircle,
@@ -11,6 +12,7 @@ import {
   Info,
   UploadCloud,
   Eye,
+  ClipboardList,
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { get, upload as uploadFile } from '@/lib/api'
@@ -97,6 +99,9 @@ function metaFor(requirement) {
 function canSend(requirement) {
   return requirement.status !== 'verified' || isRenewalDue(requirement)
 }
+
+/** The Bio-Data is filled in on its own page now, not uploaded. */
+const isBioData = (requirement) => requirement.requirement_code === 'bio_data'
 
 const TONE_TEXT = {
   success: 'text-success',
@@ -289,6 +294,8 @@ function DocumentRow({ requirement, highlighted, opening, onOpen, onSend }) {
           <p className="text-xs text-destructive">{requirement.rejection_reason}</p>
         ) : expiryDetail ? (
           <p className="text-xs text-muted-foreground">{expiryDetail}</p>
+        ) : isBioData(requirement) && requirement.review_state === 'not_uploaded' ? (
+          <p className="text-xs text-muted-foreground">Fill in your Bio-Data online. No separate copy is needed.</p>
         ) : (
           <p className="text-xs text-muted-foreground">
             {meta.detail}
@@ -312,7 +319,14 @@ function DocumentRow({ requirement, highlighted, opening, onOpen, onSend }) {
         </Button>
       )}
 
-      {canSend(requirement) && (
+      {isBioData(requirement) ? (
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/portal/bio-data">
+            <ClipboardList className="h-3.5 w-3.5" />
+            {requirement.status === 'verified' && requirement.verification_method === 'online_form' ? 'View Bio-Data' : 'Fill in online'}
+          </Link>
+        </Button>
+      ) : canSend(requirement) && (
         <Button variant="outline" size="sm" onClick={onSend}>
           <Upload className="h-3.5 w-3.5" />
           {isRenewalDue(requirement) ? 'Send renewal' : requirement.has_file ? 'Replace' : 'Send'}

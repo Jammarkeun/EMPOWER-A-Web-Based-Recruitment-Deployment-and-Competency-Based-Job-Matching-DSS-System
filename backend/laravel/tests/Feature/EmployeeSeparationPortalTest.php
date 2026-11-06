@@ -14,6 +14,7 @@ use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Tests\Support\CoordinatorFixtures;
+use Tests\Support\ProcessesTerminations;
 use Tests\TestCase;
 
 /**
@@ -30,6 +31,7 @@ class EmployeeSeparationPortalTest extends TestCase
 {
     use CoordinatorFixtures;
     use RefreshDatabase;
+    use ProcessesTerminations;
 
     private Employee $employee;
     private User $login;
@@ -96,7 +98,7 @@ class EmployeeSeparationPortalTest extends TestCase
             'status' => 'for_review',
         ])->assertCreated()->json('data.id');
 
-        $this->actAs($this->admin);
+        $this->approveAndClearTermination($this->employee->id, $id, $this->hr);
         $this->postJson(
             "/api/v1/employees/{$this->employee->id}/terminations/{$id}/finalise",
             array_merge(['confirm' => true], $finalise)
@@ -406,7 +408,8 @@ class EmployeeSeparationPortalTest extends TestCase
             ->assertJsonPath('data.status', 'terminated')
             ->assertJsonPath('data.separation.notice.effective_date', now()->toDateString())
             ->assertJsonPath('data.separation.notice.message', 'Your employment ends today following repeated absences without leave. Please come to the office for your clearance.')
-            ->assertJsonPath('data.separation.notice.clearance.label', 'Not started yet')
+            // Completed before finalisation, since 2026-11-03.
+            ->assertJsonPath('data.separation.notice.clearance.label', 'Cleared')
             ->assertJsonPath('data.separation.notice.acknowledged_at', null);
 
         $overview = $this->getJson('/api/v1/portal')->assertOk()
@@ -506,8 +509,12 @@ class EmployeeSeparationPortalTest extends TestCase
         $this->getJson('/api/v1/separations')->assertForbidden();
     }
 
-    /** 14. */
-    public function test_termination_clearance_follows_finalisation_and_is_told_once(): void
+    /**
+     * 14, revised 2026-11-03: the clearance now comes before finalisation, and
+     * it is the office's work - the employee, who has not been told of the
+     * case, is told nothing about it either.
+     */
+    public function test_termination_clearance_comes_before_finalisation_and_is_not_sent_to_the_employee(): void
     {
         $this->actAs($this->hr);
         $id = $this->postJson("/api/v1/employees/{$this->employee->id}/terminations", [
@@ -516,19 +523,25 @@ class EmployeeSeparationPortalTest extends TestCase
             'status' => 'for_review',
         ])->json('data.id');
 
-        // Not before the decision.
+        // The single after-the-fact clearance is for terminations finalised
+        // under the earlier one-step process only.
         $this->putJson("/api/v1/employees/{$this->employee->id}/terminations/{$id}/clearance", ['clearance_status' => 'in_progress'])
             ->assertStatus(409);
 
-        $this->actAs($this->admin);
-        $this->postJson("/api/v1/employees/{$this->employee->id}/terminations/{$id}/finalise", ['confirm' => true])->assertOk();
+        $this->approveAndClearTermination($this->employee->id, $id, $this->hr);
+
+        $before = array_column($this->employeeNotifications(), 'title');
+        $this->assertNotContains('A notice about your employment', $before);
+        $this->assertNotContains('Your clearance status has changed', $before);
 
         $this->actAs($this->hr);
-        $this->putJson("/api/v1/employees/{$this->employee->id}/terminations/{$id}/clearance", ['clearance_status' => 'cleared'])->assertOk();
-        $this->putJson("/api/v1/employees/{$this->employee->id}/terminations/{$id}/clearance", ['clearance_status' => 'cleared'])->assertOk();
+        $this->postJson("/api/v1/employees/{$this->employee->id}/terminations/{$id}/finalise", ['confirm' => true])->assertOk();
+        $this->putJson("/api/v1/employees/{$this->employee->id}/terminations/{$id}/clearance", ['clearance_status' => 'pending'])
+            ->assertStatus(409);
 
         $titles = array_column($this->employeeNotifications(), 'title');
-        $this->assertSame(1, count(array_keys($titles, 'Your clearance status has changed')));
+        $this->assertSame(1, count(array_keys($titles, 'A notice about your employment')));
+        $this->assertNotContains('Your clearance status has changed', $titles);
 
         $this->getJson('/api/v1/portal/employment')
             ->assertJsonPath('data.separation.notice.clearance.label', 'Cleared');

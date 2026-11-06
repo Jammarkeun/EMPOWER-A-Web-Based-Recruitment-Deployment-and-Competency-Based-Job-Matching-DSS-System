@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 /**
@@ -67,4 +68,40 @@ const TableCaption = React.forwardRef(({ className, ...props }, ref) => (
 ))
 TableCaption.displayName = 'TableCaption'
 
-export { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableCaption }
+/**
+ * A column header that sorts the list (see useTableSort).
+ *
+ * The heading becomes a button, and the cell carries aria-sort, so a screen
+ * reader hears which column the list is in order by and which way. The arrow
+ * says the same to everyone else; an unsorted column shows a faint two-way
+ * arrow, so it is clear the column can be sorted at all.
+ */
+const SortableHead = React.forwardRef(({ column, sortBy, sortDir, onSort, className, children, ...props }, ref) => {
+  const active = sortBy === column
+  const Icon = !active ? ChevronsUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown
+
+  return (
+    <TableHead
+      ref={ref}
+      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className={className}
+      {...props}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className={cn(
+          '-mx-1 inline-flex items-center gap-1 rounded px-1 transition-colors hover:text-foreground',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          active && 'font-medium text-foreground'
+        )}
+      >
+        {children}
+        <Icon className={cn('h-3 w-3 shrink-0', !active && 'opacity-50')} aria-hidden="true" />
+      </button>
+    </TableHead>
+  )
+})
+SortableHead.displayName = 'SortableHead'
+
+export { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableCaption, SortableHead }

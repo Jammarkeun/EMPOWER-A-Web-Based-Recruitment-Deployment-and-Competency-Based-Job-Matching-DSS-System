@@ -8,9 +8,14 @@ use App\Models\Applicant;
 use App\Models\ApplicantRequirement;
 use App\Models\Employee;
 use App\Models\RequirementType;
+use App\Models\TrainingEnrollment;
 use App\Models\Resignation;
+use App\Models\User;
+use App\Notifications\RequirementSubmitted;
+use App\Notifications\TrainingAttendanceConfirmed;
 use App\Rules\PhilippineMobileNumber;
 use App\Services\AuditService;
+use App\Services\BioDataService;
 use App\Services\DocumentStorageService;
 use App\Services\DocumentUploadPolicy;
 use App\Services\FolderCategoryService;
@@ -205,6 +210,60 @@ class PortalController extends Controller
     }
 
     /**
+     * The applicant's "I will attend" for one of their training sessions.
+     *
+     * The one route here that takes an id, because an applicant can be on
+     * more than one session. It is only ever looked up among the signed-in
+     * applicant's own enrolments, so another applicant's id finds nothing - the
+     * same 404 as an id that does not exist.
+     *
+     * It tells the office who to expect and records nothing else: attendance
+     * is still marked by HR on the day. Saying it twice is harmless and does
+     * not notify the office twice.
+     */
+    public function confirmTraining(Request $request, int $enrollment): JsonResponse
+    {
+        $applicant = $this->applicant($request);
+
+        $record = $applicant->trainingEnrollments()->with('training')->whereKey($enrollment)->first();
+        abort_if(! $record || ! $record->training, 404, 'That training session was not found on your record.');
+
+        if ($record->attendance_confirmed_at !== null) {
+            return ApiResponse::success($this->progress->forApplicant($applicant), 'You have already told the office you will attend.');
+        }
+
+        if (! $this->progress->acceptsConfirmation($record)) {
+            return ApiResponse::error(
+                $record->training->isCancelled()
+                    ? 'This session was cancelled, so there is nothing to confirm.'
+                    : 'This session has already started or is over, so it can no longer be confirmed.',
+                409
+            );
+        }
+
+        DB::transaction(function () use ($record, $applicant) {
+            $record->forceFill(['attendance_confirmed_at' => now()])->save();
+
+            $this->audit->record('update', 'training', TrainingEnrollment::class, $record->id, null, [
+                'attendance_confirmed' => true,
+                'training' => $record->training->training_code,
+                'applicant_code' => $applicant->applicant_code,
+            ]);
+
+            DB::afterCommit(fn () => User::query()
+                ->whereIn('user_type', ['admin', 'hr'])
+                ->where('is_active', true)
+                ->get()
+                ->each->notify(new TrainingAttendanceConfirmed($applicant, $record->training)));
+        });
+
+        return ApiResponse::success(
+            $this->progress->forApplicant($applicant),
+            'Thank you. We have told the office you will attend.'
+        );
+    }
+
+    /**
      * The applicant's own document checklist.
      */
     public function documents(Request $request): JsonResponse
@@ -244,6 +303,20 @@ class PortalController extends Controller
             404,
             'That document is not currently being collected.'
         );
+
+        /*
+         * The Bio-Data is filled in online now (the adviser's recommendation,
+         * November 2026), so it is no longer uploaded as a separate file. One
+         * sent before the form existed stays on the record, and the office
+         * can still check a paper Bio-Data at the counter.
+         */
+        if (BioDataService::isBioData($requirementType)) {
+            return ApiResponse::error(
+                'Your Bio-Data is now filled in online. Open "My Bio-Data" to complete it.',
+                422,
+                code: 'use_bio_data_form'
+            );
+        }
 
         $existing = $applicant->requirements()
             ->where('requirement_type_id', $requirementType->id)
@@ -310,6 +383,7 @@ class PortalController extends Controller
                 // open upload from becoming a way to self-certify.
                 'status' => 'submitted',
                 'submitted_at' => now(),
+                'submitted_via' => ApplicantRequirement::VIA_PORTAL_UPLOAD,
 
                 // A replacement is a different document. Whatever review the
                 // previous file had is not review of this one, so the record of
@@ -348,6 +422,16 @@ class PortalController extends Controller
 
         $applicant->unsetRelation('requirements');
         $this->folders->recalculate($applicant);
+
+        // Tell the office there is something to check. Sent after the upload is
+        // recorded so a notification failure cannot undo a document the
+        // applicant is about to be told was sent.
+        $requirement->setRelation('requirementType', $requirementType);
+        User::query()
+            ->whereIn('user_type', ['admin', 'hr'])
+            ->where('is_active', true)
+            ->get()
+            ->each->notify(new RequirementSubmitted($applicant, $requirement, $renewal));
 
         return ApiResponse::success(
             new ApplicantRequirementResource($requirement->fresh()->load('requirementType')->setRelation('applicant', $applicant)),

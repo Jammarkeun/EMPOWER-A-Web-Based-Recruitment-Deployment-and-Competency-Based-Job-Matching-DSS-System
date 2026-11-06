@@ -57,6 +57,7 @@ class InputValidationTest extends TestCase
             'position_title' => 'Production Helper',
             'workers_needed' => 2,
             'date_requested' => now()->toDateString(),
+            'request_source' => 'email',
         ], $overrides);
     }
 

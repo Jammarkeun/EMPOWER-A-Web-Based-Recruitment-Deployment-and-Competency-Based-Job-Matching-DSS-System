@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
 
 /**
@@ -171,7 +172,11 @@ function CorrectionDialog({ applicantId, current, open, onOpenChange, onCorrecte
   const [note, setNote] = React.useState('')
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(open && (reason.trim() !== '' || note.trim() !== ''))
+  const close = guard(onOpenChange)
 
+  // On opening only: the applicant page refreshes in the background, and each
+  // refresh hands over a new `current`, which used to wipe the reason typed.
   React.useEffect(() => {
     if (open) {
       setDecision(current?.decision === 'accepted' ? 'declined' : 'accepted')
@@ -179,7 +184,7 @@ function CorrectionDialog({ applicantId, current, open, onOpenChange, onCorrecte
       setNote('')
       setErrors({})
     }
-  }, [open, current])
+  }, [open])
 
   async function submit(event) {
     event.preventDefault()
@@ -204,8 +209,9 @@ function CorrectionDialog({ applicantId, current, open, onOpenChange, onCorrecte
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !submitting && close(next)}>
       <DialogContent>
+        {prompt}
         <DialogHeader>
           <DialogTitle>Correct the applicant's answer</DialogTitle>
           <DialogDescription>
@@ -246,7 +252,7 @@ function CorrectionDialog({ applicantId, current, open, onOpenChange, onCorrecte
           </Field>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => close(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting || !reason.trim()}>

@@ -44,9 +44,25 @@ class AttendanceService
 
     // ------------------------------------------------------------- schedules
 
+    /**
+     * Puts a schedule in force from a date, closing the one before it.
+     *
+     * The one way a schedule the DTR is compared with comes into being: HR's
+     * own entry and the approval of a coordinator's submission both arrive
+     * here. The employee row is locked first, so two schedules for the same
+     * person - an approval and a direct entry, or two approvals - are checked
+     * one after the other and cannot both start on overlapping days.
+     *
+     * An end date is optional; without one the schedule runs until the next.
+     */
     public function setSchedule(Employee $employee, array $data, User $actor): EmployeeSchedule
     {
         $from = CarbonImmutable::parse($data['effective_from'])->startOfDay();
+        $to = filled($data['effective_to'] ?? null) ? CarbonImmutable::parse($data['effective_to'])->startOfDay() : null;
+
+        if ($to && $to->lessThan($from)) {
+            throw new RuntimeException('A schedule cannot end before it starts.', 422);
+        }
 
         if ($employee->hire_date && $from->lessThan(CarbonImmutable::parse($employee->hire_date)->startOfDay())) {
             throw new RuntimeException(sprintf(
@@ -66,22 +82,26 @@ class AttendanceService
             ));
         }
 
-        // Schedules only move forward. Inserting one before a later schedule
-        // would rewrite which rules applied to days already compared.
-        $later = EmployeeSchedule::where('employee_id', $employee->id)
-            ->inForce()
-            ->whereDate('effective_from', '>=', $from->toDateString())
-            ->exists();
-
-        if ($later) {
-            throw new RuntimeException(
-                'A schedule already starts on or after that date. Choose a later start date, or correct or void that schedule.'
-            );
-        }
-
         $fields = $this->scheduleFields($data);
 
-        return DB::transaction(function () use ($employee, $data, $actor, $from, $placement, $fields) {
+        return DB::transaction(function () use ($employee, $data, $actor, $from, $to, $placement, $fields) {
+            Employee::query()->whereKey($employee->id)->lockForUpdate()->first();
+
+            // Schedules only move forward. Inserting one before a later
+            // schedule would rewrite which rules applied to days already
+            // compared. Checked under the lock, so it holds for whoever is
+            // second.
+            $later = EmployeeSchedule::where('employee_id', $employee->id)
+                ->inForce()
+                ->whereDate('effective_from', '>=', $from->toDateString())
+                ->exists();
+
+            if ($later) {
+                throw new RuntimeException(
+                    'A schedule already starts on or after that date. Choose a later start date, or correct or void that schedule.'
+                );
+            }
+
             // The schedule in force ends the day before the new one begins.
             EmployeeSchedule::where('employee_id', $employee->id)
                 ->inForce()
@@ -95,17 +115,19 @@ class AttendanceService
                 'client_company_id' => $placement['client_company_id'],
                 'client_department_id' => $placement['client_department_id'],
                 'effective_from' => $from->toDateString(),
-                'effective_to' => null,
+                'effective_to' => $to?->toDateString(),
                 'remarks' => $data['remarks'] ?? null,
                 'status' => 'active',
                 'created_by' => $actor->id,
             ]);
 
-            $this->audit->record('create', 'attendance', EmployeeSchedule::class, $schedule->id, null, [
+            $this->audit->record('create', 'attendance', EmployeeSchedule::class, $schedule->id, null, array_filter([
                 'employee_number' => $employee->employee_number,
                 'schedule' => $schedule->describe(),
                 'effective_from' => $from->toDateString(),
-            ], clientCompanyId: $placement['client_company_id']);
+                'effective_to' => $to?->toDateString(),
+                'schedule_submission' => $data['schedule_submission_code'] ?? null,
+            ]), clientCompanyId: $placement['client_company_id']);
 
             return $schedule;
         });
@@ -198,7 +220,12 @@ class AttendanceService
         });
     }
 
-    private function scheduleFields(array $data): array
+    /**
+     * The schedule's own fields, normalised and checked. Shared with
+     * coordinators' submissions, so a proposal is held to the same rules as
+     * the schedule it would become.
+     */
+    public function scheduleFields(array $data): array
     {
         $workDays = collect($data['work_days'])->map(fn ($d) => (int) $d)->unique()->sort()->values()->all();
         $breakMinutes = isset($data['break_minutes']) && $data['break_minutes'] !== '' ? (int) $data['break_minutes'] : null;

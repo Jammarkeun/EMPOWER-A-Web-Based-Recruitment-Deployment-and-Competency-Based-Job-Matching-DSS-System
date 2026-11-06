@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Resources\EmployeeResource;
 use App\Http\Resources\ViolationResource;
 use App\Http\Responses\ApiResponse;
+use App\Models\Applicant;
 use App\Models\AttendanceReview;
 use App\Models\Deployment;
 use App\Models\Employee;
@@ -42,8 +43,21 @@ class EmployeeController extends Controller
             'employment_status' => ['nullable', Rule::in(array_keys(config('empower.employee_transitions', [])))],
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'client_department_id' => ['nullable', 'integer', 'exists:client_departments,id'],
+            // The people behind two dashboard figures.
+            'renewal_overdue' => ['nullable', 'boolean'],
+            'open_violations' => ['nullable', 'boolean'],
+            'sort_by' => ['nullable', Rule::in(['hire_date', 'name'])],
+            'sort_dir' => ['nullable', Rule::in(['asc', 'desc'])],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
+
+        $sortBy = $filters['sort_by'] ?? 'hire_date';
+        $direction = $filters['sort_dir'] ?? ($sortBy === 'name' ? 'asc' : 'desc');
+        // The name lives on the applicant record; ordered by subquery so the
+        // list needs no join and every page is sorted the same way.
+        $nameOf = fn (string $column) => Applicant::withTrashed()
+            ->select($column)
+            ->whereColumn('applicants.id', 'employees.applicant_id');
 
         $employees = Employee::query()
             ->with(['applicant', 'currentCompany', 'currentDepartment'])
@@ -57,8 +71,14 @@ class EmployeeController extends Controller
             ->when($filters['employment_status'] ?? null, fn ($q, $v) => $q->where('employment_status', $v))
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('current_client_company_id', $v))
             ->when($filters['client_department_id'] ?? null, fn ($q, $v) => $q->where('current_department_id', $v))
-            ->orderByDesc('hire_date')
-            ->orderByDesc('id')
+            ->when($filters['renewal_overdue'] ?? false, fn ($q) => $q->renewalOverdue())
+            ->when($filters['open_violations'] ?? false, fn ($q) => $q->withOpenViolations())
+            ->when(
+                $sortBy === 'name',
+                fn ($q) => $q->orderBy($nameOf('last_name'), $direction)->orderBy($nameOf('first_name'), $direction),
+                fn ($q) => $q->orderBy('hire_date', $direction)
+            )
+            ->orderBy('employees.id', $direction)
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(EmployeeResource::collection($employees), 'Employees retrieved');
@@ -91,7 +111,9 @@ class EmployeeController extends Controller
             'resignation.events.actor',
             'termination.creator',
             'termination.approver',
+            'termination.finalizer',
             'termination.withdrawer',
+            'termination.clearanceItems',
             'termination.events.actor',
         ]);
 
@@ -158,14 +180,23 @@ class EmployeeController extends Controller
 
         return [
             'id' => $termination->id,
+            'reference' => $termination->reference,
             'reason' => $termination->reason,
             'termination_date' => $termination->termination_date?->toDateString(),
             'remarks' => $termination->remarks,
             'status' => $termination->status,
+            // Finer than the status: an approved request is being cleared, or
+            // ready to finalise. The case itself is worked on its own page.
+            'stage' => $termination->stage(),
+            'stage_label' => $termination->stageLabel(),
             'filed_by' => $termination->creator?->full_name,
             'filed_at' => $termination->created_at?->toIso8601String(),
-            'finalized_by' => $termination->approver?->full_name,
+            'approved_by' => $termination->approved_at ? $termination->approver?->full_name : null,
+            'approved_at' => $termination->approved_at?->toIso8601String(),
+            // Legacy rows were finalised by the administrator in approved_by.
+            'finalized_by' => ($termination->finalizer ?? $termination->approver)?->full_name,
             'finalized_at' => $termination->finalized_at?->toIso8601String(),
+            'is_legacy' => $termination->isLegacy(),
             'withdrawn_by' => $termination->withdrawer?->full_name,
             'withdrawn_at' => $termination->withdrawn_at?->toIso8601String(),
             'withdrawal_reason' => $termination->withdrawal_reason,

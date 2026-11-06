@@ -201,4 +201,41 @@ describe('Applicants list', () => {
 
     await waitFor(() => expect(lastApplicantQuery().page).toBe(2))
   })
+
+  it('sorts on the server by a column header, says which way, and keeps the order when filters are cleared', async () => {
+    renderAt(<Applicants />, { path: '/applicants', route: '/applicants?folder_category=folder_2' })
+    await screen.findByText('Juan Dela Cruz')
+
+    // The default, newest application first, is shown as such.
+    const applied = screen.getByRole('columnheader', { name: /Application Date/ })
+    expect(applied).toHaveAttribute('aria-sort', 'descending')
+    expect(lastApplicantQuery().sort_by).toBeUndefined()
+
+    await userEvent.click(within(applied).getByRole('button'))
+    await waitFor(() => expect(lastApplicantQuery()).toMatchObject({ sort_by: 'application_date', sort_dir: 'asc', folder_category: 'folder_2' }))
+    expect(screen.getByRole('columnheader', { name: /Application Date/ })).toHaveAttribute('aria-sort', 'ascending')
+
+    const name = screen.getByRole('columnheader', { name: /Applicant & Code/ })
+    expect(name).toHaveAttribute('aria-sort', 'none')
+    await userEvent.click(within(name).getByRole('button'))
+    await waitFor(() => expect(lastApplicantQuery()).toMatchObject({ sort_by: 'last_name', sort_dir: 'asc', page: 1 }))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Clear all filters' }))
+    await waitFor(() => expect(lastApplicantQuery().folder_category).toBeUndefined())
+    expect(lastApplicantQuery()).toMatchObject({ sort_by: 'last_name', sort_dir: 'asc' })
+  })
+
+  it('opens on the dashboard\'s "Expired documents" filter, shows it on, and lets it be cleared', async () => {
+    renderAt(<Applicants />, { path: '/applicants', route: '/applicants?expired_documents=1' })
+    await screen.findByText('Juan Dela Cruz')
+
+    expect(lastApplicantQuery()).toMatchObject({ expired_documents: 1 })
+    const toggle = screen.getByRole('button', { name: 'Expired documents' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    // The similar-sounding filter beside it is a different question.
+    expect(screen.getByRole('button', { name: 'Documents lapsed' })).toHaveAttribute('aria-pressed', 'false')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Clear all filters' }))
+    await waitFor(() => expect(lastApplicantQuery().expired_documents).toBeUndefined())
+  })
 })

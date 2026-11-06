@@ -13,7 +13,10 @@ use App\Models\EmployeeViolation;
 use App\Models\IncidentReport;
 use App\Models\JobRequest;
 use App\Models\ManpowerRequisition;
+use App\Models\ScheduleSubmission;
 use App\Models\ViolationReport;
+use App\Services\Attendance\AttendancePresenter;
+use App\Services\Attendance\ScheduleSubmissionPresenter;
 use App\Services\AttendanceService;
 use App\Services\AuditService;
 use App\Services\ProfilePhotoService;
@@ -295,6 +298,24 @@ class CoordinatorController extends Controller
                 'schedule' => $schedule?->describe(),
                 'summary' => $comparison['summary'],
             ],
+            // Approved schedules at this client, and the ones the coordinators
+            // here have sent in. Only an approved one is compared with the DTR.
+            'schedules' => $employee->schedules()
+                ->with(['company', 'department', 'creator', 'submission.creator', 'submission.reviewer'])
+                ->where('client_company_id', $companyId)
+                ->get()
+                ->map(fn ($s) => app(AttendancePresenter::class)->schedule($s))
+                ->values(),
+            'current_schedule_id' => $schedule?->id,
+            'schedule_submissions' => ScheduleSubmission::query()
+                ->with(['company', 'department', 'creator', 'reviewer', 'employee'])
+                ->where('employee_id', $employee->id)
+                ->where('client_company_id', $companyId)
+                ->where(fn ($q) => $q->where('status', '!=', 'draft')->orWhere('created_by', $request->user()->id))
+                ->latest('id')
+                ->get()
+                ->map(fn (ScheduleSubmission $s) => app(ScheduleSubmissionPresenter::class)->row($s))
+                ->values(),
         ]);
     }
 

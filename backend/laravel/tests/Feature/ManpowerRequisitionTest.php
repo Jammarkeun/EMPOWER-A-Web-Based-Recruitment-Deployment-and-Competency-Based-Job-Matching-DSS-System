@@ -282,6 +282,29 @@ class ManpowerRequisitionTest extends TestCase
         $this->assertSame('submitted', ManpowerRequisition::find($id)->status);
     }
 
+    public function test_a_submission_is_new_to_hr_until_hr_opens_it_and_again_after_resubmission(): void
+    {
+        Notification::fake();
+        $coordinator = $this->coordinatorFor($this->clientA);
+        $id = $this->submitted($coordinator);
+
+        // The coordinator reading their own does not count as HR having seen it.
+        $this->getJson("/api/v1/coordinator/requisitions/{$id}")->assertOk();
+
+        $this->actAs($this->hr);
+        $this->getJson('/api/v1/requisitions')->assertJsonPath('data.0.is_new', true);
+        $this->getJson("/api/v1/requisitions/{$id}")->assertOk();
+        $this->getJson('/api/v1/requisitions')->assertJsonPath('data.0.is_new', false);
+        $this->assertSame($this->hr->id, ManpowerRequisition::find($id)->hr_viewed_by);
+
+        $this->postJson("/api/v1/requisitions/{$id}/review", ['action' => 'return', 'note' => 'Which shift?'])->assertOk();
+        $this->actAs($coordinator);
+        $this->postJson("/api/v1/coordinator/requisitions/{$id}", ['submit' => true])->assertOk();
+
+        $this->actAs($this->hr);
+        $this->getJson('/api/v1/requisitions')->assertJsonPath('data.0.is_new', true);
+    }
+
     public function test_hr_reviews_returns_approves_and_fulfils_and_the_approver_is_acknowledged_by(): void
     {
         Notification::fake();
@@ -314,7 +337,8 @@ class ManpowerRequisitionTest extends TestCase
 
         $this->actAs($this->hr);
         $this->postJson("/api/v1/requisitions/{$id}/review", ['action' => 'fulfil'])->assertStatus(409);
-        $this->postJson("/api/v1/requisitions/{$id}/review", ['action' => 'approve', 'note' => 'OK for 1.'])->assertOk()
+        // "SC Sealer" is a new role for this client, so HR confirms it.
+        $this->postJson("/api/v1/requisitions/{$id}/review", ['action' => 'approve', 'note' => 'OK for 1.', 'confirm_new_position' => true])->assertOk()
             ->assertJsonPath('data.status', 'approved')
             ->assertJsonPath('data.acknowledged_by.name', $this->hr->full_name);
         $this->postJson("/api/v1/requisitions/{$id}/review", ['action' => 'reject', 'note' => 'Too late'])->assertStatus(409);
@@ -354,42 +378,23 @@ class ManpowerRequisitionTest extends TestCase
         $this->assertSame([], $this->getJson("/api/v1/requisitions/{$own->id}")->json('data.review_actions'));
     }
 
-    public function test_an_approved_requisition_is_recorded_as_a_manpower_request_once(): void
+    public function test_a_requisition_cannot_be_typed_in_again_through_the_direct_request_form(): void
     {
         $id = $this->submitted();
         $this->actAs($this->hr);
 
-        $request = fn (array $overrides = []) => array_merge([
+        // The old hand-recording path is closed: approval creates the request.
+        $this->postJson('/api/v1/job-requests', [
             'client_company_id' => $this->clientA->id,
             'client_department_id' => $this->deptA->id,
             'position_title' => 'SC Sealer',
             'workers_needed' => 1,
             'date_requested' => now()->toDateString(),
-            'remarks' => "Reason of Request: Replacement of Marinduque D.\nRequired Qualification(s): At least 5'2\"",
+            'request_source' => 'email',
             'manpower_requisition_id' => $id,
-        ], $overrides);
+        ])->assertStatus(422)->assertJsonValidationErrors('manpower_requisition_id');
 
-        // Not approved yet.
-        $this->postJson('/api/v1/job-requests', $request())->assertStatus(409);
         $this->assertSame(0, JobRequest::count());
-
-        $this->postJson("/api/v1/requisitions/{$id}/review", ['action' => 'approve'])->assertOk();
-        $this->assertTrue($this->getJson("/api/v1/requisitions/{$id}")->json('data.can_record_request'));
-
-        // Another client's request cannot claim it.
-        $this->postJson('/api/v1/job-requests', $request([
-            'client_company_id' => $this->clientB->id,
-            'client_department_id' => $this->deptB->id,
-        ]))->assertStatus(422);
-
-        $jobRequestId = $this->postJson('/api/v1/job-requests', $request())->assertCreated()->json('data.id');
-        $this->assertSame($jobRequestId, ManpowerRequisition::find($id)->job_request_id);
-        $this->assertSame($jobRequestId, $this->getJson("/api/v1/requisitions/{$id}")->json('data.job_request.id'));
-        $this->assertStringContainsString('Marinduque D.', JobRequest::find($jobRequestId)->remarks);
-
-        // Only once.
-        $this->postJson('/api/v1/job-requests', $request())->assertStatus(409);
-        $this->assertSame(1, JobRequest::count());
     }
 
     public function test_requisitions_filed_on_the_temporary_form_keep_what_they_recorded(): void
@@ -411,7 +416,7 @@ class ManpowerRequisitionTest extends TestCase
             ->assertJsonPath('data.work_schedule', 'Night shift')
             ->assertJsonPath('data.client_requester_name', 'Plant Manager')
             ->assertJsonPath('data.request_reason', null)
-            ->assertJsonPath('data.can_record_request', true);
+            ->assertJsonPath('data.can_convert', true);
         $this->assertSame([$old->id], array_column($this->getJson('/api/v1/requisitions?status=all')->json('data'), 'id'));
 
         $this->actAs($coordinator);

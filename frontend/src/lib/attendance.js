@@ -50,6 +50,49 @@ export const REVIEW_STATUS = {
   closed: { label: 'Closed', tone: 'muted' },
 }
 
+/**
+ * A coordinator's schedule, from draft to HR's decision. Only an approved one
+ * is compared with the DTR.
+ */
+export const SCHEDULE_STATUS = {
+  draft: { label: 'Draft', tone: 'muted' },
+  submitted: { label: 'Pending HR review', tone: 'info' },
+  returned: { label: 'Returned for correction', tone: 'warning' },
+  approved: { label: 'Approved', tone: 'success' },
+  withdrawn: { label: 'Withdrawn', tone: 'muted' },
+}
+
+/**
+ * A client's DTR file the coordinator handed over. Only the existing importer
+ * writes attendance; "Imported" is set when HR's import of it completes.
+ */
+export const DTR_SUBMISSION_STATUS = {
+  submitted: { label: 'Submitted to HR', tone: 'info' },
+  under_review: { label: 'Under HR review', tone: 'info' },
+  returned: { label: 'Needs correction', tone: 'warning' },
+  rejected: { label: 'Rejected', tone: 'destructive' },
+  imported: { label: 'Imported', tone: 'success' },
+}
+
+/** HR's DTR submission inbox, opening one submission. */
+export function dtrSubmissionInboxPath(submissionId) {
+  return `/attendance?${new URLSearchParams({ tab: 'submissions', submission: String(submissionId) })}`
+}
+
+/** "1.2 MB", "340 KB". */
+export function formatFileSize(bytes) {
+  if (!bytes && bytes !== 0) return '—'
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`
+}
+
+/** How a check on a submitted schedule reads: an error stops approval. */
+export const CHECK_LEVEL = {
+  error: { label: 'Must be fixed', tone: 'destructive' },
+  warning: { label: 'Check', tone: 'warning' },
+  info: { label: 'Note', tone: 'info' },
+}
+
 export const EXCEPTION_TYPES = [
   { value: 'approved_leave', label: 'Approved leave' },
   { value: 'holiday', label: 'Holiday' },
@@ -125,6 +168,11 @@ export function employeeAttendancePath(employeeId, month) {
   const params = new URLSearchParams({ tab: 'attendance' })
   if (month) params.set('month', month)
   return `/employees/${employeeId}?${params}`
+}
+
+/** HR's schedule queue, opening one coordinator's submission. */
+export function scheduleReviewPath(submissionId) {
+  return `/attendance?${new URLSearchParams({ tab: 'schedules', submission: String(submissionId) })}`
 }
 
 /** The review queue narrowed to one employee and month, optionally opening one day. */

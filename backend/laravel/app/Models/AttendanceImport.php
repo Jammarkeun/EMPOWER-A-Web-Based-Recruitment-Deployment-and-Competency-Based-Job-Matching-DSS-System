@@ -19,6 +19,8 @@ class AttendanceImport extends Model
     protected $fillable = [
         'import_code',
         'client_company_id',
+        'attendance_dtr_period_id',
+        'dtr_submission_id',
         'period_from',
         'period_to',
         'source_note',
@@ -57,6 +59,17 @@ class AttendanceImport extends Model
     public function company(): BelongsTo
     {
         return $this->belongsTo(ClientCompany::class, 'client_company_id');
+    }
+
+    public function dtrPeriod(): BelongsTo
+    {
+        return $this->belongsTo(AttendanceDtrPeriod::class, 'attendance_dtr_period_id');
+    }
+
+    /** The coordinator's DTR submission this import was opened from, if any. */
+    public function dtrSubmission(): BelongsTo
+    {
+        return $this->belongsTo(DtrSubmission::class);
     }
 
     public function uploader(): BelongsTo

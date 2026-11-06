@@ -8,6 +8,7 @@ import {
   FileWarning,
   CalendarClock,
   FileX2,
+  FileCheck2,
   AlertTriangle,
   ArrowUpRight,
   CheckCircle2,
@@ -264,6 +265,32 @@ function applicantListPath(filters) {
 }
 
 /**
+ * "3 employees". Three figures count documents or violations while the list
+ * they open shows people, so the row says how many people that list holds.
+ */
+function people(count, noun) {
+  const n = Number(count ?? 0)
+  return `${formatNumber(n)} ${noun}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * "2 new · 1 under review": where an inbox's records stand, so new work is
+ * told apart from work already taken up. With `total`, the rest of the inbox
+ * is what is under review; otherwise `rest` is said after the first part.
+ */
+function inboxHint(first, firstLabel, rest, total) {
+  const parts = []
+  if (first > 0) parts.push(`${formatNumber(first)} ${firstLabel}`)
+  if (total !== undefined) {
+    const reviewing = Number(total ?? 0) - Number(first ?? 0)
+    if (reviewing > 0) parts.push(`${formatNumber(reviewing)} under review`)
+  } else if (rest) {
+    parts.push(rest)
+  }
+  return parts.join(' · ') || undefined
+}
+
+/**
  * The one highlighted figure: applicants ready to place, out of everyone still
  * active. Ready applicants are counted from the active pool, so the bar can
  * never run past full.
@@ -323,34 +350,36 @@ function ActionQueue({ attention, links }) {
       label: 'Expired documents',
       value: attention.expired_documents,
       icon: CalendarClock,
-      to: '/applicants',
+      to: applicantListPath(links?.expired_documents),
       tone: 'destructive',
-      hint: 'Lapsed while the applicant waited for a posting',
+      hint: `Held by ${people(attention.applicants_with_expired_documents, 'applicant')} waiting for a posting`,
     },
     {
       key: 'employee_renewals_overdue',
       label: 'Employee renewals overdue',
       value: attention.employee_renewals_overdue,
       icon: CalendarClock,
-      to: '/employees',
+      to: listPath('/employees', links?.employee_renewals_overdue),
       tone: 'warning',
-      hint: 'Annual medical or health card lapsed; renewed while employed',
+      hint: `${people(attention.employees_with_overdue_renewals, 'employee')}: annual medical or health card lapsed`,
     },
     {
       key: 'overdue_requests',
       label: 'Requests past their deadline',
       value: attention.overdue_requests,
       icon: ClipboardList,
-      to: '/job-requests?only_open=1',
+      to: listPath('/job-requests', links?.overdue_requests),
       tone: 'destructive',
+      hint: 'Still short of workers after the deployment deadline',
     },
     {
       key: 'open_violations',
       label: 'Unresolved violations',
       value: attention.open_violations,
       icon: FileWarning,
-      to: '/employees',
+      to: listPath('/employees', links?.open_violations),
       tone: 'warning',
+      hint: `Across ${people(attention.employees_with_open_violations, 'employee')}`,
     },
     {
       key: 'pending_clearance',
@@ -376,8 +405,61 @@ function ActionQueue({ attention, links }) {
       label: 'Terminations awaiting review',
       value: attention.terminations_for_review,
       icon: AlertTriangle,
-      to: '/separations',
+      to: listPath('/separations', links?.terminations_for_review),
       tone: 'destructive',
+      hint: 'Waiting on an administrator to finalise or withdraw',
+    },
+    // HR's review inboxes: records still waiting for a decision. The sidebar
+    // badges for the same pages count unread notifications, which clear on
+    // opening the page; these stay until the work is done.
+    {
+      key: 'documents_awaiting_review',
+      label: 'Documents awaiting verification',
+      value: attention.documents_awaiting_review,
+      icon: FileCheck2,
+      to: listPath('/documents', links?.documents_awaiting_review),
+      tone: 'info',
+      hint: inboxHint(
+        attention.documents_unopened,
+        'not opened yet',
+        `from ${people(attention.applicants_with_documents_awaiting_review, 'applicant')}`
+      ),
+    },
+    {
+      key: 'requisitions_awaiting_review',
+      label: 'Requisitions awaiting review',
+      value: attention.requisitions_awaiting_review,
+      icon: ClipboardList,
+      to: listPath('/requisitions', links?.requisitions_awaiting_review),
+      tone: 'info',
+      hint: inboxHint(attention.requisitions_new, 'new', null, attention.requisitions_awaiting_review),
+    },
+    {
+      key: 'violation_reports_awaiting_review',
+      label: 'Violation reports awaiting review',
+      value: attention.violation_reports_awaiting_review,
+      icon: FileWarning,
+      to: listPath('/violation-reports', links?.violation_reports_awaiting_review),
+      tone: 'warning',
+      hint: inboxHint(attention.violation_reports_new, 'new', null, attention.violation_reports_awaiting_review),
+    },
+    {
+      key: 'incident_reports_open',
+      label: 'Incident reports not yet resolved',
+      value: attention.incident_reports_open,
+      icon: AlertTriangle,
+      to: listPath('/incident-reports', links?.incident_reports_open),
+      tone: 'info',
+      hint: inboxHint(attention.incident_reports_new, 'new', null, attention.incident_reports_open),
+    },
+    {
+      key: 'identity_checks',
+      label: 'ID checks waiting',
+      value: attention.identity_checks,
+      icon: UserCheck,
+      to: applicantListPath(links?.identity_checks),
+      tone: 'info',
+      hint: 'Registered online; confirm their identity in person',
     },
   ].filter((item) => item.value > 0)
 

@@ -31,9 +31,11 @@ employee's record. Nothing parallel was added.
   2. Imported from the client's file on the Attendance page.
 
   Every change, including clearing a day, is written to `attendance_record_revisions` with its old and new times, who made it, why, and from which import.
-- **DTR received.** A scheduled day with nothing on file is **Awaiting DTR**, which means not enough data to compare. It becomes **No DTR record**, a discrepancy to look into rather than an absence, only when the DTR for that day is known to have been received:
-  - an import declared it covers the day for that employee, or
-  - HR ticked "the DTR for this period has been read in full".
+- **DTR received.** A scheduled day with nothing on file is **Awaiting DTR**, which means not enough data to compare. It becomes **No DTR record**, a discrepancy to look into rather than an absence, only when the DTR for that day is known to have been received in full:
+  - HR confirmed the client's **DTR period** for that day complete (§4a, added 4 November 2026), or
+  - HR ticked "the DTR for this period has been read in full" for a hand-encoded employee.
+
+  Until 4 November an import also declared this by itself, for every employee with a row in the file. It no longer does, because a client may send one cutoff in parts. Coverage rows that earlier imports created are left as they were.
 - **Leave and holidays** (`attendance_exceptions`) can be recorded for one employee or for a whole client or department. A covered day is shown as excused. Exceptions are withdrawn with a reason, never deleted.
 - **Discrepancies:**
   - late
@@ -52,6 +54,12 @@ employee's record. Nothing parallel was added.
   - Permission: `attendance.review` (HR and administrators), held separately from `attendance.manage`.
 - **Violations.** Only a **verified** review can lead to a violation. It goes through the existing violation form, endpoint and `ViolationService`. The violation date must be the reviewed day, and the review keeps the link. Nothing records a violation automatically.
 - **Coordinators** still see only the read-only monthly summary for employees at their assigned client. They never see review notes and are refused every attendance endpoint. CDE has not approved more.
+
+- **Coordinator-written schedules (added 4 November 2026).** A coordinator can
+  now propose a worker's schedule, and HR approves or returns it. Approval goes
+  through the same `AttendanceService::setSchedule` as HR's own entry. A
+  schedule still waiting for HR is never compared with the DTR. See
+  `work-schedule-approval.md`.
 
 ## 2a. Two views of one system (follow-up, 29 October 2026)
 
@@ -117,8 +125,35 @@ When CDE sends a sample: check it against the mapping screen, decide whether its
 layout should become a saved preset, and if it is a punch log, get CDE's rule
 for pairing punches before building that.
 
+### Upload and preview checks (added 4 November 2026)
+
+- The client list comes from `GET attendance/imports/options`: only clients with at least one placement, each with the number placed now. The upload is checked against the same list, not against any id that exists. Everyone holding `attendance.manage` works across all clients, because the agency has no per-client HR assignment; `DtrImportService::importableClients` is where one would go. Coordinators cannot import (CDE has not approved it) and are refused.
+- The declared coverage is required, `Y-m-d`, in order, not in the future, and at most 62 days. The form checks the same rules before uploading; the server decides.
+- The file's extension, its MIME type and its first bytes must agree, so a workbook renamed `.csv` (or text renamed `.xlsx`) is refused instead of being read as the wrong thing. CSV, `.xlsx` and `.xls` are all read through the real endpoints in the tests.
+- Mapping the time-in and the time-out to the same column is refused with an explanation: one time per row is a raw punch log, which is not supported. When a mapped file still looks like one (the same employee and day several times, each with one time), the preview says so. Nothing is ever paired into days.
+- The preview totals: rows read, valid, invalid, unmatched employees (no such employee, more than one match, placed elsewhere, name mismatch), duplicates (repeated or conflicting), outside the declared period, the first and last date found in the file, and the problems by reason. Every refused row keeps its row number and reason on the import's record.
+- The dialog runs as five steps in the same modal: file details, column mapping, preview and validation, import confirmation, results. The upload field is now labelled **Source / Handover Details**; the uploader, time, client, dates and file name were already recorded.
+
+## 4a. DTR periods: received, imported and complete are different (added 4 November 2026)
+
+Each upload is filed under a **DTR period**: one client and a run of days (`attendance_dtr_periods`). A file whose dates fit inside a period still open joins it — the second department's sheet, or a late page. Otherwise its declared dates become a new period. Exactly one record exists per client and run of days.
+
+| Status | Set by | Meaning |
+| --- | --- | --- |
+| Received | system | A file is in; none imported yet |
+| Processing | system | At least one file imported; nobody has said the submission is complete |
+| Incomplete Submission | HR, with a note of what is missing | The client still owes part of it. A file imported later moves it back to Processing, to be checked again |
+| Complete for Period | HR | Everything for these days is in |
+
+- **Confirming complete** needs at least one imported file and no file still being checked. HR first sees each employee placed at the client during the period, with their scheduled days, days on file and days awaiting the DTR. When any scheduled day has nothing on file, HR must tick an acknowledgement that those days will become "No DTR record". What HR was shown is kept with the decision.
+- **Effect.** For a day inside a complete period, every employee placed at that client on that day counts as covered, in the file or not. Their days with nothing on file become **No DTR record** and join the review queue as *For review*. Nothing is recorded as an absence; that only comes through review and the existing violation workflow.
+- **Reopening** needs a reason. It turns those days back into Awaiting DTR, so it is refused while a review of a "No DTR record" day in the period is open. A file whose dates fall inside a complete period is refused until the period is reopened.
+- **One source of truth.** The comparison reads complete periods through `AttendanceContext`, like every other input. The employee's tab, the review queue, the workforce summary and the coordinator's summary all change together; nothing else is materialised.
+- **Audit.** Every move is an `attendance_dtr_period_events` row (from, to, note, details, who) and an audit entry (`confirm` for complete).
+
 ## 5. Database changes and existing data
 
+- Migration `2026_11_04_000300` *(4 November 2026)*: `attendance_dtr_periods`, `attendance_dtr_period_events`, and a nullable `attendance_imports.attendance_dtr_period_id`. Additive. Earlier imports are filed under a period of their own dates (Received, or Processing if imported). Rolls back cleanly.
 - Migrations `2026_10_29_000100` to `000400`: two new attendance tables (`attendance_imports`, `attendance_coverage_periods`), new columns on `employee_schedules` and `attendance_records`, `attendance_record_revisions`, `attendance_exceptions`, `attendance_reviews`, `attendance_review_events`, and the `attendance.review` permission.
 - **All additive.** No column or row is dropped, and each migration rolls back cleanly.
 - Before the change, local MariaDB and Supabase both held **0** schedules and **0** time records (checked read-only), so there was nothing to migrate.
@@ -135,13 +170,14 @@ for pairing punches before building that.
 | `POST employees/{id}/attendance/days/{date}/review` | `attendance.review` |
 | `POST employees/{id}/attendance` (entries, `reason`, `complete_from`, `complete_to`) | `attendance.manage` |
 | `POST employees/{id}/schedules`, `PATCH employees/{id}/schedules/{s}`, `POST …/schedules/{s}/void` | `attendance.manage` |
-| `GET/POST attendance/imports`, `GET attendance/imports/{id}`, `POST …/preview`, `…/confirm`, `…/discard`, `GET …/file` | `attendance.manage` |
+| `GET/POST attendance/imports`, `GET attendance/imports/options`, `GET attendance/imports/{id}`, `POST …/preview`, `…/confirm`, `…/discard`, `GET …/file` | `attendance.manage` |
+| `GET attendance/dtr-periods`, `GET attendance/dtr-periods/{id}`, `POST attendance/dtr-periods/{id}/status` (`action` = `incomplete` \| `complete` \| `reopen`, `note`, `acknowledge_gaps`) | `attendance.manage` |
 | `GET attendance/exceptions` (view), `POST attendance/exceptions`, `POST attendance/exceptions/{id}/void` (manage) | as stated |
 | `POST employees/{id}/violations` with `attendance_review_id` | `violations.create` and `attendance.review`; review must be verified |
 
 ## 7. Tests
 
-- **Backend** (`AttendanceTest`, `AttendanceReviewTest`, `AttendanceImportTest`): comparison rules, night shift, grace, shift mismatch, placement link, correct and void, revisions, coverage, exceptions, review transitions, violation gate, permissions, coordinator scope, CSV and XLSX import, duplicates, conflicts, discard.
+- **Backend** (`AttendanceTest`, `AttendanceReviewTest`, `AttendanceImportTest`, `DtrPeriodTest`, `DtrSampleFilesTest`): comparison rules, night shift, grace, shift mismatch, placement link, correct and void, revisions, coverage, exceptions, review transitions, violation gate, permissions, coordinator scope, CSV and XLSX import, duplicates, conflicts, discard.
 - **Frontend**: `Attendance.test.jsx`, `AttendancePanel.test.jsx`.
 - **End to end over HTTP on a MariaDB copy:** 30 of 30 checks.
 - **Not run:** PostgreSQL. The queries use the database-agnostic builder (`whereDate`, no raw SQL), but CI on PostgreSQL 17 is the first real check.
@@ -155,3 +191,6 @@ Added to `client-questions-part-3.md`, Part 21:
 3. How does the client tell CDE about approved leave and holidays?
 4. Is there a grace period, and how is overtime approved?
 5. Should coordinators see more attendance detail than the monthly summary?
+6. *(4 November 2026)* Does the client send a cutoff's DTR in one file or in parts, and how does it say the submission is complete? EMPOWER now asks HR to confirm each DTR period complete.
+7. *(4 November 2026)* What are the DTR cutoffs (semi-monthly, weekly)? A DTR period is currently the dates declared on the first file for it; a fixed cutoff calendar could replace that.
+8. *(4 November 2026)* Is 62 days per file the right limit? It is ours, set to cover two months of a monthly export.
