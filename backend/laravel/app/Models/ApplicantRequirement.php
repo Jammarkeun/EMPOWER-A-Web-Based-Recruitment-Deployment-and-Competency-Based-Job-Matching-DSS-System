@@ -24,6 +24,7 @@ class ApplicantRequirement extends Model
         'file_size_bytes',
         'file_hash',
         'submitted_at',
+        'submitted_via',
         'first_viewed_at',
         'first_viewed_by',
         'verified_at',
@@ -196,5 +197,90 @@ class ApplicantRequirement extends Model
     public function scopeVerified(Builder $query): Builder
     {
         return $query->where('status', 'verified');
+    }
+
+    /** The current submission came in through the digital Bio-Data form. */
+    public const VIA_DIGITAL_FORM = 'digital_form';
+
+    public const VIA_PORTAL_UPLOAD = 'portal_upload';
+
+    public function isDigitalSubmission(): bool
+    {
+        return $this->submitted_via === self::VIA_DIGITAL_FORM;
+    }
+
+    /**
+     * Something has been sent in for this requirement: a file, or a digital
+     * form, which has no file. Every "sent in" list reads this, so a
+     * submitted Bio-Data form is counted wherever an upload would be.
+     */
+    public function scopeSentIn(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $q) => $q
+            ->whereNotNull('file_path')
+            ->orWhere('submitted_via', self::VIA_DIGITAL_FORM));
+    }
+
+    /**
+     * Sent in and not yet verified or rejected: HR's verification queue, as
+     * the document library's "Awaiting review" view and the dashboard both
+     * count it.
+     */
+    public function scopeAwaitingReview(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $q) => $q
+            ->where(fn (Builder $sent) => $sent->sentIn()->whereIn('status', ['submitted', 'pending']))
+            ->orWhere(fn (Builder $form) => $form->pendingDigitalForm()));
+    }
+
+    /**
+     * A Bio-Data form sent and not decided yet - including one sent while
+     * the requirement was already complete through an earlier paper copy or
+     * upload, which stays `verified` meanwhile so nobody changes folder.
+     */
+    public function scopePendingDigitalForm(Builder $query): Builder
+    {
+        return $query
+            ->where('submitted_via', self::VIA_DIGITAL_FORM)
+            ->whereExists(fn ($versions) => $versions->selectRaw('1')
+                ->from('applicant_bio_data_versions')
+                ->whereColumn('applicant_bio_data_versions.applicant_id', $query->qualifyColumn('applicant_id'))
+                ->whereNull('applicant_bio_data_versions.review_outcome'));
+    }
+
+    public function hasPendingDigitalForm(): bool
+    {
+        return $this->isDigitalSubmission()
+            && ApplicantBioDataVersion::where('applicant_id', $this->applicant_id)->whereNull('review_outcome')->exists();
+    }
+
+    /**
+     * Verified documents past their expiry date - marked expired by the daily
+     * check or not yet - for document types still in use.
+     *
+     * The one definition of "lapsed" behind the dashboard's expiry figures and
+     * the lists they open, so a figure and its list cannot drift apart.
+     * Whether a lapse matters depends on the holder's stage
+     * (DocumentCompliance); callers narrow by that.
+     */
+    public function scopeLapsed(Builder $query): Builder
+    {
+        return $query
+            ->whereNotNull('expiry_date')
+            ->whereHas('requirementType', fn (Builder $type) => $type->where('active_flag', true))
+            ->where(fn (Builder $q) => $q
+                ->where('status', 'expired')
+                ->orWhere(fn (Builder $v) => $v
+                    ->where('status', 'verified')
+                    ->whereDate('expiry_date', '<', now())));
+    }
+
+    /** Lapsed, and of a type that must be renewed while the holder is employed. */
+    public function scopeRenewalOverdue(Builder $query): Builder
+    {
+        return $query->lapsed()->whereHas(
+            'requirementType',
+            fn (Builder $type) => $type->where('post_deployment_rule', DocumentCompliance::RENEW_WHILE_EMPLOYED)
+        );
     }
 }

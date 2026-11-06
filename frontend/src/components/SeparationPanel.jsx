@@ -1,5 +1,6 @@
 import * as React from 'react'
-import { FileText, Loader2, CheckCircle2, Ban, ShieldAlert, LogOut, History } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { FileText, Loader2, CheckCircle2, Ban, ShieldAlert, LogOut, History, ChevronRight } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { get, post, put } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
@@ -19,6 +20,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import { useLeavePageWarning, useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import { formatDate, formatDateTime, humanise } from '@/lib/utils'
 
 /**
@@ -26,8 +29,8 @@ import { formatDate, formatDateTime, humanise } from '@/lib/utils'
  *
  * CDE has two doors - resignation and termination - and each is a process, not
  * a status: a resignation is filed, cleared, and only then completed; a
- * termination is filed for review and an administrator either finalises it or
- * withdraws it. Before this panel, the filing could be made here but nothing
+ * termination is requested by HR, approved by an administrator, cleared, and
+ * only then finalised by HR (worked on its own page, TerminationCase). Before this panel, the filing could be made here but nothing
  * after it could: there was no screen to grant clearance, complete a
  * resignation, or finalise a termination, so the last stage of the lifecycle
  * existed only in the API.
@@ -71,37 +74,33 @@ const CLEARANCE_OPTIONS = [
 
 // ------------------------------------------------------------------ termination
 
+const TERMINATION_TEXT = {
+  draft: 'A draft request. Nobody has been told yet.',
+  for_review: 'Submitted for an administrator’s review. Employment continues, and the employee is not told.',
+  returned: 'Returned to HR for correction.',
+  approved: 'Approved. HR completes the pre-termination clearance, then finalises it. Employment continues until then.',
+  rejected: 'Rejected by an administrator. The employee was not dismissed.',
+  withdrawn: 'Withdrawn. The employee was not dismissed.',
+  finalized: 'Finalised. Employment ended on the termination date.',
+}
+
+/**
+ * The termination as it stands, on the employee's record. The case itself -
+ * the administrator's review, the clearance, finalisation - is worked on its
+ * own page, which is also where notifications about it lead.
+ */
 function TerminationCard({ employee, termination, onChanged }) {
   const { can } = useAuth()
   const toast = useToast()
-  const [confirmOpen, setConfirmOpen] = React.useState(false)
-  const [withdrawOpen, setWithdrawOpen] = React.useState(false)
-  const [message, setMessage] = React.useState(termination.employee_message ?? '')
   const [clearance, setClearance] = React.useState(termination.clearance_status ?? 'pending')
   const [savingClearance, setSavingClearance] = React.useState(false)
 
-  React.useEffect(() => {
-    setMessage(termination.employee_message ?? '')
-    setClearance(termination.clearance_status ?? 'pending')
-  }, [termination])
+  React.useEffect(() => setClearance(termination.clearance_status ?? 'pending'), [termination.clearance_status])
 
-  const mayFinalise = can('separation.finalize_termination')
-  const mayWithdraw = can('separation.create') || mayFinalise
-  const mayClear = can('separation.create') && termination.status === 'finalized'
-
-  async function finalise() {
-    try {
-      await post(`/employees/${employee.id}/terminations/${termination.id}/finalise`, {
-        confirm: true,
-        employee_message: message.trim() || undefined,
-      })
-      toast.success('Termination finalised', `${employee.full_name}'s employment has ended. A notice was sent to their portal.`)
-      setConfirmOpen(false)
-      onChanged()
-    } catch (error) {
-      toast.error('Could not finalise the termination', error.message)
-    }
-  }
+  // Terminations finalised under the one-step process were cleared after the
+  // fact; that one select is kept for them. Later ones are cleared item by
+  // item before finalisation, on the case page.
+  const mayClearLegacy = can('separation.create') && termination.is_legacy
 
   async function saveClearance() {
     setSavingClearance(true)
@@ -124,16 +123,13 @@ function TerminationCard({ employee, termination, onChanged }) {
             <CardTitle className="flex items-center gap-2">
               <ShieldAlert className="h-4 w-4 text-destructive" />
               Termination
+              {termination.reference && (
+                <span className="font-mono text-xs font-normal text-muted-foreground">{termination.reference}</span>
+              )}
             </CardTitle>
-            <CardDescription>
-              {termination.is_open
-                ? 'Filed for review. Employment continues, and the employee is not told, until an administrator finalises it.'
-                : termination.status === 'withdrawn'
-                  ? 'Withdrawn after review. The employee was not dismissed.'
-                  : 'Finalised. Employment ended on the termination date.'}
-            </CardDescription>
+            <CardDescription>{TERMINATION_TEXT[termination.status]}</CardDescription>
           </div>
-          <StatusBadge status={termination.status} label={termination.status === 'for_review' ? 'For review' : undefined} />
+          <StatusBadge status={termination.stage ?? termination.status} label={termination.stage_label} />
         </div>
       </CardHeader>
 
@@ -145,6 +141,9 @@ function TerminationCard({ employee, termination, onChanged }) {
             label="Filed"
             value={`${formatDateTime(termination.filed_at)}${termination.filed_by ? ` by ${termination.filed_by}` : ''}`}
           />
+          {termination.approved_at && (
+            <Detail label="Approved" value={`${formatDateTime(termination.approved_at)} by ${termination.approved_by}`} />
+          )}
           {termination.finalized_at && (
             <Detail
               label="Finalised"
@@ -160,7 +159,6 @@ function TerminationCard({ employee, termination, onChanged }) {
               <Detail label="Why it was withdrawn" value={termination.withdrawal_reason} wide />
             </>
           )}
-          {termination.remarks && <Detail label="Remarks (internal)" value={termination.remarks} wide />}
           {termination.status === 'finalized' && (
             <Detail label="Message in the employee's notice" value={termination.employee_message ?? 'None written'} wide />
           )}
@@ -168,7 +166,7 @@ function TerminationCard({ employee, termination, onChanged }) {
 
         {termination.notice && <NoticeStatus notice={termination.notice} />}
 
-        {mayClear && (
+        {mayClearLegacy && (
           <div className="flex flex-wrap items-end gap-2 rounded-md border bg-card p-3">
             <Field label="Clearance" htmlFor={`termination_clearance_${termination.id}`} className="w-48">
               <Select value={clearance} onChange={(e) => setClearance(e.target.value)}>
@@ -190,12 +188,6 @@ function TerminationCard({ employee, termination, onChanged }) {
             </Button>
           </div>
         )}
-        {!mayClear && termination.clearance_status && (
-          <p className="text-sm">
-            <span className="text-muted-foreground">Clearance: </span>
-            {humanise(termination.clearance_status)}
-          </p>
-        )}
 
         <div className="flex flex-wrap items-center gap-2">
           {termination.has_documents && (
@@ -210,70 +202,16 @@ function TerminationCard({ employee, termination, onChanged }) {
               Supporting documents
             </Button>
           )}
-
-          {termination.is_open && mayWithdraw && (
-            <Button variant="outline" size="sm" onClick={() => setWithdrawOpen(true)}>
-              <Ban className="h-3.5 w-3.5" />
-              Withdraw
-            </Button>
-          )}
-
-          {termination.is_open && mayFinalise && (
-            <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(true)}>
-              Finalise termination…
-            </Button>
-          )}
-
-          {termination.is_open && !mayFinalise && (
-            <p className="text-xs text-muted-foreground">
-              Awaiting an administrator to finalise or withdraw it.
-            </p>
-          )}
+          <Button variant={termination.is_open ? 'default' : 'outline'} size="sm" asChild>
+            <Link to={`/separations/terminations/${termination.id}`}>
+              {termination.is_open ? 'Open the request' : 'View the case'}
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Link>
+          </Button>
         </div>
 
         <CaseHistory history={termination.history} />
       </CardContent>
-
-      <ConfirmActionDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title="Terminate this employee?"
-        description="Finalising ends this person's employment. It cannot be undone from the system."
-        details={[
-          ['Employee', employee.full_name],
-          ['Employee no.', employee.employee_number],
-          ['Placed with', employee.current_company],
-          ['Reason', termination.reason],
-          ['Termination date', formatDate(termination.termination_date)],
-          ['Filed by', termination.filed_by],
-        ]}
-        consequences={[
-          'The employee is marked terminated, and so is their applicant record.',
-          `Their placement${employee.current_company ? ` with ${employee.current_company}` : ''} is closed as of the termination date.`,
-          'A snapshot of their full record is archived. Nothing is deleted.',
-          'The employee is sent a notice in their portal with the effective date and the message below. The reason and remarks stay internal.',
-        ]}
-        confirmPhrase={employee.employee_number}
-        confirmPhraseLabel="Type the employee number"
-        confirmLabel="Confirm termination"
-        onConfirm={finalise}
-      >
-        <Field
-          label="Message to the employee"
-          htmlFor="termination_employee_message"
-          hint="Shown in their portal notice. Optional; without it, the notice asks them to contact the HR office."
-        >
-          <Textarea value={message} maxLength={2000} onChange={(e) => setMessage(e.target.value)} />
-        </Field>
-      </ConfirmActionDialog>
-
-      <WithdrawTerminationDialog
-        open={withdrawOpen}
-        onOpenChange={setWithdrawOpen}
-        employee={employee}
-        termination={termination}
-        onDone={onChanged}
-      />
     </Card>
   )
 }
@@ -290,7 +228,7 @@ const NOTIFICATION_STATES = {
  * was created, it was read, the notice was opened, and the employee confirmed
  * receiving it. None of them is agreement, and nothing waits on any of them.
  */
-function NoticeStatus({ notice }) {
+export function NoticeStatus({ notice }) {
   return (
     <div className="rounded-md border bg-muted/20 p-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Employee notice</p>
@@ -319,11 +257,13 @@ function NoticeStatus({ notice }) {
   )
 }
 
-function WithdrawTerminationDialog({ open, onOpenChange, employee, termination, onDone }) {
+export function WithdrawTerminationDialog({ open, onOpenChange, employee, termination, onDone }) {
   const toast = useToast()
   const [reason, setReason] = React.useState('')
   const [error, setError] = React.useState('')
   const [busy, setBusy] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(open && reason.trim() !== '')
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
     if (open) {
@@ -354,8 +294,9 @@ function WithdrawTerminationDialog({ open, onOpenChange, employee, termination, 
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
+    <Dialog open={open} onOpenChange={(next) => !busy && close(next)}>
       <DialogContent className="max-w-md">
+        {prompt}
         <DialogHeader>
           <DialogTitle>Withdraw this termination?</DialogTitle>
           <DialogDescription>
@@ -367,7 +308,7 @@ function WithdrawTerminationDialog({ open, onOpenChange, employee, termination, 
             <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            <Button type="button" variant="outline" onClick={() => close(false)} disabled={busy}>
               Cancel
             </Button>
             <Button type="submit" disabled={busy}>
@@ -395,18 +336,17 @@ function ResignationCard({ employee, resignation, onChanged }) {
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [withdrawOpen, setWithdrawOpen] = React.useState(false)
   const [withdrawal, setWithdrawal] = React.useState({ reason: '', message: '', error: '' })
-  const [form, setForm] = React.useState(() => fromResignation(resignation))
+  // An inline form on a page that refreshes in the background: what HR has
+  // typed survives a refresh, and is replaced only when untouched.
+  const { form, setForm, markSaved, dirty, outdated } = useFormDraft(resignation, fromResignation, {
+    key: resignation.id,
+  })
   const [errors, setErrors] = React.useState({})
   const [saving, setSaving] = React.useState(false)
-
-  React.useEffect(() => {
-    setForm(fromResignation(resignation))
-    setErrors({})
-  }, [resignation])
+  useLeavePageWarning(dirty)
 
   const mayUpdate = can('separation.create') && resignation.is_open
   const mayComplete = can('separation.approve') && resignation.is_open
-  const dirty = JSON.stringify(form) !== JSON.stringify(fromResignation(resignation))
   const statusOptions = [resignation.status, ...(resignation.allowed_statuses ?? [])].filter(
     (status, index, all) => status !== 'withdrawn' && all.indexOf(status) === index
   )
@@ -425,6 +365,7 @@ function ResignationCard({ employee, resignation, onChanged }) {
         exit_date: patch.exit_date || null,
       })
       toast.success('Resignation updated', 'Anything the employee should know has been sent to their portal.')
+      markSaved()
       onChanged()
       return true
     } catch (error) {
@@ -583,6 +524,12 @@ function ResignationCard({ employee, resignation, onChanged }) {
                 onChange={(e) => setForm({ ...form, employee_message: e.target.value })}
               />
             </Field>
+            {outdated && (
+              <p role="status" className="mt-3 text-xs text-status-warning-text">
+                This resignation was updated elsewhere while you were editing. Your changes are kept; saving them
+                replaces what was saved in the meantime.
+              </p>
+            )}
             <div className="mt-3 flex flex-wrap justify-end gap-2">
               <Button
                 variant="ghost"
@@ -725,6 +672,12 @@ const EVENT_LABELS = {
   updated: 'Internal details edited',
   withdrawn: 'Withdrawn',
   completed: 'Completed',
+  submitted: 'Submitted for review',
+  resubmitted: 'Corrected and resubmitted',
+  approved: 'Approved by an administrator',
+  returned: 'Returned for correction',
+  rejected: 'Rejected by an administrator',
+  clearance_item_updated: 'Clearance item updated',
   finalised: 'Finalised; notice issued',
   notice_viewed: 'Employee opened the notice',
   notice_acknowledged: 'Employee confirmed receipt',
@@ -736,11 +689,13 @@ function eventDetail(entry) {
   if (entry.event === 'clearance_changed') return `${humanise(details.from ?? 'none')} → ${humanise(details.to)}`
   if (entry.event === 'updated') return (details.fields ?? []).map(humanise).join(', ')
   if (entry.event === 'withdrawn' && details.reason) return details.reason
+  if (['approved', 'returned', 'rejected'].includes(entry.event) && details.note) return details.note
+  if (entry.event === 'clearance_item_updated') return `${details.label}: ${humanise(details.from)} → ${humanise(details.to)}`
   return null
 }
 
-function CaseHistory({ history }) {
-  const [open, setOpen] = React.useState(false)
+export function CaseHistory({ history, defaultOpen = false }) {
+  const [open, setOpen] = React.useState(defaultOpen)
   if (!history?.length) return null
 
   return (

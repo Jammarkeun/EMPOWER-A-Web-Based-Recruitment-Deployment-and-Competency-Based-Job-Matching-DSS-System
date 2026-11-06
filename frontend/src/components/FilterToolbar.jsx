@@ -86,8 +86,10 @@ export function FilterToolbar({
                   key={toggle.id || toggle.label}
                   type="button"
                   onClick={toggle.onToggle}
+                  aria-pressed={Boolean(toggle.active)}
+                  title={toggle.title}
                   className={cn(
-                    'h-full rounded-full px-4 transition-colors',
+                    'h-full rounded-full px-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     toggle.active
                       ? 'bg-inset-selected font-medium text-foreground'
                       : 'text-muted-foreground hover:text-foreground'

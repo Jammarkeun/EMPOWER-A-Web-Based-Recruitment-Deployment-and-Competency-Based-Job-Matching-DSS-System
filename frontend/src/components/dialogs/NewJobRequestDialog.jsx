@@ -14,27 +14,39 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { Field, FormGrid } from '@/components/ui/form'
+import { Field, FormGrid, useFocusFirstError } from '@/components/ui/form'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
 import { todayISO } from '@/lib/utils'
 
 /**
- * `initial` pre-fills the form - used when HR records an approved coordinator
- * requisition, whose id travels with it so the server links the two.
+ * A manpower request HR records directly, for a client asking without a
+ * coordinator requisition. A requisition becomes its request when approved.
  */
-export default function NewJobRequestDialog({ open, onOpenChange, onCreated, initial, sourceLabel }) {
+const SOURCES = [
+  ['email', 'Email from the client'],
+  ['phone', 'Phone call'],
+  ['walk_in', 'Client visit / in person'],
+  ['letter', 'Letter or memo'],
+  ['other', 'Other (say in remarks)'],
+]
+
+export default function NewJobRequestDialog({ open, onOpenChange, onCreated }) {
   const [companies, setCompanies] = React.useState([])
   const [departments, setDepartments] = React.useState([])
   const [positions, setPositions] = React.useState([])
   const [form, setForm] = React.useState(emptyForm())
   const [errors, setErrors] = React.useState({})
+  const [formRef, focusFirstError] = useFocusFirstError()
   const [submitting, setSubmitting] = React.useState(false)
   const toast = useToast()
   const navigate = useNavigate()
+  const { guard, prompt } = useUnsavedChanges(open && JSON.stringify(form) !== JSON.stringify(emptyForm()))
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
     if (!open) return
 
-    setForm({ ...emptyForm(), ...(initial ?? {}) })
+    setForm(emptyForm())
     setErrors({})
     setDepartments([])
 
@@ -99,6 +111,7 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated, ini
     } catch (error) {
       if (error.isValidation) {
         setErrors(error.errors)
+        focusFirstError()
       } else {
         toast.error('Could not record request', error.message)
       }
@@ -108,25 +121,18 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated, ini
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !submitting && close(next)}>
       <DialogContent className="max-w-2xl">
+        {prompt}
         <DialogHeader>
-          <DialogTitle>Record manpower request</DialogTitle>
+          <DialogTitle>Create direct manpower request</DialogTitle>
           <DialogDescription>
-            Capture what the client has asked for. Competency criteria and weights are set on the
-            request once it exists.
+            Only for a client asking without a coordinator requisition. Requisitions become manpower requests
+            automatically when you approve them under Manpower Requisitions.
           </DialogDescription>
         </DialogHeader>
 
-        {sourceLabel && (
-          <p className="rounded-row bg-inset px-3 py-2 text-xs text-muted-foreground">
-            Filled in from approved requisition <span className="font-mono text-foreground">{sourceLabel}</span>. Check
-            it against the client before recording; the requisition's Reason of Request, qualifications and remarks are
-            kept as the request's remarks, and the two are linked.
-          </p>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <form ref={formRef} onSubmit={handleSubmit} className="space-y-4" noValidate>
           <FormGrid>
             <Field label="Client company" htmlFor="client_company_id" required error={errors.client_company_id?.[0]}>
               <Select
@@ -221,6 +227,21 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated, ini
               </Field>
             )}
 
+            <Field label="How the client asked" htmlFor="request_source" required error={errors.request_source?.[0]}>
+              <Select
+                id="request_source"
+                value={form.request_source}
+                onChange={(e) => set('request_source', e.target.value)}
+                placeholder="Select a source"
+              >
+                {SOURCES.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
             <Field label="Workers needed" htmlFor="workers_needed" required error={errors.workers_needed?.[0]}>
               <NumberInput
                 min="1"
@@ -288,13 +309,17 @@ export default function NewJobRequestDialog({ open, onOpenChange, onCreated, ini
             />
           </Field>
 
+          <Field label="Remarks" htmlFor="remarks" error={errors.remarks?.[0]}>
+            <Input id="remarks" value={form.remarks} onChange={(e) => set('remarks', e.target.value)} />
+          </Field>
+
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            <Button type="button" variant="outline" onClick={() => close(false)} disabled={submitting}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Record request
+              Create request
             </Button>
           </DialogFooter>
         </form>
@@ -317,5 +342,7 @@ function emptyForm() {
     age_min: '',
     age_max: '',
     physical_requirement: '',
+    request_source: '',
+    remarks: '',
   }
 }

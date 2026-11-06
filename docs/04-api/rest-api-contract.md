@@ -311,9 +311,17 @@ Request:
   "contact_number": "09171234567",
   "email": "contact@besttv.local",
   "office_address": "Sta. Cruz, Laguna",
+  "latitude": 14.2814571,
+  "longitude": 121.4161847,
   "status": "active"
 }
 ```
+
+`latitude` / `longitude` (since 2026-11-03): the establishment as pinned on the
+map by HR. Optional; both or neither (`required_with`), latitude -90..90,
+longitude -180..180, stored to 7 decimals. On `PUT`, leaving them out keeps the
+saved pin and sending both as `null` removes it. Returned on every client as
+numbers or `null`; nothing is derived from the address.
 
 ### GET /clients/{id}
 ### PUT /clients/{id}
@@ -718,15 +726,21 @@ Rules:
 - Filters: `status` (`scheduled`, `ongoing`, `completed`, `cancelled`),
   `date_from`, `date_to`; paginated, with enrolled / attended / completed counts.
 ### POST /trainings
+- `training_title`, `training_date`, `start_time` (`HH:MM`, required),
+  `end_time` (`HH:MM`, optional, later than `start_time`), `location`,
+  `trainer_name`, `remarks`. *(start/end time added 2026-11-03; sessions
+  scheduled earlier have none.)*
 ### GET /trainings/candidates
 - Applicants at a stage where training applies, each with any completed or
   scheduled session. `awaiting_only=1` keeps only those without a completion.
 ### GET /trainings/{id}
 - The session with its roster: attendance and completion, each with who
-  recorded it and when.
+  recorded it and when, and `attendance_confirmed_at` — when the applicant said
+  from the portal that they will attend (null if not). `counts.confirmed`
+  totals those.
 ### PATCH /trainings/{id}
-- Details (`training_title`, `training_date`, `location`, `trainer_name`,
-  `remarks`) and `status`. Only what is sent changes; corrections are audited
+- Details (`training_title`, `training_date`, `start_time`, `end_time`,
+  `location`, `trainer_name`, `remarks`) and `status`. Only what is sent changes; corrections are audited
   field by field. Refused (409) when:
   - the status move is not allowed — a cancelled session cannot be reopened, a
     completed one can go back to `scheduled`/`ongoing` to add a late attendee;
@@ -741,8 +755,9 @@ Rules:
   moves the applicant to `training_scheduled`.
 
 Each roster event sends the applicant one `training` notification naming the
-session, its date and its location, linked to `/portal/training`: enrolled,
-session date or location changed (to those with nothing recorded yet), session
+session, its date, time and location, linked to `/portal/training`: enrolled,
+session date, time or location changed (to those with nothing recorded yet,
+whose confirmation is cleared so they confirm the new schedule), session
 cancelled, taken off the roster, completion recorded, completion withdrawn. The
 status moves these cause send no separate status notification.
 ### PATCH /trainings/{id}/enrollments/{enrollmentId}
@@ -873,7 +888,9 @@ and the review of flagged days. Every endpoint, permission and rule is listed in
 `docs/07-project-management/dtr-attendance-rework.md` §6. Key rules:
 
 - A scheduled day with nothing on file is `awaiting_dtr`, never an absence,
-  until an import or HR declares the DTR for it received.
+  until HR confirms the client's DTR period complete (or ticks the hand-encoded
+  DTR complete for that employee). An import alone no longer does
+  *(changed 2026-11-04)*.
 - Changing or clearing a day already on file requires `reason`; old times are
   kept as revisions.
 - An import is a draft until previewed and confirmed; a day that differs from
@@ -882,13 +899,128 @@ and the review of flagged days. Every endpoint, permission and rule is listed in
 - Review statuses: `for_review`, `under_verification`, `verified`, `corrected`,
   `closed`; verified, corrected, closed and reopening need a `note`.
 
+### DTR import checks and DTR periods *(added 2026-11-04)*
+
+All need `attendance.manage`; coordinators and portal accounts get 403.
+
+- `GET /attendance/imports/options` → `clients` (`id`, `company_name`, `status`,
+  `placed_now`) — only clients with at least one deployment — plus
+  `max_period_days` (62), `max_file_kb`, `max_rows`, `extensions`,
+  `identifier_types`, `date_formats`.
+- `POST /attendance/imports`: `client_company_id` must be one of those clients
+  (422 otherwise); `period_from`/`period_to` are `Y-m-d`, not in the future,
+  in order, at most 62 days (422 on `period_to`); the file's extension, MIME
+  type and leading bytes must agree (`.xlsx` = zip, `.xls` = OLE2, `.csv`/`.txt`
+  = text without NUL bytes). The upload is filed under a DTR period: the open
+  period of that client containing the dates, else a new one with exactly those
+  dates. Dates inside a period already `complete` are refused (409) until HR
+  reopens it. Each import now carries `dtr_period` (`id`, `period_from`,
+  `period_to`, `status`, `status_label`).
+- `POST /attendance/imports/{id}/preview` adds `summary`: `total_rows`,
+  `valid_rows`, `ready_rows`, `invalid_rows`, `skipped_rows`,
+  `unmatched_employees`, `duplicates`, `outside_period`, `dates_in_file`
+  (`from`, `to`), `punch_log_suspected`, `reasons` (`status`, `label`, `rows`).
+  `covered_employees` was renamed `employees_in_file`. Mapping time-in and
+  time-out to the same column is refused (422, raw punch log).
+- `GET /attendance/dtr-periods` (`client_company_id`, `status` = `received` |
+  `processing` | `incomplete` | `complete`, `per_page`): each period with
+  `status_label`, `status_note`, `status_by`, `status_at`, `files`
+  (`imported`, `drafts`, `discarded`).
+- `GET /attendance/dtr-periods/{id}` adds `imports`, `events` and
+  `reconciliation` (`employees`: per employee placed at the client during the
+  period, `scheduled_days`, `records`, `days_awaiting_dtr`, `days_no_record`,
+  `has_schedule`; `totals`).
+- `POST /attendance/dtr-periods/{id}/status` with `action`:
+  - `incomplete` (from received/processing; `note` required — what is missing);
+  - `complete` (from processing/incomplete; no draft import in the period, at
+    least one completed; `acknowledge_gaps: true` required when any scheduled
+    day has nothing on file; `note` optional);
+  - `reopen` (from incomplete/complete; `note` required; refused with 409 while
+    a review of a `no_record` day in the period is open).
+  Each move is kept as an event and audited (`confirm` for complete).
+
+### DTR files from coordinators *(added 2026-11-04)*
+
+The coordinator hands the client's DTR file to HR; HR imports it with the
+importer above. Details: `docs/07-project-management/dtr-submissions.md`.
+
+- Coordinator (scoped to the assignment; no client id is read):
+  - `GET /coordinator/dtr-submissions/options`: the assigned client and the
+    importer's limits.
+  - `GET /coordinator/dtr-submissions` (`status` = a status | `pending`).
+  - `POST /coordinator/dtr-submissions` (multipart: `file`, `period_from`,
+    `period_to`, `source_note`; the importer's own file and period rules).
+  - `GET /coordinator/dtr-submissions/{id}` and `…/{id}/file`.
+  - `POST …/{id}/resubmit`: a corrected file for a returned submission. It
+    creates a new submission.
+- HR (`attendance.manage`):
+  - `GET /attendance/dtr-submissions` (`status` = `pending` (default) |
+    a status | `all`, `client_company_id`, `coordinator_id`, `covers_from`,
+    `covers_to`, `submitted_from`, `submitted_to`, `search`; meta
+    `status_counts`, `coordinators`).
+  - `GET /attendance/dtr-submissions/{id}` (adds `import`, `draft_import_id`,
+    `resubmission_of`, `resubmission`, `events`) and `…/{id}/file`.
+  - `POST …/{id}/import`: opens the stored file as an ordinary import draft and
+    returns its `import_id`, which continues at `/attendance/imports/{id}`. An
+    open draft is returned rather than a second one made.
+  - `POST …/{id}/decision` (`action` = `return` | `reject`, `note` required).
+- Status: `submitted` → `under_review` (draft opened) → `imported` (set only when
+  that import is confirmed); `returned` and `rejected` carry the reason.
+  Discarding the draft puts the submission back to `submitted`.
+- Errors:
+  - 403: outside the assignment, or without `attendance.manage`.
+  - 409: same file already waiting or imported; status does not allow the step;
+    a second correction.
+  - 422: the importer's file and period rules; a decision without a reason.
+- `GET /attendance/imports` and `GET /attendance/imports/{id}` add
+  `dtr_submission` (`id`, `submission_code`) when the import came from one.
+
+### Work schedules from coordinators *(added 2026-11-04)*
+
+A coordinator proposes a schedule; HR approves or returns it. Only an approved
+one becomes an `employee_schedules` row and is compared with the DTR. Details:
+`docs/07-project-management/work-schedule-approval.md`.
+
+- HR (`attendance.view` to read, `attendance.manage` to decide):
+  `GET /attendance/schedule-submissions` (`status` = `submitted` (default) |
+  `returned` | `approved` | `withdrawn` | `all`, `client_company_id`,
+  `coordinator_id`, `employee_id`, `search`, `effective_from`, `effective_to`;
+  meta `status_counts`, `coordinators`), `GET /attendance/schedule-submissions/{id}`
+  (adds `deployment`, `current_schedule`, `changes`, `checks`, `events`,
+  `can_review`), `POST /attendance/schedule-submissions/{id}/review`
+  (`action` = `approve` | `return`; `note` required to return;
+  `confirm_replaces_past: true` required when approving would change days
+  already compared). A draft is never shown to HR (404).
+- Coordinator (scoped to the assignment): `GET /coordinator/schedules`
+  (`status` = `open` (default) | a status | `all`, `search`, `employee_id`),
+  `POST /coordinator/employees/{id}/schedules`, `GET|PUT /coordinator/schedules/{id}`,
+  `POST …/{id}/submit`, `POST …/{id}/withdraw` (`reason` optional).
+  Body: `effective_from`, `effective_to` (optional), `work_days`, `shift_start`,
+  `shift_end`, `break_start`, `break_minutes`, `remarks`, `source_note`
+  (required to submit), `submit`.
+- Errors: 403 outside the assignment or another coordinator's draft, or for the
+  schedule's own writer reviewing it; 409 when the status does not allow the
+  step, another schedule for the employee is with HR, or a check says it must
+  be fixed (an approved schedule already starts on or after the date, the
+  placement changed); 422 for field errors and a coordinator back-dating over
+  days already compared.
+- `GET /employees/{id}/attendance` adds `schedule_submissions` (submitted and
+  returned) and each schedule's `submission` (`proposed_by`, `approved_by`,
+  `source_note`); `GET /coordinator/employees/{id}` adds `schedules`,
+  `current_schedule_id` and `schedule_submissions`.
+
 ## Separation Management
 
 ### GET /separations
 ### POST /employees/{id}/resignations
 ### PUT /employees/{id}/resignations/{resignationId}
 ### POST /employees/{id}/resignations/{resignationId}/complete
+### GET /terminations/{terminationId}
 ### POST /employees/{id}/terminations
+### POST /employees/{id}/terminations/{terminationId}
+### POST /employees/{id}/terminations/{terminationId}/submit
+### POST /employees/{id}/terminations/{terminationId}/review
+### PUT /employees/{id}/terminations/{terminationId}/clearance-items/{itemId}
 ### POST /employees/{id}/terminations/{terminationId}/finalise
 ### POST /employees/{id}/terminations/{terminationId}/withdraw
 ### PUT /employees/{id}/terminations/{terminationId}/clearance
@@ -897,9 +1029,12 @@ and the review of flagged days. Every endpoint, permission and rule is listed in
 status, or `awaiting_clearance` — resignations `filed` or `accepted` and not
 yet cleared, the dashboard figure of that name; 422 otherwise), `open_only`,
 `source`
-(`portal` | `office`, resignations only). Each row carries `source`,
-`requested_exit_date`, `clearance_status`, and for a finalised termination
-`notice: {viewed, acknowledged}`.
+(`portal` | `office`, resignations only), `stage` (terminations only:
+`awaiting_review | returned | approved | finalized | closed`). Each row carries
+`source`, `requested_exit_date`, `clearance_status`, and for a finalised
+termination `notice: {viewed, acknowledged}`. Termination rows add `reference`
+(`TRM-00004`), `stage`, `stage_label`, `filed_by`, `submitted_at` and, while
+approved, `clearance_outstanding`.
 
 Resignation payload (filed at the office):
 
@@ -946,11 +1081,42 @@ Rules:
 - A save that changes nothing writes no history and sends no notification.
 - One open resignation per employee, enforced by a row lock and by the unique
   `open_employee_id` column.
+- Termination statuses (since 2026-11-03): `draft → for_review` (HR submits,
+  `separation.create`); `for_review → approved | returned | rejected` (`review`,
+  `separation.review_termination`, administrators; `note` required to return or
+  reject; the filer may not review their own request); `returned → for_review`
+  (HR corrects with the update `POST` and resubmits); `approved → finalized`
+  (HR, `separation.finalize_termination`); any open status → `withdrawn`.
+  `rejected`, `finalized` and `withdrawn` are closed. Approval changes nothing
+  about the employee. One open request per employee (row lock and the unique
+  `open_employee_id`).
+- Approval copies the checklist in `config/empower.php →
+  separation.termination_clearance` onto the request (obligations, violation
+  history review). Each item is updated with `{status, remarks}`; status is `pending_review | requires_action |
+  awaiting_verification | cleared | not_applicable` (a `record_review` item is
+  only `pending_review | cleared`). `not_applicable` needs `remarks`; an item
+  with `requires_remarks` needs `remarks` to be `cleared`. Allowed only while
+  `approved`. Retired items (`office_clearance`, removed 2026-11-03) are left
+  out of `clearance.items` and the checks, and refuse updates (409).
 - `finalise` takes `confirm: true` and an optional `employee_message`, which is
-  the only text from the termination the employee sees. Finalising is the only
-  event that notifies the employee; drafts, reviews and withdrawals do not.
-- Termination clearance (`pending | in_progress | cleared`) is recorded only
-  after finalisation.
+  the only text from the termination the employee sees. It is refused unless the
+  request is `approved` (409), the employee is still active (409), and every
+  mandatory clearance item is `cleared` or `not_applicable` (422,
+  `errors.clearance` lists what is outstanding). Finalising is the only event
+  that notifies the employee; drafts, reviews and withdrawals do not.
+- Notifications (office, `employment` category, linked to
+  `/separations/terminations/{id}`): submitted or resubmitted → every active
+  administrator holding `separation.review_termination` except the filer;
+  approved / returned / rejected → the filer; finalised → the approver and the
+  filer, without whoever finalised it.
+- `GET /terminations/{id}` (`separation.view` + `employees.view`) returns the
+  case: request, review, employee and placement, `clearance.items`,
+  `obligations` (`records_available: false` - EMPOWER holds no loan records),
+  `violations` (`official`, `unvalidated_reports`) with `violations.view`,
+  `incidents.context` (site reports from the employee's placements and dates,
+  never attributed) with `incident_reports.view`, `history`, and `can` flags.
+- `PUT …/clearance` (`pending | in_progress | cleared`) is only for terminations
+  finalised under the earlier one-step process (409 otherwise).
 - The employee record (`GET /employees/{id}`) adds to each case: `source`,
   `requested_exit_date`, `employee_remarks`, `employee_message`,
   `allowed_statuses`, `history`, and for a finalised termination
@@ -1029,12 +1195,23 @@ change. Portal accounts hold no staff permissions at all.
   *Require training before deployment* setting is off), `not_reached` (before
   the Training stage), `pending` (at or past it, nothing scheduled) or
   `not_recorded` (deployed with no completion on record).
-- Each session: `title`, `training_code`, `date`, `location`, `trainer_name`,
-  the applicant's `attendance_status` and `completion_status`, `completed_on`,
-  and `state` — `scheduled`, `in_progress` (marked present, session under way
-  or over, or its date passed, with no completion recorded), `completed`,
-  `missed` (marked absent) or `cancelled`. Remarks and officers' names are not
-  included, and no start time exists to include.
+- Each session: `title`, `training_code`, `date`, `start_time`, `end_time`
+  (`HH:MM`, null for sessions scheduled before times were kept), `location`,
+  `trainer_name`, the applicant's `attendance_status`, `completion_status`,
+  `confirmed_at`, `can_confirm`, `completed_on`, and `state` — `scheduled`,
+  `in_progress` (marked present, session under way or over, or its date passed,
+  with no completion recorded), `completed`, `missed` (marked absent) or
+  `cancelled`. Remarks and officers' names are not included.
+
+### POST /portal/training/{enrollmentId}/confirm
+- The applicant tells the office they will attend. Looked up only among the
+  signed-in applicant's own enrolments (anyone else's id is a 404). Allowed
+  only while the session's `state` is `scheduled`; otherwise 409. Repeating it
+  succeeds without notifying again.
+- Sets `attendance_confirmed_at`, is audited, and sends admin/HR a `training`
+  notification linked to the session. It is not attendance: HR still marks who
+  came on the day.
+- Response: the `GET /portal/training` block.
 
 ### GET /portal/documents
 - The applicant's own checklist, each row carrying `review_state` and

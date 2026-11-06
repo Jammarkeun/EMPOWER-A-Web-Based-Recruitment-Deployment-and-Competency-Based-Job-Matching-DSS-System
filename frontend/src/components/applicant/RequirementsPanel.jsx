@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Eye, Info, CheckCircle2, XCircle, Clock, FileText, Loader2, AlertTriangle } from 'lucide-react'
+import { Eye, Info, CheckCircle2, XCircle, Clock, FileText, Loader2, AlertTriangle, ClipboardList } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { get, patch, post } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
@@ -15,6 +15,8 @@ import { Badge } from '@/components/ui/badge'
 import { Select } from '@/components/ui/select'
 import { formatDate, cn } from '@/lib/utils'
 import { expiryBadge } from '@/lib/documentExpiry'
+import RejectDocumentDialog from '@/components/dialogs/RejectDocumentDialog'
+import BioDataReviewDialog from '@/components/applicant/BioDataReviewDialog'
 
 /**
  * Explains why the applicant sits in their current folder.
@@ -81,6 +83,19 @@ function verificationOf(requirement) {
   return VERIFICATION[requirement.review_state] ?? VERIFICATION.not_uploaded
 }
 
+const isBioData = (requirement) => requirement.requirement_code === 'bio_data'
+
+/**
+ * A Bio-Data form sent in and not decided yet - also on a row still verified
+ * from an earlier paper copy. It is reviewed in its own viewer, which shows
+ * what verifying would change on the profile, so it is left out of the
+ * one-click and bulk verify.
+ */
+const isPendingForm = (requirement) => Boolean(requirement.digital_form_pending)
+
+/** What can be ticked for a bulk verify. */
+const canBulkVerify = (requirement) => requirement.status !== 'verified' && !isPendingForm(requirement)
+
 /**
  * Exported for the document library, which opens an applicant's folder with
  * this same panel - so reviewing a document works identically from either
@@ -103,6 +118,9 @@ export function RequirementsPanel({ applicant, onChanged }) {
   const [selected, setSelected] = React.useState(() => new Set())
   const [busy, setBusy] = React.useState(null)
   const [bulkBusy, setBulkBusy] = React.useState(false)
+  // The document whose rejection reason is being written, if any.
+  const [rejecting, setRejecting] = React.useState(null)
+  const [reviewingBioData, setReviewingBioData] = React.useState(false)
 
   React.useEffect(() => {
     setRows(applicant.requirements ?? [])
@@ -120,7 +138,7 @@ export function RequirementsPanel({ applicant, onChanged }) {
 
   /** Anything not already verified is worth offering for a bulk check. */
   const selectable = React.useMemo(
-    () => rows.filter((r) => r.status !== 'verified').map((r) => r.requirement_type_id),
+    () => rows.filter(canBulkVerify).map((r) => r.requirement_type_id),
     [rows]
   )
 
@@ -133,7 +151,7 @@ export function RequirementsPanel({ applicant, onChanged }) {
   }
 
   function toggleGroup(groupRows) {
-    const ids = groupRows.filter((r) => r.status !== 'verified').map((r) => r.requirement_type_id)
+    const ids = groupRows.filter(canBulkVerify).map((r) => r.requirement_type_id)
     const allOn = ids.length > 0 && ids.every((id) => selected.has(id))
 
     setSelected((current) => {
@@ -150,20 +168,12 @@ export function RequirementsPanel({ applicant, onChanged }) {
     )
   }
 
-  async function handleVerify(requirement, status) {
+  /** Returns whether the change was saved, so the reject dialog knows to close. */
+  async function handleVerify(requirement, status, extra = {}) {
     setBusy(requirement.requirement_type_id)
 
     try {
-      const body = { status }
-
-      if (status === 'rejected') {
-        const reason = window.prompt('Why is this document being rejected?')
-        if (!reason) {
-          setBusy(null)
-          return
-        }
-        body.rejection_reason = reason
-      }
+      const body = { status, ...extra }
 
       const response = await patch(
         `/applicants/${applicant.id}/requirements/${requirement.requirement_type_id}`,
@@ -174,11 +184,13 @@ export function RequirementsPanel({ applicant, onChanged }) {
       onChanged(response.data)
 
       toast.success(
-        status === 'verified' ? 'Verified' : 'Document updated',
+        status === 'verified' ? 'Verified' : status === 'rejected' ? 'Document rejected' : 'Document updated',
         `${requirement.requirement_name} — folder is now ${response.data.folder.label}.`
       )
+      return true
     } catch (error) {
       toast.error('Could not update document', error.message)
+      return false
     } finally {
       setBusy(null)
     }
@@ -278,7 +290,7 @@ export function RequirementsPanel({ applicant, onChanged }) {
         const groupRows = grouped[group]
         if (groupRows.length === 0) return null
 
-        const groupSelectable = groupRows.filter((r) => r.status !== 'verified')
+        const groupSelectable = groupRows.filter(canBulkVerify)
         const allSelected =
           groupSelectable.length > 0 &&
           groupSelectable.every((r) => selected.has(r.requirement_type_id))
@@ -317,7 +329,7 @@ export function RequirementsPanel({ applicant, onChanged }) {
                 const verification = verificationOf(requirement)
                 const VerificationIcon = verification.icon
                 const isSelected = selected.has(requirement.requirement_type_id)
-                const canSelect = mayVerify && requirement.status !== 'verified'
+                const canSelect = mayVerify && canBulkVerify(requirement)
 
                 return (
                   <div
@@ -358,7 +370,13 @@ export function RequirementsPanel({ applicant, onChanged }) {
                             requirement.has_file ? 'text-foreground/70' : 'text-muted-foreground'
                           )}
                         >
-                          {requirement.has_file ? (
+                          {requirement.is_digital_form ? (
+                            <>
+                              <ClipboardList className="h-3 w-3" />
+                              Filled in online
+                              {requirement.has_file && ` · earlier upload: ${requirement.file_name}`}
+                            </>
+                          ) : requirement.has_file ? (
                             <>
                               <FileText className="h-3 w-3" />
                               {requirement.file_name}
@@ -458,9 +476,16 @@ export function RequirementsPanel({ applicant, onChanged }) {
                             </Button>
                           )}
 
+                          {isBioData(requirement) && (
+                            <Button variant="ghost" size="sm" onClick={() => setReviewingBioData(true)}>
+                              <ClipboardList className="h-3.5 w-3.5" />
+                              {isPendingForm(requirement) && mayVerify ? 'Review form' : 'Digital form'}
+                            </Button>
+                          )}
+
                           {/* Available with or without a file: the officer may
                               be holding the original. */}
-                          {mayVerify && requirement.status !== 'verified' && (
+                          {mayVerify && requirement.status !== 'verified' && !isPendingForm(requirement) && (
                             <Button variant="ghost" size="sm" onClick={() => handleVerify(requirement, 'verified')}>
                               <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                               Verify
@@ -479,8 +504,8 @@ export function RequirementsPanel({ applicant, onChanged }) {
                             </Button>
                           )}
 
-                          {mayVerify && requirement.has_file && requirement.status !== 'rejected' && (
-                            <Button variant="ghost" size="sm" onClick={() => handleVerify(requirement, 'rejected')}>
+                          {mayVerify && requirement.has_file && requirement.status !== 'rejected' && !isPendingForm(requirement) && (
+                            <Button variant="ghost" size="sm" onClick={() => setRejecting(requirement)}>
                               <XCircle className="h-3.5 w-3.5 text-destructive" />
                               Reject
                             </Button>
@@ -495,6 +520,24 @@ export function RequirementsPanel({ applicant, onChanged }) {
           </Card>
         )
       })}
+
+      <RejectDocumentDialog
+        open={rejecting !== null}
+        onOpenChange={(open) => !open && setRejecting(null)}
+        requirement={rejecting}
+        applicantName={applicant.full_name}
+        onConfirm={(reason) => handleVerify(rejecting, 'rejected', { rejection_reason: reason })}
+      />
+
+      <BioDataReviewDialog
+        applicant={applicant}
+        open={reviewingBioData}
+        onOpenChange={setReviewingBioData}
+        onReviewed={(result) => {
+          patchRow(result.requirement)
+          onChanged(result)
+        }}
+      />
     </div>
   )
 }

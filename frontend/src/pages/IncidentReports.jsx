@@ -54,7 +54,7 @@ export default function IncidentReports() {
     <div className="space-y-4">
       <PageHeader
         title="Incident Reports"
-        description="What coordinators have reported from client sites. Answer with a note and mark each case pending or resolved. An incident is never recorded against an employee."
+        description="Events at client sites that coordinators have reported, with no employee named. Answer with a note and mark each case pending or resolved. An incident is never recorded against an employee; a report about one person is a Violation Report."
       />
 
       <FilterToolbar
@@ -143,7 +143,7 @@ export default function IncidentReports() {
                     <ReportStatus status={report.status} label={report.status_label} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/incident-reports/${report.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/incident-reports/${report.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open incident ${report.report_code}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

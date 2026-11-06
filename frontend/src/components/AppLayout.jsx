@@ -22,6 +22,7 @@ import {
   Hourglass,
   Siren,
   FilePlus2,
+  FileUp,
   MonitorSmartphone,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -67,10 +68,12 @@ const NAVIGATION = [
       { to: '/coordinator/employees', label: 'Employees', icon: IdCard, permission: 'coordination.access' },
       { to: '/coordinator/deployments', label: 'Deployments', icon: Truck, permission: 'coordination.access' },
       // The coordinator's three functions, as CDE named them on 26 October 2026.
-      { to: '/coordinator/reports', label: 'Violation Reports', icon: Flag, permission: 'coordination.access', categories: ['coordination'] },
-      { to: '/coordinator/incidents', label: 'Incident Reports', icon: Siren, permission: 'coordination.access' },
-      { to: '/coordinator/requisitions', label: 'Requisitions', icon: FilePlus2, permission: 'coordination.access' },
-      { to: '/coordinator/requests', label: 'Manpower Requests', icon: ClipboardList, permission: 'coordination.access' },
+      { to: '/coordinator/reports', label: 'Violation Reports', icon: Flag, permission: 'coordination.access', categories: ['coordination'], hint: 'Reports about one named employee' },
+      { to: '/coordinator/incidents', label: 'Incident Reports', icon: Siren, permission: 'coordination.access', hint: 'Site events, with no employee named' },
+      { to: '/coordinator/requisitions', label: 'Requisitions', icon: FilePlus2, permission: 'coordination.access', hint: 'Your requests for workers, sent to HR on the requisition form' },
+      { to: '/coordinator/schedules', label: 'Work Schedules', icon: CalendarClock, permission: 'coordination.access', hint: 'Hours as the client gave them, sent to HR for approval' },
+      { to: '/coordinator/dtr-submissions', label: 'DTR Submissions', icon: FileUp, permission: 'coordination.access', hint: 'The client’s DTR files, sent to HR to import' },
+      { to: '/coordinator/requests', label: 'Manpower Requests', icon: ClipboardList, permission: 'coordination.access', hint: 'Open requests for workers, and how far each is filled' },
     ],
   },
   {
@@ -80,8 +83,8 @@ const NAVIGATION = [
   {
     section: 'Recruitment',
     items: [
-      { to: '/job-requests', label: 'Manpower Requests', icon: ClipboardList, permission: 'job_requests.view' },
-      { to: '/requisitions', label: 'Requisitions', icon: FilePlus2, permission: 'requisitions.view' },
+      { to: '/job-requests', label: 'Manpower Requests', icon: ClipboardList, permission: 'job_requests.view', hint: 'Open requests for workers, and how far each is filled' },
+      { to: '/requisitions', label: 'Requisitions', icon: FilePlus2, permission: 'requisitions.view', hint: 'Requests for workers coordinators send in for HR to review' },
       // categories: the notification kinds this section is responsible for.
       // Named here beside the navigation because the mapping is a judgement
       // about where somebody would go to deal with the thing, not a property
@@ -97,8 +100,8 @@ const NAVIGATION = [
       { to: '/deployments', label: 'Deployments', icon: Truck, permission: 'deployment.view', categories: ['deployment'] },
       { to: '/employees', label: 'Employees', icon: IdCard, permission: 'employees.view' },
       { to: '/attendance', label: 'Attendance (DTR)', icon: CalendarClock, permission: 'attendance.view' },
-      { to: '/violation-reports', label: 'Violation Reports', icon: Flag, permission: 'violation_reports.view', categories: ['coordination'] },
-      { to: '/incident-reports', label: 'Incident Reports', icon: Siren, permission: 'incident_reports.view' },
+      { to: '/violation-reports', label: 'Violation Reports', icon: Flag, permission: 'violation_reports.view', categories: ['coordination'], hint: 'Reports about one named employee' },
+      { to: '/incident-reports', label: 'Incident Reports', icon: Siren, permission: 'incident_reports.view', hint: 'Site events, with no employee named' },
       { to: '/separations', label: 'Separations', icon: FileWarning, permission: 'separation.view' },
     ],
   },

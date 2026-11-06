@@ -101,6 +101,52 @@ class TrainingWorkflowTest extends TestCase
         $this->assertSame(1, TrainingEnrollment::where('applicant_id', $ready->id)->count());
     }
 
+    public function test_sessions_are_listed_a_to_z_by_title_across_pages_and_filters(): void
+    {
+        $hr = $this->hrUser();
+        $make = fn (string $title, string $date, string $status = 'scheduled') => $this->trainingSession($hr, [
+            'training_title' => $title,
+            'training_date' => $date,
+            'status' => $status,
+        ]);
+
+        $orientation = $make('Orientation', '2026-10-29');
+        $packaging = $make('Packaging', '2026-10-19');
+        $food = $make('Food Safety Orientation', '2026-10-16', 'completed');
+        $jellyOld = $make('Jelly making', '2026-09-03');
+        // Spacing and case are not part of the order; the same title falls back
+        // to the newer session first.
+        $jellyNew = $make('  jelly Making ', '2026-11-05');
+        $apron = $make('apron fitting', '2026-12-01', 'completed');
+
+        Sanctum::actingAs($hr);
+
+        $expected = [$apron->id, $food->id, $jellyNew->id, $jellyOld->id, $orientation->id, $packaging->id];
+
+        $this->assertSame($expected, $this->getJson('/api/v1/trainings')->assertOk()->json('data.*.id'));
+
+        $pages = array_merge(
+            $this->getJson('/api/v1/trainings?per_page=4&page=1')->json('data.*.id'),
+            $this->getJson('/api/v1/trainings?per_page=4&page=2')->json('data.*.id'),
+        );
+        $this->assertSame($expected, $pages);
+
+        $this->assertSame(
+            [$apron->id, $food->id],
+            $this->getJson('/api/v1/trainings?status=completed')->assertOk()->json('data.*.id')
+        );
+
+        // The Training Report lists the sessions in the same order.
+        $report = app(\App\Services\Reporting\ReportBuilder::class)->build('training');
+        $this->assertSame(
+            Training::whereIn('id', $expected)->get()->sortBy(fn ($t) => array_search($t->id, $expected))->pluck('training_code')->values()->all(),
+            $report['rows']->pluck(0)->all()
+        );
+
+        // Titles are stored exactly as typed.
+        $this->assertSame('  jelly Making ', $jellyNew->fresh()->training_title);
+    }
+
     public function test_nobody_is_enrolled_in_a_cancelled_or_completed_session(): void
     {
         $hr = $this->hrUser();

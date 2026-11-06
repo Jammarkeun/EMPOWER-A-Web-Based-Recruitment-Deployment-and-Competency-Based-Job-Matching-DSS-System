@@ -177,12 +177,21 @@ class AttendanceImportTest extends TestCase
             ->whereDate('work_date', '2026-09-07')->first()->time_in->format('H:i'));
         $this->assertSame(1, AttendanceRecordRevision::where('attendance_import_id', $id)->count());
 
-        // The file says which days it covers: a blank scheduled day in it is a
-        // gap in the DTR, while somebody missing from the file is still only
-        // awaiting their DTR.
-        $this->assertSame(['no_record'], $this->days($this->reyes, '2026-09-09', '2026-09-09')['2026-09-09']['discrepancies']);
+        // Importing does not say the client's DTR is complete: a scheduled day
+        // with nothing on file stays awaiting it, in the file or not.
+        $this->assertSame('awaiting_dtr', $this->days($this->reyes, '2026-09-09', '2026-09-09')['2026-09-09']['status']);
         $this->assertSame('awaiting_dtr', $this->days($this->cruz, '2026-09-09', '2026-09-09')['2026-09-09']['status']);
         $this->assertSame('DTR-2026-00001', $this->days($this->reyes, '2026-09-08', '2026-09-08')['2026-09-08']['import_code']);
+        $this->assertDatabaseCount('attendance_coverage_periods', 0);
+
+        $period = $this->getJson("/api/v1/attendance/imports/{$id}")->assertOk()->json('data.dtr_period');
+        $this->assertSame('processing', $period['status']);
+
+        // Once HR confirms the period complete, those days are gaps to verify.
+        $this->postJson("/api/v1/attendance/dtr-periods/{$period['id']}/status", ['action' => 'complete', 'acknowledge_gaps' => true])
+            ->assertOk()->assertJsonPath('data.status', 'complete');
+        $this->assertSame(['no_record'], $this->days($this->reyes, '2026-09-09', '2026-09-09')['2026-09-09']['discrepancies']);
+        $this->assertSame(['no_record'], $this->days($this->cruz, '2026-09-09', '2026-09-09')['2026-09-09']['discrepancies']);
 
         // The same file a second time would only repeat it.
         $this->upload($this->sampleFile())->assertStatus(409);

@@ -171,15 +171,19 @@ const ITEM_CLASSES = 'group relative flex h-11 w-full items-center gap-2.5 round
 /**
  * A sidebar link. The current page is a pill in the active navy whose icon sits
  * in its own lighter circle; everything else is soft white text on the panel.
+ *
+ * `hint` says what a section holds where two names sit close together
+ * (Requisitions and Manpower Requests, Violation and Incident Reports). It is
+ * the tooltip; the names themselves stay as CDE uses them.
  */
-export function SidebarLink({ to, end, icon: Icon, label, unread = 0, collapsed, onNavigate }) {
+export function SidebarLink({ to, end, icon: Icon, label, hint, unread = 0, collapsed, onNavigate }) {
   return (
     <li>
       <NavLink
         to={to}
         end={end}
         onClick={onNavigate}
-        title={collapsed ? label : undefined}
+        title={collapsed ? (hint ? `${label}: ${hint}` : label) : hint}
         className={({ isActive }) =>
           cn(
             ITEM_CLASSES,

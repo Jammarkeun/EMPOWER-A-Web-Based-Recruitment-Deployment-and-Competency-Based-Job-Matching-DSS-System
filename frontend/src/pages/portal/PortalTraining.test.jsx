@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { screen } from '@testing-library/react'
-import { ok, renderAt } from '@/test/doubles'
+import { fireEvent, screen } from '@testing-library/react'
+import { fail, ok, renderAt, toastDouble } from '@/test/doubles'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), del: vi.fn() }))
+const toast = vi.hoisted(() => ({ current: null }))
 vi.mock('@/lib/api', () => api)
+vi.mock('@/components/ui/toast', () => ({ useToast: () => toast.current }))
 
 const { default: PortalTraining } = await import('./PortalTraining')
 
@@ -33,6 +35,7 @@ describe('My training', () => {
   beforeEach(() => {
     api.get.mockReset()
     api.post.mockReset()
+    toast.current = toastDouble()
   })
 
   it('shows the session to attend apart from the history, as recorded', async () => {
@@ -58,9 +61,46 @@ describe('My training', () => {
     expect(text.indexOf('Line Safety')).toBeLessThan(text.indexOf('Training history'))
     expect(text.indexOf('Training history')).toBeLessThan(text.indexOf('Warehouse Basics'))
 
-    // No start time is stored, so none is shown - the page says where to ask.
+    // This session predates start times, so none is shown - the page says where to ask.
+    expect(screen.queryByText('Time')).not.toBeInTheDocument()
     expect(screen.getByText(/told what time to arrive/)).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('shows the time HR set and lets the applicant say they will attend', async () => {
+    const scheduled = session({ start_time: '08:00', end_time: '17:00', can_confirm: true, confirmed_at: null })
+    const answered = { ...scheduled, can_confirm: false, confirmed_at: '2026-11-01T09:15:00+08:00' }
+    const block = (s) => ({ status: 'scheduled', label: 'Scheduled', explanation: 'Enrolled.', required: true, sessions: [s] })
+
+    renderPage(block(scheduled))
+    api.post.mockImplementation(() => ok(block(answered), { message: 'Thank you. We have told the office you will attend.' }))
+
+    expect(await screen.findByText('8:00 AM – 5:00 PM')).toBeInTheDocument()
+    // The time is known, so nobody is sent to ask for it.
+    expect(screen.queryByText(/told what time to arrive/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /I will attend/ }))
+
+    expect(await screen.findByText(/You told the office you will attend/)).toBeInTheDocument()
+    expect(api.post).toHaveBeenCalledWith('/portal/training/31/confirm')
+    expect(toast.current.success).toHaveBeenCalledWith('Thank you. We have told the office you will attend.')
+    expect(screen.queryByRole('button', { name: /I will attend/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the button when the office could not be told', async () => {
+    renderPage({
+      status: 'scheduled',
+      label: 'Scheduled',
+      explanation: 'Enrolled.',
+      required: true,
+      sessions: [session({ start_time: '08:00', can_confirm: true })],
+    })
+    api.post.mockImplementation(() => fail({ status: 409, message: 'This session has already started or is over.' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /I will attend/ }))
+
+    await vi.waitFor(() => expect(toast.current.error).toHaveBeenCalledWith('Not sent', 'This session has already started or is over.'))
+    expect(screen.getByRole('button', { name: /I will attend/ })).toBeEnabled()
   })
 
   it('reports a recorded completion, not merely attendance', async () => {

@@ -58,6 +58,7 @@ class ErrorDisclosureTest extends TestCase
             'job_position_id' => $position->id,
             'workers_needed' => 3,
             'date_requested' => now()->toDateString(),
+            'request_source' => 'email',
             'remarks' => 'Applicant Maria Santos, 09171234567',
         ]);
     }

@@ -353,6 +353,7 @@ class JobPositionTest extends TestCase
             'position_title' => 'Forklift Operator',
             'workers_needed' => 3,
             'date_requested' => now()->toDateString(),
+            'request_source' => 'email',
         ])->assertCreated();
 
         $this->assertDatabaseHas('job_positions', [
@@ -376,6 +377,7 @@ class JobPositionTest extends TestCase
                 'position_title' => $title,
                 'workers_needed' => 3,
                 'date_requested' => now()->toDateString(),
+                'request_source' => 'email',
             ])->assertCreated();
         }
 
@@ -401,6 +403,7 @@ class JobPositionTest extends TestCase
             'job_position_id' => $position->id,
             'workers_needed' => 1,
             'date_requested' => now()->toDateString(),
+            'request_source' => 'email',
         ])->assertStatus(422);
     }
 }

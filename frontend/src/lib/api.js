@@ -210,10 +210,17 @@ export async function del(url) {
   return data
 }
 
-/** Multipart helper for document uploads. */
-export async function upload(url, formData) {
+/**
+ * Multipart helper for document uploads.
+ *
+ * `onProgress` receives the share sent so far, 0 to 100, for a progress bar.
+ */
+export async function upload(url, formData, { onProgress } = {}) {
   const { data } = await api.post(url, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: onProgress
+      ? (event) => event.total && onProgress(Math.round((event.loaded / event.total) * 100))
+      : undefined,
   })
   return data
 }

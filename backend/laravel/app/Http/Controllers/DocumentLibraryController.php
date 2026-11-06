@@ -42,7 +42,9 @@ class DocumentLibraryController extends Controller
      * One row per person, so the list reads as a set of named folders. The
      * counts say what needs doing without opening anyone: how much they have
      * sent, how much is accepted, and how much is waiting for somebody to look
-     * at it. Those waiting come first, because that is the work.
+     * at it. Those waiting come first, because that is the work - and ahead of
+     * them, anyone with an upload no member of staff has opened yet, newest
+     * first, so a document sent through the portal is seen the day it arrives.
      *
      * The documents themselves are read through the applicant's own
      * requirements endpoint, which authorises against the applicant record.
@@ -55,15 +57,24 @@ class DocumentLibraryController extends Controller
             'search' => ['nullable', 'string', 'max:120'],
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             'needs_review' => ['nullable', 'boolean'],
+            'new_uploads' => ['nullable', 'boolean'],
             // By default only people with something on file: a registration
             // with nothing submitted yet is an empty folder.
             'include_empty' => ['nullable', 'boolean'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
-        $uploaded = fn ($q) => $q->whereNotNull('file_path');
-        $awaiting = fn ($q) => $q->whereNotNull('file_path')->whereIn('status', ['submitted', 'pending']);
-        $onFile = fn ($q) => $q->where(fn ($inner) => $inner->whereNotNull('file_path')->orWhere('status', 'verified'));
+        // "Sent" includes a digital Bio-Data, which has no file (sentIn).
+        $uploaded = fn ($q) => $q->sentIn();
+        $awaiting = fn ($q) => $q->awaitingReview();
+        $onFile = fn ($q) => $q->where(fn ($inner) => $inner->sentIn()->orWhere('status', 'verified'));
+        // Sent and not yet opened by anyone. A replacement upload clears the
+        // view record, so it counts as new again.
+        $unopened = fn ($q) => $q
+            ->where(fn ($sent) => $sent
+                ->where(fn ($upload) => $upload->sentIn()->where('status', 'submitted'))
+                ->orWhere(fn ($form) => $form->pendingDigitalForm()))
+            ->whereNull('first_viewed_at');
 
         $applicants = Applicant::query()
             ->with(['employee:id,applicant_id,employee_number,employment_status'])
@@ -74,10 +85,14 @@ class DocumentLibraryController extends Controller
                 'requirements as verified_count' => fn ($q) => $q->where('status', 'verified'),
                 'requirements as awaiting_review_count' => $awaiting,
                 'requirements as needs_attention_count' => fn ($q) => $q->whereIn('status', ['rejected', 'needs_correction', 'expired']),
+                'requirements as unopened_count' => $unopened,
             ])
+            ->withExists(['requirements as has_unopened' => $unopened])
             ->withMax('requirements as last_submitted_at', 'submitted_at')
+            ->withMax(['requirements as newest_unopened_at' => $unopened], 'submitted_at')
             ->unless($filters['include_empty'] ?? false, fn ($q) => $q->whereHas('requirements', $onFile))
             ->when($filters['needs_review'] ?? false, fn ($q) => $q->whereHas('requirements', $awaiting))
+            ->when($filters['new_uploads'] ?? false, fn ($q) => $q->whereHas('requirements', $unopened))
             ->when(
                 $filters['client_company_id'] ?? null,
                 fn ($q, $companyId) => $q->whereHas(
@@ -85,6 +100,11 @@ class DocumentLibraryController extends Controller
                     fn ($d) => $d->where('client_company_id', $companyId)
                 )
             )
+            // Bare aliases only: PostgreSQL (Supabase) will not resolve an
+            // alias inside an ORDER BY expression. has_unopened is what keeps
+            // the NULL dates of everyone else from sorting first there.
+            ->orderByDesc('has_unopened')
+            ->orderByDesc('newest_unopened_at')
             ->orderByDesc('awaiting_review_count')
             ->orderBy('last_name')
             ->orderBy('first_name')
@@ -107,8 +127,12 @@ class DocumentLibraryController extends Controller
                     'verified' => (int) $a->verified_count,
                     'awaiting_review' => (int) $a->awaiting_review_count,
                     'needs_attention' => (int) $a->needs_attention_count,
+                    'unopened' => (int) $a->unopened_count,
                     'last_submitted_at' => $a->last_submitted_at
                         ? \Illuminate\Support\Carbon::parse($a->last_submitted_at)->toIso8601String()
+                        : null,
+                    'newest_unopened_at' => $a->newest_unopened_at
+                        ? \Illuminate\Support\Carbon::parse($a->newest_unopened_at)->toIso8601String()
                         : null,
                 ],
             ]),
@@ -173,6 +197,7 @@ class DocumentLibraryController extends Controller
                 'requirement_type_id' => $r->requirement_type_id,
                 'file_name' => $r->file_name,
                 'file_size_bytes' => $r->file_size_bytes,
+                'submitted_via' => $r->submitted_via,
                 'submitted_at' => $r->submitted_at?->toIso8601String(),
                 'status' => $r->status,
                 'review_state' => $r->reviewState(),
@@ -225,7 +250,8 @@ class DocumentLibraryController extends Controller
     }
 
     /**
-     * Uploaded documents only, optionally narrowed to one client company.
+     * Documents sent in - uploaded files and digital Bio-Data forms - optionally
+     * narrowed to one client company.
      *
      * An applicant reaches a company through their deployment, since an
      * applicant belongs to the agency's pool rather than to a single client. The
@@ -236,7 +262,7 @@ class DocumentLibraryController extends Controller
     private function scopedQuery(array $filters)
     {
         return ApplicantRequirement::query()
-            ->whereNotNull('file_path')
+            ->sentIn()
             ->when(
                 $filters['client_company_id'] ?? null,
                 fn ($q, $companyId) => $q->whereHas(

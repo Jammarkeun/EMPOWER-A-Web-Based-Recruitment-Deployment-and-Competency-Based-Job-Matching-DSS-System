@@ -13,8 +13,9 @@ use App\Models\Training;
  * session moved or was called off. The training workflow sends this one
  * instead of the status notice, so each event produces exactly one alert.
  *
- * Every detail is read from the session record. A session has no start time
- * or meeting link, so none is mentioned.
+ * Every detail is read from the session record, including the start time HR
+ * set. A session scheduled before times were kept has none, and none is
+ * invented for it.
  */
 class TrainingSessionNotice extends EmpowerNotification
 {
@@ -53,20 +54,24 @@ class TrainingSessionNotice extends EmpowerNotification
     {
         $session = $this->training->training_title;
         $date = $this->training->training_date?->format('j F Y');
-        // "on 3 November 2026 at CDE office" - whichever parts the record has.
+        $time = $this->training->timeLabel();
+        // "on 3 November 2026, 8:00 AM to 5:00 PM, at CDE office" - whichever
+        // parts the record has. Older sessions have no time, and none is made up.
         $when = implode(' ', array_filter([
-            $date ? 'on '.$date : null,
+            $date ? 'on '.$date.($time ? ', '.$time.',' : '') : null,
             $this->training->location ? 'at '.$this->training->location : null,
         ]));
+        $when = rtrim($when, ',');
 
         return match ($this->event) {
             'enrolled' => 'You have been registered for a training session by CDE Manpower Services: '
                 .trim($session.' '.$when).'. '
-                .'Please review your training schedule, attend the session as scheduled, and complete the training.'
+                .'Please review your training schedule, let the office know you will attend, and complete the training.'
                 .($this->required
                     ? ' Completing your required training is necessary before you can proceed to the next step in your application.'
                     : ''),
-            'rescheduled' => $session.($when !== '' ? ' is now '.$when : ' has new details').'. Please attend on the updated schedule.',
+            'rescheduled' => $session.($when !== '' ? ' is now '.$when : ' has new details').'. '
+                .'Please confirm again on your training page that you will attend on the updated schedule.',
             'cancelled' => $session.($date ? ' on '.$date : '').' has been cancelled, so you do not need to attend it. '
                 .'Your training page shows your current schedule.',
             'removed' => 'You have been taken off the roster for '.$session.($date ? ' on '.$date : '').', so you do not need to attend it. '

@@ -6,9 +6,11 @@ use App\Http\Responses\ApiResponse;
 use App\Models\Employee;
 use App\Models\Resignation;
 use App\Models\Termination;
+use App\Models\TerminationClearanceItem;
 use App\Services\DocumentStorageService;
 use App\Services\DocumentUploadPolicy;
 use App\Services\SeparationService;
+use App\Services\TerminationCasePresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -18,6 +20,7 @@ class SeparationController extends Controller
     public function __construct(
         private readonly SeparationService $separation,
         private readonly DocumentStorageService $storage,
+        private readonly TerminationCasePresenter $cases,
     ) {
     }
 
@@ -30,6 +33,9 @@ class SeparationController extends Controller
             // "awaiting_clearance" is the dashboard's figure of that name:
             // resignations HR still has to review or clear.
             'status' => ['nullable', Rule::in(array_unique([...Resignation::STATUSES, ...Termination::STATUSES, 'awaiting_clearance']))],
+            // Where a termination request stands, as HR and the administrator
+            // work through it. "closed" is rejected and withdrawn together.
+            'stage' => ['nullable', Rule::in(['awaiting_review', 'returned', 'approved', 'finalized', 'closed'])],
             // "Needs action": the cases still waiting on somebody, which is
             // the question a person opening this list usually has.
             'open_only' => ['nullable', 'boolean'],
@@ -42,8 +48,10 @@ class SeparationController extends Controller
 
         $openOnly = (bool) ($filters['open_only'] ?? false);
         $source = $filters['source'] ?? null;
+        $stage = $filters['stage'] ?? null;
 
-        $resignations = Resignation::with('employee.applicant')
+        // A termination stage asks about terminations only.
+        $resignations = $stage ? collect() : Resignation::with('employee.applicant')
             ->when($filters['status'] ?? null, fn ($q, $v) => $v === 'awaiting_clearance'
                 ? $q->whereIn('status', Resignation::AWAITING_HR)->where('clearance_status', '!=', 'cleared')
                 : $q->where('status', $v))
@@ -67,9 +75,17 @@ class SeparationController extends Controller
                 'notice' => null,
             ]);
 
-        $terminations = $source === 'portal' ? collect() : Termination::with('employee.applicant')
+        $terminations = $source === 'portal' ? collect() : Termination::with(['employee.applicant', 'creator', 'clearanceItems'])
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
-            ->when($openOnly, fn ($q) => $q->whereIn('status', Termination::OPEN_STATUSES))
+            ->when($stage, fn ($q, $v) => $q->whereIn('status', match ($v) {
+                'awaiting_review' => ['for_review'],
+                'returned' => ['draft', 'returned'],
+                'approved' => ['approved'],
+                'finalized' => ['finalized'],
+                default => ['rejected', 'withdrawn'],
+            }))
+            // A stage is its own question; "needs action" would hide the closed ones it asks for.
+            ->when($openOnly && ! $stage, fn ($q) => $q->whereIn('status', Termination::OPEN_STATUSES))
             ->latest('termination_date')->get()
             ->map(fn ($t) => [
                 'type' => 'termination',
@@ -84,6 +100,13 @@ class SeparationController extends Controller
                 'exit_date' => $t->termination_date?->toDateString(),
                 'clearance_status' => $t->clearance_status,
                 'status' => $t->status,
+                'stage' => $t->stage(),
+                'stage_label' => $t->stageLabel(),
+                'reference' => $t->reference,
+                'filed_by' => $t->creator?->full_name,
+                'submitted_at' => $t->submitted_at?->toIso8601String(),
+                // Mandatory clearance items still open on an approved request.
+                'clearance_outstanding' => $t->status === 'approved' ? $t->outstandingClearance()->count() : null,
                 'is_open' => $t->isOpen(),
                 // Whether the employee has seen the notice, once there is one.
                 'notice' => $t->isFinalized() ? [
@@ -192,6 +215,22 @@ class SeparationController extends Controller
 
     // -------------------------------------------------------------- terminations
 
+    /**
+     * One termination case: the request, the administrator's review, the
+     * clearance, and the records HR reads before finalising.
+     *
+     * Where notifications about a request lead. The id in the address is the
+     * request's; the employee and everything shown with them are read from
+     * the request itself.
+     */
+    public function showTermination(Request $request, Termination $termination): JsonResponse
+    {
+        $this->authorize('viewAny', Resignation::class);
+        $this->authorize('view', $termination->employee);
+
+        return ApiResponse::success($this->cases->present($termination, $request->user()));
+    }
+
     public function storeTermination(Request $request, Employee $employee): JsonResponse
     {
         $this->authorize('separate', $employee);
@@ -200,6 +239,7 @@ class SeparationController extends Controller
             'reason' => ['required', 'string', 'max:255'],
             'termination_date' => ['required', 'date'],
             'remarks' => ['nullable', 'string', 'max:5000'],
+            // A draft stays with HR; "for_review" sends it to an administrator.
             'status' => ['nullable', Rule::in(['draft', 'for_review'])],
             'documents' => DocumentUploadPolicy::rules(required: false),
         ]);
@@ -212,12 +252,108 @@ class SeparationController extends Controller
 
         $termination = $this->separation->fileTermination($employee, $data, $request->user());
 
-        return ApiResponse::created($termination->load('employee.applicant'), 'Termination filed for review');
+        return ApiResponse::created(
+            $termination->load('employee.applicant'),
+            $termination->status === 'for_review'
+                ? 'Termination request submitted. The administrators have been notified to review it.'
+                : 'Termination request saved as a draft.'
+        );
     }
 
     /**
-     * Finalising is separate from filing so a dismissal passes through review
-     * rather than taking effect the moment it is typed in.
+     * HR corrects a draft, or a request an administrator returned.
+     *
+     * POST rather than PUT so a replacement supporting document can be sent
+     * with it.
+     */
+    public function updateTermination(Request $request, Employee $employee, Termination $termination): JsonResponse
+    {
+        $this->authorize('separate', $employee);
+
+        abort_unless($termination->employee_id === $employee->id, 404);
+
+        $data = $request->validate([
+            'reason' => ['sometimes', 'required', 'string', 'max:255'],
+            'termination_date' => ['sometimes', 'required', 'date'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
+            'documents' => DocumentUploadPolicy::rules(required: false),
+        ]);
+
+        if ($request->hasFile('documents')) {
+            $data['documents_path'] = $this->storage
+                ->store($request->file('documents'), 'terminations', $employee->id)['file_path'];
+        }
+        unset($data['documents']);
+
+        $termination = $this->separation->updateTermination($termination, $data, $request->user());
+
+        return ApiResponse::success($this->cases->present($termination, $request->user()), 'Termination request updated');
+    }
+
+    public function submitTermination(Request $request, Employee $employee, Termination $termination): JsonResponse
+    {
+        $this->authorize('separate', $employee);
+
+        abort_unless($termination->employee_id === $employee->id, 404);
+
+        $termination = $this->separation->submitTermination($termination, $request->user());
+
+        return ApiResponse::success(
+            $this->cases->present($termination, $request->user()),
+            'Termination request submitted. The administrators have been notified to review it.'
+        );
+    }
+
+    /**
+     * The administrator's decision. Approving sends the case back to HR for
+     * clearance and final processing; it does not end the employment.
+     */
+    public function reviewTermination(Request $request, Employee $employee, Termination $termination): JsonResponse
+    {
+        $this->authorize('reviewTermination', $employee);
+
+        abort_unless($termination->employee_id === $employee->id, 404);
+
+        $data = $request->validate([
+            'decision' => ['required', Rule::in(['approve', 'return', 'reject'])],
+            // Required to return or reject: HR is told what to correct, or why not.
+            'note' => ['nullable', 'string', 'max:1000', 'required_unless:decision,approve'],
+        ], [
+            'note.required_unless' => 'Write the reason. HR is shown it with the decision.',
+        ]);
+
+        $termination = $this->separation->reviewTermination($termination, $data['decision'], $data['note'] ?? null, $request->user());
+
+        return ApiResponse::success($this->cases->present($termination, $request->user()), match ($data['decision']) {
+            'approve' => 'Request approved. HR has been notified to complete the clearance and finalise it. The employee remains active until then.',
+            'return' => 'Request returned to HR for correction.',
+            default => 'Request rejected. The employee remains active.',
+        });
+    }
+
+    /**
+     * One line of the pre-termination clearance.
+     */
+    public function updateClearanceItem(Request $request, Employee $employee, Termination $termination, TerminationClearanceItem $item): JsonResponse
+    {
+        $this->authorize('finaliseTermination', $employee);
+
+        abort_unless($termination->employee_id === $employee->id && $item->termination_id === $termination->id, 404);
+
+        $data = $request->validate([
+            'status' => ['required', Rule::in(TerminationClearanceItem::STATUSES)],
+            'remarks' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $this->separation->updateClearanceItem($termination, $item, $data, $request->user());
+
+        return ApiResponse::success($this->cases->present($termination->fresh(), $request->user()), 'Clearance item updated');
+    }
+
+    /**
+     * Ends the employment. Only an approved request with a complete
+     * clearance, confirmed in the request itself (SeparationService checks
+     * both again, under a lock).
      */
     public function finaliseTermination(Request $request, Employee $employee, Termination $termination): JsonResponse
     {
@@ -246,7 +382,8 @@ class SeparationController extends Controller
     }
 
     /**
-     * The clearance that follows a finalised termination.
+     * The clearance of a termination finalised under the one-step process,
+     * which was recorded after it took effect.
      */
     public function updateTerminationClearance(Request $request, Employee $employee, Termination $termination): JsonResponse
     {
@@ -264,7 +401,7 @@ class SeparationController extends Controller
     }
 
     /**
-     * Ends a termination's review without dismissing the employee.
+     * Ends a termination request without dismissing the employee.
      */
     public function withdrawTermination(Request $request, Employee $employee, Termination $termination): JsonResponse
     {

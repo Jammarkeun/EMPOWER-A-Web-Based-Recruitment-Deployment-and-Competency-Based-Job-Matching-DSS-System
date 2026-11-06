@@ -22,11 +22,27 @@ class ClientCompany extends Model
         'contact_number',
         'email',
         'office_address',
+        // The pinned establishment, both or neither; empty until HR pins it.
+        'latitude',
+        'longitude',
         'status',
         'notes',
         'created_by',
         'updated_by',
     ];
+
+    protected function casts(): array
+    {
+        return [
+            'latitude' => 'float',
+            'longitude' => 'float',
+        ];
+    }
+
+    public function hasPinnedLocation(): bool
+    {
+        return $this->latitude !== null && $this->longitude !== null;
+    }
 
     public function departments(): HasMany
     {
@@ -52,6 +68,12 @@ class ClientCompany extends Model
     public function employees(): HasMany
     {
         return $this->hasMany(Employee::class, 'current_client_company_id');
+    }
+
+    /** The company's own papers on file - a BIR registration, a permit - titled by whoever uploaded them. */
+    public function documents(): HasMany
+    {
+        return $this->hasMany(ClientCompanyDocument::class);
     }
 
     public function creator(): BelongsTo

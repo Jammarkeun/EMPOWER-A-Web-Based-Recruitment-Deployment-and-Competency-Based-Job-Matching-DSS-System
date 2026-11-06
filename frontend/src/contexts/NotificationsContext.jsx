@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useLocation } from 'react-router-dom'
 import { get, post } from '@/lib/api'
+import { useLiveTick } from '@/contexts/LiveUpdatesContext'
 
 /**
  * Unread notification counts, shared by everything that displays one.
@@ -103,6 +104,13 @@ export function NotificationsProvider({ children, enabled = true }) {
 
     return () => clearInterval(timer)
   }, [enabled, refresh])
+
+  // A change somewhere may be a new notification; the badge need not wait
+  // for its own minute to come round.
+  const liveTick = useLiveTick()
+  React.useEffect(() => {
+    if (enabled && liveTick > 0) refresh()
+  }, [enabled, liveTick, refresh])
 
   /*
    * Refreshes when the tab is brought back to the foreground.

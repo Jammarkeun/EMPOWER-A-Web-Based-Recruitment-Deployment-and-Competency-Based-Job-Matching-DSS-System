@@ -26,7 +26,6 @@ class AttendanceImportController extends Controller
 {
     public function __construct(
         private readonly DtrImportService $imports,
-        private readonly AttendanceService $attendance,
         private readonly AttendancePresenter $present,
         private readonly DocumentStorageService $storage,
     ) {
@@ -43,7 +42,7 @@ class AttendanceImportController extends Controller
         ]);
 
         $imports = AttendanceImport::query()
-            ->with(['company', 'uploader', 'completer'])
+            ->with(['company', 'uploader', 'completer', 'dtrPeriod', 'dtrSubmission'])
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('client_company_id', $v))
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->latest('id')
@@ -55,27 +54,50 @@ class AttendanceImportController extends Controller
         );
     }
 
+    /**
+     * What the upload form offers: the clients a DTR can be imported for, and
+     * the limits the upload is checked against.
+     */
+    public function uploadOptions(Request $request): JsonResponse
+    {
+        $this->authorize('manageAnyAttendance', Employee::class);
+
+        return ApiResponse::success([
+            'clients' => $this->imports->importableClients($request->user())->map(fn ($c) => [
+                'id' => $c->id,
+                'company_name' => $c->company_name,
+                'status' => $c->status,
+                'placed_now' => (int) $c->placed_now,
+            ])->values(),
+            'max_period_days' => AttendanceService::MAX_PERIOD_DAYS,
+            'max_file_kb' => (int) config('empower.attendance.import_max_kb', 5120),
+            'max_rows' => (int) config('empower.attendance.import_max_rows', 10000),
+            'extensions' => DtrFileReader::EXTENSIONS,
+        ] + $this->options());
+    }
+
     public function store(Request $request): JsonResponse
     {
         $this->authorize('manageAnyAttendance', Employee::class);
 
-        $data = $request->validate([
-            'file' => ['required', 'file', 'max:'.(int) config('empower.attendance.import_max_kb', 5120), 'mimes:'.implode(',', DtrFileReader::EXTENSIONS)],
-            'client_company_id' => ['required', 'integer', 'exists:client_companies,id'],
-            'period_from' => ['required', 'date', 'before_or_equal:today'],
-            'period_to' => ['required', 'date', 'after_or_equal:period_from', 'before_or_equal:today'],
-            'source_note' => ['nullable', 'string', 'max:500'],
-        ], [
-            'file.mimes' => 'Only CSV and Excel (.xlsx, .xls) files can be imported.',
-            'period_to.before_or_equal' => 'A DTR can only cover days that are already over.',
-        ]);
+        // Checked against the same list the form offers, never against any id
+        // that happens to exist.
+        $clients = $this->imports->importableClients($request->user())->pluck('id')->all();
 
-        $this->attendance->period($data['period_from'], $data['period_to']);
+        $data = $request->validate(
+            DtrImportService::uploadRules() + ['client_company_id' => ['required', 'integer', Rule::in($clients)]],
+            DtrImportService::uploadMessages() + [
+                'client_company_id.required' => 'Choose whose DTR this is.',
+                'client_company_id.in' => 'Choose one of the listed clients. A DTR can only be imported for a client with workers placed there.',
+            ]
+        );
+
+        DtrImportService::assertPeriodLength($data['period_from'], $data['period_to']);
 
         $import = $this->imports->upload($request->file('file'), $data, $request->user());
 
         return ApiResponse::created(
-            $this->present->import($import->load(['company', 'uploader'])) + $this->imports->inspect($import),
+            $this->present->import($import->load(['company', 'uploader', 'dtrPeriod'])) + $this->imports->inspect($import),
             'File uploaded. Choose its columns to check it.'
         );
     }
@@ -84,7 +106,7 @@ class AttendanceImportController extends Controller
     {
         $this->authorize('manageAnyAttendance', Employee::class);
 
-        $import->load(['company', 'uploader', 'completer']);
+        $import->load(['company', 'uploader', 'completer', 'dtrPeriod', 'dtrSubmission']);
 
         return ApiResponse::success(
             $this->present->import($import, withResults: true)
@@ -126,7 +148,7 @@ class AttendanceImportController extends Controller
         $import = $this->imports->confirm($import, $data['conflict_action'], $data['reason'] ?? null, $request->user());
 
         return ApiResponse::success(
-            $this->present->import($import->load(['company', 'uploader', 'completer']), withResults: true),
+            $this->present->import($import->load(['company', 'uploader', 'completer', 'dtrPeriod', 'dtrSubmission']), withResults: true),
             sprintf('%d day(s) imported%s', $import->imported_rows, $import->replaced_rows ? sprintf(', %d replaced', $import->replaced_rows) : '')
         );
     }

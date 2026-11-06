@@ -8,6 +8,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
+use Tests\Support\ProcessesTerminations;
 use Tests\Support\SeedsDomainData;
 use Tests\TestCase;
 
@@ -22,6 +23,7 @@ class ApiWorkflowTest extends TestCase
 {
     use RefreshDatabase;
     use SeedsDomainData;
+    use ProcessesTerminations;
 
     protected function setUp(): void
     {
@@ -140,7 +142,7 @@ class ApiWorkflowTest extends TestCase
      * reserved to an administrator so the same person cannot both raise and
      * conclude it.
      */
-    public function test_hr_can_file_but_not_finalise_a_termination(): void
+    public function test_hr_files_an_administrator_approves_and_hr_finalises_after_clearance(): void
     {
         $hr = $this->hrUser();
         $department = $this->department($this->clientCompany($hr), $hr);
@@ -162,13 +164,20 @@ class ApiWorkflowTest extends TestCase
             'status' => 'for_review',
         ])->assertCreated()->json('data.id');
 
-        $this->postJson("/api/v1/employees/{$employeeId}/terminations/{$termination}/finalise")
-            ->assertStatus(403);
+        // Not before an administrator has approved it, confirmation or not.
+        $this->postJson("/api/v1/employees/{$employeeId}/terminations/{$termination}/finalise", ['confirm' => true])
+            ->assertStatus(409);
+        // And HR cannot approve its own request.
+        $this->postJson("/api/v1/employees/{$employeeId}/terminations/{$termination}/review", ['decision' => 'approve'])
+            ->assertForbidden();
 
-        // The employee is untouched by the refused attempt.
+        // The employee is untouched by the refused attempts.
         $this->assertDatabaseHas('employees', ['id' => $employeeId, 'employment_status' => 'active']);
 
-        Sanctum::actingAs($this->adminUser());
+        $this->approveAndClearTermination($employeeId, $termination, $hr);
+
+        // Approved and cleared, but still employed until HR finalises.
+        $this->assertDatabaseHas('employees', ['id' => $employeeId, 'employment_status' => 'active']);
 
         $this->postJson("/api/v1/employees/{$employeeId}/terminations/{$termination}/finalise", ['confirm' => true])
             ->assertOk();
@@ -202,6 +211,7 @@ class ApiWorkflowTest extends TestCase
             'position_title' => 'Production Helper',
             'workers_needed' => 2,
             'date_requested' => now()->toDateString(),
+            'request_source' => 'email',
             'age_min' => 18,
             'age_max' => 35,
         ])->assertCreated()->json('data.id');

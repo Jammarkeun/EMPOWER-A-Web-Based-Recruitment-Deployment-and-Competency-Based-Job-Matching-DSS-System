@@ -1,31 +1,49 @@
 import * as React from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, GraduationCap, Hourglass } from 'lucide-react'
-import { useApi } from '@/hooks/useApi'
+import { useApi, useDebounced } from '@/hooks/useApi'
+import { FilterToolbar } from '@/components/FilterToolbar'
 import { useAuth } from '@/contexts/AuthContext'
 import { PageHeader } from '@/components/PageHeader'
 import { Card } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { Select } from '@/components/ui/select'
 import { StatusBadge } from '@/components/ui/badge'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/states'
 import TrainingSessionDialog from '@/components/training/TrainingSessionDialog'
-import { Pagination } from '@/components/Pagination'
-import { formatDate, humanise } from '@/lib/utils'
+import { Pagination, useClampPage } from '@/components/Pagination'
+import { formatDate, formatTimeRange, humanise } from '@/lib/utils'
 
 const SESSION_STATUSES = ['scheduled', 'ongoing', 'completed', 'cancelled']
 
 export default function Trainings() {
   const { can } = useAuth()
   const [dialogOpen, setDialogOpen] = React.useState(false)
-  const [status, setStatus] = React.useState('')
-  const [page, setPage] = React.useState(1)
+  // In the address bar, like every other list, so a filtered list survives a
+  // refresh and the back button.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const search = searchParams.get('search') ?? ''
+  const status = searchParams.get('status') ?? ''
+  const page = Number(searchParams.get('page') ?? 1)
+  const debouncedSearch = useDebounced(search)
+  const filtered = Boolean(search || status)
+
   const { data, meta, loading, error, refetch } = useApi('/trainings', {
+    search: debouncedSearch || undefined,
     status: status || undefined,
     page,
     per_page: 20,
   })
+
+  function updateFilter(key, value) {
+    const next = new URLSearchParams(searchParams)
+    if (value) next.set(key, value)
+    else next.delete(key)
+    if (key !== 'page') next.delete('page')
+    setSearchParams(next)
+  }
+
+  useClampPage(meta, (p) => updateFilter('page', String(p)))
 
   return (
     <>
@@ -44,29 +62,27 @@ export default function Trainings() {
 
       {can('applicants.view') && <AwaitingTraining />}
 
-      <div className="mb-3 flex items-center gap-3">
-        <Select
-          value={status}
-          onChange={(e) => {
-            setStatus(e.target.value)
-            setPage(1)
-          }}
-          placeholder="All sessions"
-          aria-label="Filter sessions by status"
-          className="sm:w-48"
-        >
-          {SESSION_STATUSES.map((value) => (
-            <option key={value} value={value}>
-              {humanise(value)}
-            </option>
-          ))}
-        </Select>
-        {meta?.total !== undefined && (
-          <span className="text-xs text-muted-foreground">
-            {meta.total} session{meta.total === 1 ? '' : 's'}
-          </span>
-        )}
-      </div>
+      <FilterToolbar
+        className="mb-3"
+        search={search}
+        onSearchChange={(val) => updateFilter('search', val)}
+        searchPlaceholder="Search by title, code, location or trainer…"
+        filters={[
+          {
+            id: 'status',
+            label: 'All sessions',
+            value: status,
+            onChange: (val) => updateFilter('status', val),
+            options: [
+              { value: '', label: 'All sessions' },
+              ...SESSION_STATUSES.map((value) => ({ value, label: humanise(value) })),
+            ],
+          },
+        ]}
+        resultCount={meta?.total}
+        resultLabel={`session${meta?.total === 1 ? '' : 's'}, by title A–Z`}
+        onClearFilters={() => setSearchParams(new URLSearchParams())}
+      />
 
       <Card>
         {loading ? (
@@ -76,14 +92,24 @@ export default function Trainings() {
         ) : !data?.length ? (
           <EmptyState
             icon={GraduationCap}
-            title={status ? `No ${humanise(status).toLowerCase()} sessions` : 'No training scheduled'}
+            title={
+              search
+                ? 'No sessions match this search'
+                : status
+                  ? `No ${humanise(status).toLowerCase()} sessions`
+                  : 'No training scheduled'
+            }
             description={
-              status
-                ? 'Choose another status, or show all sessions.'
+              filtered
+                ? 'Search for part of the title, code, location or trainer, or show all sessions.'
                 : 'Schedule a session and enrol applicants who are ready for deployment.'
             }
             action={
-              can('training.create') && !status ? (
+              filtered ? (
+                <Button size="sm" variant="outline" onClick={() => setSearchParams(new URLSearchParams())}>
+                  Clear filters
+                </Button>
+              ) : can('training.create') ? (
                 <Button size="sm" onClick={() => setDialogOpen(true)}>
                   <Plus className="h-4 w-4" />
                   Schedule training
@@ -113,7 +139,14 @@ export default function Trainings() {
                       </Link>
                       <p className="font-mono text-xs text-muted-foreground">{training.training_code}</p>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm">{formatDate(training.training_date)}</TableCell>
+                    <TableCell className="whitespace-nowrap text-sm">
+                      {formatDate(training.training_date)}
+                      {training.start_time && (
+                        <p className="text-xs text-muted-foreground">
+                          {formatTimeRange(training.start_time, training.end_time)}
+                        </p>
+                      )}
+                    </TableCell>
                     <TableCell className="text-sm">{training.location}</TableCell>
                     <TableCell className="text-sm">{training.trainer_name}</TableCell>
                     <TableCell className="text-sm tabular-nums">
@@ -128,7 +161,7 @@ export default function Trainings() {
               </TableBody>
             </Table>
             <div className="px-4 pb-3">
-              <Pagination meta={meta} onPage={setPage} />
+              <Pagination meta={meta} onPage={(p) => updateFilter('page', String(p))} />
             </div>
           </>
         )}

@@ -9,8 +9,10 @@ use App\Models\AttendanceRecordRevision;
 use App\Models\AttendanceReview;
 use App\Models\Employee;
 use App\Models\EmployeeSchedule;
+use App\Models\ScheduleSubmission;
 use App\Services\Attendance\AttendanceContext;
 use App\Services\Attendance\AttendancePresenter;
+use App\Services\Attendance\ScheduleSubmissionPresenter;
 use App\Services\AttendanceService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
@@ -51,7 +53,7 @@ class AttendanceController extends Controller
         [$from, $to] = $this->attendance->period($filters['from'] ?? null, $filters['to'] ?? null);
         [$first, $last] = $this->attendance->employmentWindow($employee);
 
-        $schedules = $employee->schedules()->with(['creator', 'voider', 'company', 'department'])->get();
+        $schedules = $employee->schedules()->with(['creator', 'voider', 'company', 'department', 'submission.creator', 'submission.reviewer'])->get();
         $context = AttendanceContext::load([$employee->id], $from, $to);
         $comparison = $this->attendance->compare($employee, $from, $to, $context);
         $reviews = $this->reviewsFor(collect([$employee->id]), $from, $to);
@@ -73,6 +75,16 @@ class AttendanceController extends Controller
             'current_schedule' => $this->present->schedule($this->attendance->currentSchedule($employee, $schedules)),
             'schedules' => $schedules->map(fn (EmployeeSchedule $s) => $this->present->schedule($s))->values(),
             'schedule_changes' => $this->present->scheduleChanges($schedules),
+            // Schedules a coordinator has sent in and HR has not yet decided.
+            // None of them is compared with the DTR until approved.
+            'schedule_submissions' => ScheduleSubmission::query()
+                ->with(['company', 'department', 'creator', 'reviewer', 'employee'])
+                ->where('employee_id', $employee->id)
+                ->whereIn('status', ['submitted', 'returned'])
+                ->orderByDesc('id')
+                ->get()
+                ->map(fn (ScheduleSubmission $s) => $this->submissionRow($s))
+                ->values(),
             'exceptions' => EloquentCollection::make($context->exceptionsFor($employee->id)
                 ->filter(fn ($e) => $e->employee_id !== null || collect($comparison['days'])
                     ->contains(fn ($d) => ($d['exception']['id'] ?? null) === $e->id)))
@@ -371,6 +383,11 @@ class AttendanceController extends Controller
             ->whereDate('work_date', '<=', $to->toDateString())
             ->get()
             ->keyBy(fn (AttendanceReview $r) => $r->employee_id.'|'.$r->work_date->toDateString());
+    }
+
+    private function submissionRow(ScheduleSubmission $submission): array
+    {
+        return app(ScheduleSubmissionPresenter::class)->row($submission);
     }
 
     private function parseDate(string $date): CarbonImmutable

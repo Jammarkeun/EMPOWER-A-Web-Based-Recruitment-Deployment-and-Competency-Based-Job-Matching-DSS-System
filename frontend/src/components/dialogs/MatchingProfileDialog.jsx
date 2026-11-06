@@ -15,6 +15,8 @@ import { Input, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Field, FormGrid } from '@/components/ui/form'
 import { latestBirthDate } from '@/lib/validation'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 
 const SCORED = ['sex', 'birth_date', 'height_cm', 'distance_km', 'availability_date', 'communication_rating', 'reliability_rating']
 
@@ -57,21 +59,24 @@ function fromApplicant(applicant) {
  */
 export default function MatchingProfileDialog({ open, onOpenChange, applicant, onSaved }) {
   const toast = useToast()
-  const [form, setForm] = React.useState(() => fromApplicant(applicant))
+  // Seeded when the dialog opens; a background refresh of the applicant keeps
+  // what has been typed (useFormDraft).
+  const { form, setForm, baseline, dirty } = useFormDraft(applicant, fromApplicant, { open, key: applicant?.id })
   const [vocabulary, setVocabulary] = React.useState({ skills: [], certifications: [], education_levels: [] })
   const [skillDraft, setSkillDraft] = React.useState('')
   const [errors, setErrors] = React.useState({})
   const [saving, setSaving] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(dirty || (open && skillDraft.trim() !== ''))
+  const close = guard(onOpenChange)
 
   React.useEffect(() => {
     if (!open) return
-    setForm(fromApplicant(applicant))
     setErrors({})
     setSkillDraft('')
     getCached('/qualification-vocabulary', undefined, { ttl: 60_000 })
       .then((response) => setVocabulary(response.data))
       .catch(() => {})
-  }, [open, applicant])
+  }, [open])
 
   const setDetail = (key) => (event) =>
     setForm((f) => ({ ...f, details: { ...f.details, [key]: event.target.value } }))
@@ -104,7 +109,7 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
     setSaving(true)
     setErrors({})
 
-    const original = fromApplicant(applicant).details
+    const original = baseline.details
     const changedDetails = Object.fromEntries(
       SCORED.filter((key) => String(form.details[key] ?? '') !== String(original[key] ?? '')).map((key) => [
         key,
@@ -152,8 +157,9 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
       )
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
+    <Dialog open={open} onOpenChange={(next) => !saving && close(next)}>
       <DialogContent className="max-w-3xl">
+        {prompt}
         <DialogHeader>
           <DialogTitle>Matching profile</DialogTitle>
           <DialogDescription>
@@ -335,7 +341,7 @@ export default function MatchingProfileDialog({ open, onOpenChange, applicant, o
           </section>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            <Button type="button" variant="outline" onClick={() => close(false)} disabled={saving}>
               Cancel
             </Button>
             <Button type="submit" disabled={saving}>

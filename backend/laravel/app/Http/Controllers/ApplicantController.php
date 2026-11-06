@@ -75,6 +75,9 @@ class ApplicantController extends Controller
             'client_company_id' => ['nullable', 'integer', 'exists:client_companies,id'],
             // Status says every document was verified; the folder says not (WF-06).
             'documents_lapsed' => ['nullable', 'boolean'],
+            // Holding a verified document that has since expired, while still
+            // waiting for a posting - the dashboard's "Expired documents".
+            'expired_documents' => ['nullable', 'boolean'],
             // Leaves out anyone working under an active deployment today -
             // the dashboard's "ready for deployment" figure does.
             'exclude_deployed' => ['nullable', 'boolean'],
@@ -103,10 +106,13 @@ class ApplicantController extends Controller
             ->when($filters['documents_lapsed'] ?? false, fn ($q) => $q
                 ->whereIn('current_status', config('empower.past_document_gate_statuses'))
                 ->where(fn ($folder) => $folder->whereNull('folder_category')->orWhere('folder_category', '!=', 'folder_1')))
+            ->when($filters['expired_documents'] ?? false, fn ($q) => $q->withExpiredDocuments())
             ->when($filters['exclude_deployed'] ?? false, fn ($q) => $q->notCurrentlyDeployed())
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('application_date', '<=', $v))
             ->orderBy($filters['sort_by'] ?? 'application_date', $direction)
+            // Two people with one surname read in first-name order.
+            ->when(($filters['sort_by'] ?? null) === 'last_name', fn ($q) => $q->orderBy('first_name', $direction))
             // Many applicants share an application date. Without a unique
             // last key MySQL and PostgreSQL may order the ties differently on
             // each page, repeating some people and skipping others.

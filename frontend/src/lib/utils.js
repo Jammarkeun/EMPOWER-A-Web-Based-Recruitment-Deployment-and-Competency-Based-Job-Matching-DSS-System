@@ -65,6 +65,24 @@ export function formatDateTime(value, fallback = '—') {
   })
 }
 
+/**
+ * A wall-clock time as the server sends it ("08:00", "17:30") read as
+ * "8:00 AM". Formatted by hand rather than through Date, so no time zone can
+ * shift a session that starts at eight to some other hour.
+ */
+export function formatTime(value, fallback = '—') {
+  const match = /^(\d{1,2}):(\d{2})/.exec(value ?? '')
+  if (!match) return fallback
+  const hour = Number(match[1])
+  return `${hour % 12 || 12}:${match[2]} ${hour < 12 ? 'AM' : 'PM'}`
+}
+
+/** "8:00 AM – 5:00 PM", "8:00 AM", or the fallback when no start is set. */
+export function formatTimeRange(start, end, fallback = '—') {
+  if (!start) return fallback
+  return end ? `${formatTime(start)} – ${formatTime(end)}` : formatTime(start)
+}
+
 export function formatNumber(value) {
   if (value === null || value === undefined) return '—'
   return Number(value).toLocaleString('en-PH')
@@ -123,6 +141,17 @@ export function statusTone(status) {
     draft: 'muted',
     for_review: 'warning',
     finalized: 'destructive',
+    // A termination request back with HR, and the stages of an approved one.
+    returned: 'warning',
+    clearance_in_progress: 'info',
+    ready_for_finalization: 'warning',
+
+    // Pre-termination clearance items.
+    pending_review: 'muted',
+    requires_action: 'destructive',
+    awaiting_verification: 'warning',
+    cleared: 'success',
+    not_applicable: 'muted',
 
     // Recommendation bands
     highly_recommended: 'success',

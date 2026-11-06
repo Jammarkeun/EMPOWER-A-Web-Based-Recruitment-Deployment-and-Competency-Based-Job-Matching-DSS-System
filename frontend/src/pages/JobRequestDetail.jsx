@@ -228,6 +228,7 @@ export default function JobRequestDetail() {
         </TabsContent>
 
         <TabsContent value="details">
+          {job.source_requisition && <SourceRequisitionPanel requisition={job.source_requisition} />}
           <DetailsPanel job={job} canEdit={can('job_requests.configure_criteria')} onEdit={() => setCriteriaOpen(true)} />
           <StatusHistory history={job.status_history} />
         </TabsContent>
@@ -546,7 +547,10 @@ function ScoreBreakdown({ breakdown }) {
       <div className="flex items-baseline justify-between border-t pt-3 text-sm">
         <span className="font-medium">Total</span>
         <span className="tabular-nums">
-          {breakdown.raw_score} of {breakdown.max_score} ({breakdown.percentage}%)
+          {breakdown.raw_score} of {breakdown.max_score}
+          {breakdown.gates_met < breakdown.gates_total &&
+            ` × ${breakdown.gates_met} of ${breakdown.gates_total} mandatory`}{' '}
+          ({breakdown.percentage}%)
         </span>
       </div>
     </div>
@@ -730,6 +734,60 @@ function DetailsPanel({ job, canEdit, onEdit }) {
                 )}
               </dt>
               <dd className="text-sm">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * The coordinator requisition this request was created from, in the client's
+ * own words. Kept apart from the criteria HR sets: changing weights never
+ * changes what the client asked for.
+ */
+function SourceRequisitionPanel({ requisition: r }) {
+  const split = [r.male_count ? `${r.male_count} male` : null, r.female_count ? `${r.female_count} female` : null]
+    .filter(Boolean)
+    .join(', ')
+  const reason = r.request_reason_label
+    ? r.request_reason_details
+      ? `${r.request_reason_label}: ${r.request_reason_details}`
+      : r.request_reason_label
+    : r.reason
+
+  const rows = [
+    ['Total Manpower Needed', `${r.workers_needed}${split ? ` (${split})` : ''} for ${r.position_title}`],
+    ['Date Needed', r.required_by ? formatDate(r.required_by) : null],
+    ['Required Qualification(s)', r.qualifications],
+    ['Other Remarks', r.other_remarks],
+    ['Reason of Request', reason],
+    ['Requested by', r.requested_by],
+    ['Approved by', r.approved_by ? `${r.approved_by} · ${formatDateTime(r.approved_at)}` : null],
+  ].filter(([, value]) => value)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>
+          From requisition{' '}
+          <Link to={`/requisitions/${r.id}`} className="font-mono text-primary hover:underline">
+            {r.requisition_code}
+          </Link>
+        </CardTitle>
+        <CardDescription>
+          Created automatically when HR approved it. This is the client's request as submitted; matching criteria and
+          weights are set separately and do not change it.
+          {!r.department_named && ' The form named no department, so HR chose it on approval.'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+          {rows.map(([label, value]) => (
+            <div key={label} className={label.startsWith('Required') || label === 'Other Remarks' ? 'sm:col-span-2' : undefined}>
+              <dt className="text-xs text-muted-foreground">{label}</dt>
+              <dd className="whitespace-pre-line text-sm">{value}</dd>
             </div>
           ))}
         </dl>

@@ -136,7 +136,7 @@ export default function CoordinatorEmployees() {
                     </div>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/coordinator/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/coordinator/employees/${employee.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open ${employee.full_name}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

@@ -1,0 +1,13 @@
+"Biometric No.","Employee Name",Date,"Time In","Time Out",Remarks
+90001,"DIZON, ALMA",19/10/2026,08:00,17:00,"TEST: day-first date"
+90001,"DIZON, ALMA",2026-10-20,8:75,17:00,"TEST: minutes 75"
+90003,"MENDOZA, CARLA",2026-10-20,07:00,25:30,"TEST: hour 25"
+,"NO IDENTIFIER",2026-10-21,08:00,17:00,"TEST: blank biometrics no."
+99999,"GHOST, NOBODY",2026-10-21,08:00,17:00,"TEST: unknown number"
+90002,"OCAMPO, BENJIE",,22:00,06:00,"TEST: blank date"
+90003,"MENDOZA, CARLA",2026-10-22,,,"TEST: no times"
+90001,"REYES, JUAN",2026-10-22,08:00,17:00,"TEST: wrong name"
+90002,"OCAMPO, BENJIE",2026-10-30,22:00,06:00,"TEST: after the period"
+90004,"VILLANUEVA, DARIO",2026-10-21,"2026-10-21 17:00","2026-10-21 08:00","TEST: out before in"
+90005,"BAUTISTA, ELENA",2026-10-21,08:00,17:00,"TEST: other client"
+"*** END OF REPORT ***"

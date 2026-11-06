@@ -659,6 +659,15 @@ class DemoApplicantsSeeder extends Seeder
 
         foreach ($this->types as $code => $type) {
             $entry = $plan[$code] ?? null;
+
+            // The Bio-Data is filled in through its form now, never uploaded:
+            // one already verified was a paper copy checked at the counter,
+            // and anything else has simply not been sent yet.
+            $paperBioData = $code === 'bio_data' && ($entry['status'] ?? null) === 'verified';
+            if ($code === 'bio_data' && ! $paperBioData) {
+                $entry = null;
+            }
+
             $row = [
                 'applicant_id' => $applicant->id,
                 'requirement_type_id' => $type->id,
@@ -703,10 +712,16 @@ class DemoApplicantsSeeder extends Seeder
                         : $this->latestOf($today->addDays(30), $at->addDays(mt_rand(150, 330)));
                 }
 
-                [$method, $note] = $status === 'verified' ? $this->verificationMethod($applicant->source_channel) : [null, null];
+                [$method, $note] = match (true) {
+                    $paperBioData => ['walk_in', 'Paper Bio-Data checked at the counter.'],
+                    $status === 'verified' => $this->verificationMethod($applicant->source_channel),
+                    default => [null, null],
+                };
 
-                $file = $this->storeDocument($applicant, $type, $submittedAt, $expiry, $town, $barangay);
-                $written[] = $file['file_path'];
+                $file = $paperBioData ? [] : $this->storeDocument($applicant, $type, $submittedAt, $expiry, $town, $barangay);
+                if ($file !== []) {
+                    $written[] = $file['file_path'];
+                }
 
                 $row = array_merge($row, $file, [
                     'status' => $status,

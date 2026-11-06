@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use App\Models\ManpowerRequisition;
 use App\Models\ManpowerRequisitionStatusHistory;
+use App\Services\ManpowerRequisitionService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -26,6 +27,12 @@ class ManpowerRequisitionResource extends JsonResource
         $reasons = config('empower.requisition_form.reasons', []);
         $genders = config('empower.requisition_form.temporary_form.gender_requirements', []);
         $types = config('empower.requisition_form.temporary_form.employment_types', []);
+        $canReview = ! $isCoordinator
+            && (bool) $user?->can('requisitions.review')
+            && (int) $this->requested_by !== (int) $user?->id;
+        // Approving creates the manpower request, so it needs both rights.
+        $canRecord = $canReview && (bool) $user?->can('job_requests.create');
+        $canConvert = $canRecord && $this->status === 'approved' && ! $this->job_request_id;
 
         return [
             'id' => $this->id,
@@ -85,6 +92,9 @@ class ManpowerRequisitionResource extends JsonResource
             }),
             'created_at' => $this->created_at?->toIso8601String(),
             'submitted_at' => $this->submitted_at?->toIso8601String(),
+            'hr_viewed_at' => $this->hr_viewed_at?->toIso8601String(),
+            // Submitted and not yet opened by anyone at HR: the list's dot.
+            'is_new' => ! $isCoordinator && $this->status === 'submitted' && ! $this->hr_viewed_at,
             'reviewed_by' => $this->whenLoaded('reviewer', fn () => $this->reviewer?->full_name),
             'reviewed_at' => $this->reviewed_at?->toIso8601String(),
             'review_note' => $this->review_note,
@@ -93,8 +103,14 @@ class ManpowerRequisitionResource extends JsonResource
                 'id' => $this->jobRequest->id,
                 'request_code' => $this->jobRequest->request_code,
                 'request_status' => $this->jobRequest->request_status,
+                'position_title' => $this->jobRequest->position_title,
                 'workers_needed' => $this->jobRequest->workers_needed,
                 'workers_fulfilled' => $this->jobRequest->workers_fulfilled,
+                'department_name' => $this->jobRequest->relationLoaded('department') ? $this->jobRequest->department?->department_name : null,
+                // The coordinator named no department, so HR chose it on approval.
+                'department_set_by_hr' => ! $this->client_department_id,
+                'created_by' => $this->jobRequest->relationLoaded('creator') ? $this->jobRequest->creator?->full_name : null,
+                'created_at' => $this->jobRequest->created_at?->toIso8601String(),
             ] : null),
 
             'history' => $this->whenLoaded('history', fn () => $this->history->map(fn (ManpowerRequisitionStatusHistory $h) => [
@@ -115,16 +131,21 @@ class ManpowerRequisitionResource extends JsonResource
             'can_discard' => $isCoordinator
                 && (int) $this->requested_by === (int) $user->id
                 && $this->status === 'draft',
-            'review_actions' => $isCoordinator || ! $user?->can('requisitions.review') || (int) $this->requested_by === (int) $user?->id
+            'review_actions' => ! $canReview
                 ? []
                 : collect(ManpowerRequisition::REVIEW_ACTIONS)
                     ->filter(fn ($rule) => in_array($this->status, $rule['from'], true))
                     ->keys()
+                    ->reject(fn ($action) => $action === 'approve' && ! $canRecord)
                     ->values(),
-            'can_record_request' => ! $isCoordinator
-                && (bool) $user?->can('job_requests.create')
-                && $this->status === 'approved'
-                && ! $this->job_request_id,
+            // Approved before approval created the request, and never recorded.
+            'can_convert' => $canConvert,
+            // What approving (or converting) still needs HR to settle. Only on
+            // the single view, where history is loaded: it costs a query.
+            'conversion' => $this->when(
+                $this->relationLoaded('history') && ($canConvert || ($canRecord && $this->resource->isAwaitingReview())),
+                fn () => app(ManpowerRequisitionService::class)->conversionNeeds($this->resource)
+            ),
         ];
     }
 }

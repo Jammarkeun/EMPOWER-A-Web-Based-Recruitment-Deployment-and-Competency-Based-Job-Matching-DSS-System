@@ -35,6 +35,7 @@ class JobRequest extends Model
         'date_requested',
         'deployment_deadline',
         'request_source',
+        'manpower_requisition_id',
         'remarks',
         'created_by',
     ];
@@ -70,6 +71,20 @@ class JobRequest extends Model
     public function position(): BelongsTo
     {
         return $this->belongsTo(JobPosition::class, 'job_position_id');
+    }
+
+    /**
+     * The coordinator requisition this request was created from when HR
+     * approved it. None for a request HR recorded directly.
+     */
+    public function requisition(): BelongsTo
+    {
+        return $this->belongsTo(ManpowerRequisition::class, 'manpower_requisition_id');
+    }
+
+    public function isFromRequisition(): bool
+    {
+        return $this->manpower_requisition_id !== null;
     }
 
     public function criteria(): HasMany
@@ -228,5 +243,13 @@ class JobRequest extends Model
     public function scopeOpen(Builder $query): Builder
     {
         return $query->whereIn('request_status', ['open', 'in_progress', 'partially_fulfilled']);
+    }
+
+    /** Still needing workers after its deployment deadline has passed. */
+    public function scopeOverdue(Builder $query): Builder
+    {
+        return $query->open()
+            ->whereNotNull('deployment_deadline')
+            ->whereDate('deployment_deadline', '<', now());
     }
 }

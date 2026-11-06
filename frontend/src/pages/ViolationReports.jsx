@@ -55,7 +55,7 @@ export default function ViolationReports() {
     <div className="space-y-4">
       <PageHeader
         title="Violation Reports"
-        description="Incidents coordinators have reported from client sites. Validating one records the official violation; nothing here ends anyone's employment."
+        description="Possible violations by a named employee, reported by coordinators from client sites. Validating one records the official violation; nothing here ends anyone's employment. Site events with no employee named are under Incident Reports."
       />
 
       <FilterToolbar
@@ -141,7 +141,7 @@ export default function ViolationReports() {
                     <ReportStatus status={report.status} label={report.status_label} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/violation-reports/${report.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/violation-reports/${report.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open report ${report.report_code}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

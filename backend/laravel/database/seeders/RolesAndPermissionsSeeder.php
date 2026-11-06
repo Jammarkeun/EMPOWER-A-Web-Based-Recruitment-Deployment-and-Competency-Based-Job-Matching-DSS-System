@@ -99,10 +99,13 @@ class RolesAndPermissionsSeeder extends Seeder
             'view' => 'View resignations and terminations',
             'create' => 'File a resignation or termination',
             'approve' => 'Complete a resignation and clear the employee',
-            // Held separately from 'approve'. Completing a resignation is
-            // administrative, but finalising a dismissal carries legal weight
-            // and should not be done by the same person who filed it.
-            'finalize_termination' => 'Finalise a termination',
+            // A dismissal is requested by HR and decided by an administrator
+            // before anything changes. The decision is held apart from filing,
+            // and the reviewer may not decide a request they filed themselves.
+            'review_termination' => 'Approve, reject, or return a termination request',
+            // The processing after approval: the pre-termination clearance and
+            // the final step that ends the employment.
+            'finalize_termination' => 'Complete the clearance and finalise an approved termination',
         ],
         'archives' => [
             'view' => 'Search archived records',
@@ -134,7 +137,8 @@ class RolesAndPermissionsSeeder extends Seeder
 
     /**
      * Everything HR needs to run recruitment end to end. Deliberately excludes
-     * users.*, audit.view, and settings.update.
+     * users.*, audit.view, settings.update, and separation.review_termination:
+     * HR requests a termination and an administrator decides it.
      */
     private const HR_PERMISSIONS = [
         'dashboard.view',
@@ -151,7 +155,7 @@ class RolesAndPermissionsSeeder extends Seeder
         'violation_reports.view', 'violation_reports.review',
         'incident_reports.view', 'incident_reports.review',
         'requisitions.view', 'requisitions.review',
-        'separation.view', 'separation.create', 'separation.approve',
+        'separation.view', 'separation.create', 'separation.approve', 'separation.finalize_termination',
         'archives.view', 'archives.create',
         'reports.view', 'reports.export',
         'settings.view',

@@ -69,7 +69,7 @@ may see marked as such, and to the audit log.
 | S6 | No completion while HR is waiting on the employee for information | That question is answered first |
 | S7 | A message to the employee is a separate field from the office's remarks and reasons | The employee sees the first, never the others |
 | S8 | Post-separation, the portal stays open and read-only for the person's own record; no account is deactivated automatically | CDE has not said when access should end (question C3) |
-| S9 | Termination clearance is recorded after finalisation and does not hold it up | The dismissal takes effect on the decision; clearance settles obligations |
+| S9 | ~~Termination clearance is recorded after finalisation and does not hold it up~~ **Superseded 2026-11-03**: the clearance is completed before HR finalises an approved request (see `termination-review-and-clearance.md`) | Changed at the user's instruction |
 | S10 | Requested last day: today up to one year ahead | A typo guard, not a policy |
 
 ## 4. Questions for CDE

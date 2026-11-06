@@ -8,29 +8,38 @@ use App\Http\Controllers\AttendanceExceptionController;
 use App\Http\Controllers\AttendanceImportController;
 use App\Http\Controllers\AttendanceReviewController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BioDataController;
 use App\Http\Controllers\ClientCompanyController;
+use App\Http\Controllers\ClientCompanyDocumentController;
 use App\Http\Controllers\CoordinatorController;
 use App\Http\Controllers\CoordinatorIncidentController;
 use App\Http\Controllers\CoordinatorReportController;
 use App\Http\Controllers\CoordinatorRequisitionController;
+use App\Http\Controllers\CoordinatorScheduleController;
+use App\Http\Controllers\CoordinatorDtrSubmissionController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeploymentController;
 use App\Http\Controllers\DocumentFileController;
 use App\Http\Controllers\DocumentLibraryController;
+use App\Http\Controllers\DtrPeriodController;
+use App\Http\Controllers\DtrSubmissionController;
 use App\Http\Controllers\DocumentScanController;
 use App\Http\Controllers\EmployeeController;
 use App\Http\Controllers\IncidentReportController;
 use App\Http\Controllers\JobPositionController;
 use App\Http\Controllers\JobRequestController;
 use App\Http\Controllers\ManpowerRequisitionController;
+use App\Http\Controllers\LiveController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PasswordResetController;
+use App\Http\Controllers\PortalBioDataController;
 use App\Http\Controllers\PortalController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\RegistrationController;
 use App\Http\Controllers\RequirementController;
 use App\Http\Controllers\RetentionReviewController;
 use App\Http\Controllers\SearchController;
+use App\Http\Controllers\ScheduleSubmissionController;
 use App\Http\Controllers\SeparationController;
 use App\Http\Controllers\SessionMonitorController;
 use App\Http\Controllers\SettingsController;
@@ -143,6 +152,9 @@ Route::prefix('v1')->group(function () {
         Route::post('notifications/read-all', [NotificationController::class, 'markAllRead']);
         // What a sidebar item counted, once its page has been opened.
         Route::post('notifications/read-destinations', [NotificationController::class, 'markDestinationsRead']);
+
+        // Whether anything has changed, so open screens can refresh on their own.
+        Route::get('live', [LiveController::class, 'version']);
     });
 
     /*
@@ -208,6 +220,22 @@ Route::prefix('v1')->group(function () {
             'clients/{client}/departments/{department}/employees',
             [ClientCompanyController::class, 'departmentEmployees']
         );
+
+        /*
+         * The company's own documents - its BIR registration, permits,
+         * licences - each titled by whoever uploads it. Nested under the
+         * company like departments, so another company's document does not
+         * resolve. A replacement file is a POST so it can travel as multipart.
+         */
+        Route::get('clients/{client}/documents', [ClientCompanyDocumentController::class, 'index']);
+        Route::post('clients/{client}/documents', [ClientCompanyDocumentController::class, 'store'])
+            ->middleware('throttle:company-document-upload');
+        Route::patch('clients/{client}/documents/{document}', [ClientCompanyDocumentController::class, 'update']);
+        Route::post('clients/{client}/documents/{document}/file', [ClientCompanyDocumentController::class, 'replace'])
+            ->middleware('throttle:company-document-upload');
+        Route::delete('clients/{client}/documents/{document}', [ClientCompanyDocumentController::class, 'destroy']);
+        Route::get('clients/{client}/documents/{document}/link', [ClientCompanyDocumentController::class, 'link']);
+        Route::get('clients/{client}/documents/{document}/download', [ClientCompanyDocumentController::class, 'download']);
 
         // -------------------------------------------------------- job requests
         Route::apiResource('job-requests', JobRequestController::class)
@@ -287,6 +315,14 @@ Route::prefix('v1')->group(function () {
             [RequirementController::class, 'download']
         );
 
+        // The digital Bio-Data behind the applicant's bio_data requirement:
+        // reading it (which starts its review), deciding on it, and printing
+        // a submitted version.
+        Route::get('applicants/{applicant}/bio-data', [BioDataController::class, 'show']);
+        Route::post('applicants/{applicant}/bio-data/review', [BioDataController::class, 'review']);
+        Route::get('applicants/{applicant}/bio-data/pdf', [BioDataController::class, 'pdf'])
+            ->middleware('throttle:30,1');
+
         // ------------------------------------------------------------ training
         // Before the resource routes, so "candidates" is not read as a session id.
         Route::get('trainings/candidates', [TrainingController::class, 'candidates']);
@@ -316,12 +352,23 @@ Route::prefix('v1')->group(function () {
         Route::get('attendance', [AttendanceController::class, 'summary']);
         Route::get('attendance/discrepancies', [AttendanceReviewController::class, 'index']);
         Route::get('attendance/imports', [AttendanceImportController::class, 'index']);
+        Route::get('attendance/imports/options', [AttendanceImportController::class, 'uploadOptions']);
         Route::post('attendance/imports', [AttendanceImportController::class, 'store']);
         Route::get('attendance/imports/{import}', [AttendanceImportController::class, 'show']);
         Route::post('attendance/imports/{import}/preview', [AttendanceImportController::class, 'preview']);
         Route::post('attendance/imports/{import}/confirm', [AttendanceImportController::class, 'confirm']);
         Route::post('attendance/imports/{import}/discard', [AttendanceImportController::class, 'discard']);
         Route::get('attendance/imports/{import}/file', [AttendanceImportController::class, 'file']);
+        // DTR files coordinators hand over. "import" opens the stored file in
+        // the importer above as an ordinary draft; nothing here writes attendance.
+        Route::get('attendance/dtr-submissions', [DtrSubmissionController::class, 'index']);
+        Route::get('attendance/dtr-submissions/{submission}', [DtrSubmissionController::class, 'show']);
+        Route::get('attendance/dtr-submissions/{submission}/file', [DtrSubmissionController::class, 'file']);
+        Route::post('attendance/dtr-submissions/{submission}/import', [DtrSubmissionController::class, 'import']);
+        Route::post('attendance/dtr-submissions/{submission}/decision', [DtrSubmissionController::class, 'decide']);
+        Route::get('attendance/dtr-periods', [DtrPeriodController::class, 'index']);
+        Route::get('attendance/dtr-periods/{period}', [DtrPeriodController::class, 'show']);
+        Route::post('attendance/dtr-periods/{period}/status', [DtrPeriodController::class, 'decide']);
         Route::get('attendance/exceptions', [AttendanceExceptionController::class, 'index']);
         Route::post('attendance/exceptions', [AttendanceExceptionController::class, 'store']);
         Route::post('attendance/exceptions/{exception}/void', [AttendanceExceptionController::class, 'void']);
@@ -332,6 +379,12 @@ Route::prefix('v1')->group(function () {
         Route::post('employees/{employee}/schedules', [AttendanceController::class, 'storeSchedule']);
         Route::patch('employees/{employee}/schedules/{schedule}', [AttendanceController::class, 'updateSchedule']);
         Route::post('employees/{employee}/schedules/{schedule}/void', [AttendanceController::class, 'voidSchedule']);
+        // Schedules coordinators send in. Only an approved one is compared
+        // with the DTR; approving puts it in force through the same path as
+        // HR's own entry above.
+        Route::get('attendance/schedule-submissions', [ScheduleSubmissionController::class, 'index']);
+        Route::get('attendance/schedule-submissions/{submission}', [ScheduleSubmissionController::class, 'show']);
+        Route::post('attendance/schedule-submissions/{submission}/review', [ScheduleSubmissionController::class, 'review']);
 
         // ---------------------------------------------------------- violations
         Route::get('employees/{employee}/violations', [EmployeeController::class, 'violations']);
@@ -354,11 +407,12 @@ Route::prefix('v1')->group(function () {
         Route::post('incident-reports/{report}/notes', [IncidentReportController::class, 'addNote']);
         Route::get('incident-reports/{report}/evidence', [IncidentReportController::class, 'evidence']);
 
-        // Coordinators' manpower requisitions (provisional form). Approving
-        // one creates nothing; HR records the manpower request, which links it.
+        // Coordinators' manpower requisitions. Approving one creates its
+        // manpower request; `convert` does the same for one approved before that.
         Route::get('requisitions', [ManpowerRequisitionController::class, 'index']);
         Route::get('requisitions/{requisition}', [ManpowerRequisitionController::class, 'show']);
         Route::post('requisitions/{requisition}/review', [ManpowerRequisitionController::class, 'review']);
+        Route::post('requisitions/{requisition}/convert', [ManpowerRequisitionController::class, 'convert']);
         Route::get('requisitions/{requisition}/attachment', [ManpowerRequisitionController::class, 'attachment']);
 
         // ---------------------------------------------------------- separation
@@ -367,13 +421,20 @@ Route::prefix('v1')->group(function () {
         Route::put('employees/{employee}/resignations/{resignation}', [SeparationController::class, 'updateResignation']);
         Route::post('employees/{employee}/resignations/{resignation}/complete', [SeparationController::class, 'completeResignation']);
         Route::get('employees/{employee}/resignations/{resignation}/letter', [SeparationController::class, 'resignationLetter']);
+        // A termination is two stages: HR requests it and an administrator
+        // decides the request; HR then completes the clearance and finalises
+        // it. Approval ends nobody's employment. Nothing here deletes a case.
+        Route::get('terminations/{termination}', [SeparationController::class, 'showTermination']);
         Route::post('employees/{employee}/terminations', [SeparationController::class, 'storeTermination']);
-        // Both outcomes of a termination's review. Finalising requires an
-        // explicit confirmation in the request body; withdrawing requires a
-        // reason. Neither deletes the termination.
+        Route::post('employees/{employee}/terminations/{termination}', [SeparationController::class, 'updateTermination']);
+        Route::post('employees/{employee}/terminations/{termination}/submit', [SeparationController::class, 'submitTermination']);
+        Route::post('employees/{employee}/terminations/{termination}/review', [SeparationController::class, 'reviewTermination']);
+        Route::put('employees/{employee}/terminations/{termination}/clearance-items/{item}', [SeparationController::class, 'updateClearanceItem']);
+        // Finalising requires an explicit confirmation in the request body;
+        // withdrawing requires a reason.
         Route::post('employees/{employee}/terminations/{termination}/finalise', [SeparationController::class, 'finaliseTermination']);
         Route::post('employees/{employee}/terminations/{termination}/withdraw', [SeparationController::class, 'withdrawTermination']);
-        // CDE's clearance after a finalised termination.
+        // Clearance of a termination finalised under the earlier one-step process.
         Route::put('employees/{employee}/terminations/{termination}/clearance', [SeparationController::class, 'updateTerminationClearance']);
         Route::get('employees/{employee}/terminations/{termination}/document', [SeparationController::class, 'terminationDocument']);
 
@@ -466,6 +527,24 @@ Route::prefix('v1')->group(function () {
         Route::post('requisitions/{requisition}/submit', [CoordinatorRequisitionController::class, 'submit']);
         Route::delete('requisitions/{requisition}', [CoordinatorRequisitionController::class, 'destroy']);
         Route::get('requisitions/{requisition}/attachment', [CoordinatorRequisitionController::class, 'attachment']);
+
+        // Work schedules for the client's workers, as the client gave them.
+        // Sent to HR for approval; nothing here is in force until approved.
+        Route::get('schedules', [CoordinatorScheduleController::class, 'index']);
+        Route::post('employees/{employee}/schedules', [CoordinatorScheduleController::class, 'store'])->middleware('throttle:violation-report');
+        Route::get('schedules/{submission}', [CoordinatorScheduleController::class, 'show']);
+        Route::put('schedules/{submission}', [CoordinatorScheduleController::class, 'update']);
+        Route::post('schedules/{submission}/submit', [CoordinatorScheduleController::class, 'submit']);
+        Route::post('schedules/{submission}/withdraw', [CoordinatorScheduleController::class, 'withdraw']);
+
+        // The client's DTR files, handed over to HR. HR imports them; the
+        // coordinator never does.
+        Route::get('dtr-submissions/options', [CoordinatorDtrSubmissionController::class, 'options']);
+        Route::get('dtr-submissions', [CoordinatorDtrSubmissionController::class, 'index']);
+        Route::post('dtr-submissions', [CoordinatorDtrSubmissionController::class, 'store'])->middleware('throttle:violation-report');
+        Route::get('dtr-submissions/{submission}', [CoordinatorDtrSubmissionController::class, 'show']);
+        Route::get('dtr-submissions/{submission}/file', [CoordinatorDtrSubmissionController::class, 'file']);
+        Route::post('dtr-submissions/{submission}/resubmit', [CoordinatorDtrSubmissionController::class, 'resubmit'])->middleware('throttle:violation-report');
     });
 
     /*
@@ -498,6 +577,14 @@ Route::prefix('v1')->group(function () {
         Route::get('profile', [PortalController::class, 'profile']);
         Route::patch('profile', [PortalController::class, 'updateProfile']);
 
+        // The applicant's own digital Bio-Data. A draft is theirs alone; a
+        // submission lands as "submitted" and only HR can verify it.
+        Route::get('bio-data', [PortalBioDataController::class, 'show']);
+        Route::put('bio-data/draft', [PortalBioDataController::class, 'saveDraft']);
+        Route::post('bio-data/submit', [PortalBioDataController::class, 'submit']);
+        Route::get('bio-data/pdf', [PortalBioDataController::class, 'pdf'])
+            ->middleware('throttle:30,1');
+
         // The applicant's own picture. No identifier in the URL: it is always
         // the signed-in applicant's, like everything else under /portal.
         Route::post('profile/photo', [PortalController::class, 'uploadPhoto'])
@@ -508,9 +595,13 @@ Route::prefix('v1')->group(function () {
         // approval and the agency's decision are still separate acts.
         Route::post('placement-response', [PortalController::class, 'respondToPlacement']);
 
-        // The applicant's own training sessions. Read-only: attendance and
-        // completion are recorded by HR on the staff Training screen.
+        // The applicant's own training sessions. Attendance and completion are
+        // recorded by HR on the staff Training screen; the applicant can only
+        // tell the office they will attend, and only for their own enrolment.
         Route::get('training', [PortalController::class, 'training']);
+        Route::post('training/{enrollment}/confirm', [PortalController::class, 'confirmTraining'])
+            ->whereNumber('enrollment')
+            ->middleware('throttle:30,1');
 
         Route::get('employment', [PortalController::class, 'employment']);
 

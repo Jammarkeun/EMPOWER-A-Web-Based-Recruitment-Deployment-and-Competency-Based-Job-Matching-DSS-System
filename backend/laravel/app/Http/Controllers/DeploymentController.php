@@ -28,18 +28,30 @@ class DeploymentController extends Controller
             'deployment_status' => ['nullable', Rule::in(Deployment::STATUSES)],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
+            'search' => ['nullable', 'string', 'max:120'],
+            'sort_dir' => ['nullable', Rule::in(['asc', 'desc'])],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
         ]);
 
+        // By deployment date, newest first unless asked otherwise; the id
+        // breaks ties so a page never repeats or skips a placement.
+        $direction = $filters['sort_dir'] ?? 'desc';
+
         $deployments = Deployment::query()
             ->with(['employee.applicant', 'company', 'department'])
+            // The deployment's code, or the employee's number or name.
+            ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(fn ($any) => $any
+                ->whereContains('deployment_code', $v)
+                ->orWhereHas('employee', fn ($e) => $e
+                    ->whereContains('employee_number', $v)
+                    ->orWhereHas('applicant', fn ($a) => $a->search($v)))))
             ->when($filters['client_company_id'] ?? null, fn ($q, $v) => $q->where('client_company_id', $v))
             ->when($filters['client_department_id'] ?? null, fn ($q, $v) => $q->where('client_department_id', $v))
             ->when($filters['deployment_status'] ?? null, fn ($q, $v) => $q->where('deployment_status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('deployment_date', '<=', $v))
-            ->orderByDesc('deployment_date')
-            ->orderByDesc('id')
+            ->orderBy('deployment_date', $direction)
+            ->orderBy('id', $direction)
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated(DeploymentResource::collection($deployments), 'Deployments retrieved');

@@ -11,10 +11,11 @@ import { Button } from '@/components/ui/button'
 import { Input, NumberInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { Field, FormGrid } from '@/components/ui/form'
+import { Field, FormGrid, useFocusFirstError } from '@/components/ui/form'
 import { LoadingState, ErrorState } from '@/components/ui/states'
 import { LogoMark } from '@/components/Logo'
 import ConfirmActionDialog from '@/components/ConfirmActionDialog'
+import { useLeavePageWarning } from '@/components/UnsavedChanges'
 import {
   ProvisionalFormNotice,
   RequisitionDetails,
@@ -136,9 +137,13 @@ function RequisitionForm({ existing, options, onSaved }) {
     client_department_id: existing?.client_department_id ? String(existing.client_department_id) : '',
   }))
   const [errors, setErrors] = React.useState({})
+  const [formRef, focusFirstError] = useFocusFirstError()
   const [saving, setSaving] = React.useState(null)
   const [confirmSubmit, setConfirmSubmit] = React.useState(false)
   const [confirmDiscard, setConfirmDiscard] = React.useState(false)
+  // What was last saved, so closing the tab on unsaved entries asks first.
+  const [savedForm, setSavedForm] = React.useState(form)
+  useLeavePageWarning(JSON.stringify(form) !== JSON.stringify(savedForm))
 
   const set = (key) => (event) => setForm((f) => ({ ...f, [key]: event.target.value }))
   const positionPicked = form.job_position_id && form.job_position_id !== 'new'
@@ -151,6 +156,7 @@ function RequisitionForm({ existing, options, onSaved }) {
     setErrors(found)
     if (Object.keys(found).length) {
       toast.error('Some fields need attention', 'Check the fields marked below.')
+      focusFirstError()
       return false
     }
     return true
@@ -185,13 +191,16 @@ function RequisitionForm({ existing, options, onSaved }) {
       const response = await post(existing ? `/coordinator/requisitions/${existing.id}` : '/coordinator/requisitions', body)
       toast.success(response.message, submit ? 'HR has been notified.' : 'You can come back to it before submitting.')
       setConfirmSubmit(false)
+      setSavedForm(form)
 
       if (existing) onSaved()
       else navigate(`/coordinator/requisitions/${response.data.id}`, { replace: true })
     } catch (error) {
       setConfirmSubmit(false)
-      if (error.isValidation) setErrors(error.errors)
-      else toast.error('Could not save the requisition', error.message)
+      if (error.isValidation) {
+        setErrors(error.errors)
+        focusFirstError()
+      } else toast.error('Could not save the requisition', error.message)
     } finally {
       setSaving(null)
     }
@@ -210,7 +219,7 @@ function RequisitionForm({ existing, options, onSaved }) {
   const err = (key) => errors[key]?.[0]
 
   return (
-    <div className="space-y-5">
+    <div ref={formRef} className="space-y-5">
       <PageHeader
         breadcrumbs={[
           { label: 'Manpower Requisitions', to: '/coordinator/requisitions' },

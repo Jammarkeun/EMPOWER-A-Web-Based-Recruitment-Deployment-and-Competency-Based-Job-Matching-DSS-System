@@ -1,0 +1,8 @@
+"Biometric No.","Employee Name",Date,"Time In","Time Out",Remarks
+90001,"DIZON, ALMA",2026-10-19,07:52,17:03,"TEST: same as on file"
+90001,"DIZON, ALMA",2026-10-20,08:05,17:00,"TEST: differs from file"
+90001,"DIZON, ALMA",2026-10-26,08:00,17:00,"TEST: new day"
+90003,"MENDOZA, CARLA",2026-10-26,07:00,16:00,"TEST: listed twice, same times"
+90003,"MENDOZA, CARLA",2026-10-26,07:00,16:00,"TEST: listed twice, same times"
+90003,"MENDOZA, CARLA",2026-10-27,07:00,16:00,"TEST: listed twice, different times"
+90003,"MENDOZA, CARLA",2026-10-27,07:30,16:00,"TEST: listed twice, different times"

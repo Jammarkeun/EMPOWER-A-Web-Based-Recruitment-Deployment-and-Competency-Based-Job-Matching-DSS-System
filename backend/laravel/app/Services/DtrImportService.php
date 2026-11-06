@@ -2,9 +2,9 @@
 
 namespace App\Services;
 
-use App\Models\AttendanceCoveragePeriod;
 use App\Models\AttendanceImport;
 use App\Models\AttendanceRecord;
+use App\Models\ClientCompany;
 use App\Models\Deployment;
 use App\Models\Employee;
 use App\Models\User;
@@ -15,6 +15,7 @@ use DateTimeImmutable;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
 /**
@@ -34,6 +35,11 @@ use RuntimeException;
  * and says why. Every row's outcome is kept with the import: what was
  * imported, what was already on file, what disagreed with the DTR on file, and
  * what could not be matched to an employee at this client.
+ *
+ * Each file is filed under a DTR period (DtrPeriodService). Importing it does
+ * not say the client's DTR for those days is complete - a client may send a
+ * cutoff in parts - so days with nothing on file stay "Awaiting DTR" until HR
+ * confirms the period.
  */
 class DtrImportService
 {
@@ -84,6 +90,13 @@ class DtrImportService
         'conflicting_in_file',
     ];
 
+    /** How the preview totals group the row outcomes. */
+    public const SUMMARY_GROUPS = [
+        'unmatched_employees' => ['unmatched_employee', 'ambiguous_identifier', 'not_at_client', 'name_mismatch'],
+        'duplicates' => ['duplicate_in_file', 'conflicting_in_file'],
+        'outside_period' => ['outside_period'],
+    ];
+
     /** Rows kept with an import's results, so one huge file cannot bloat it. */
     private const RESULT_ROW_LIMIT = 2000;
 
@@ -93,16 +106,110 @@ class DtrImportService
         private readonly DtrFileReader $reader,
         private readonly AuditService $audit,
         private readonly ReferenceCodeService $codes,
+        private readonly DtrPeriodService $periods,
     ) {
+    }
+
+    /**
+     * Clients a DTR can be imported for: those with workers placed with them
+     * at some point, since a file for any other client could only be refused
+     * row by row. Everyone holding attendance.manage works across every
+     * client - the agency has no per-client HR assignment - so the user does
+     * not narrow it further; when one is introduced, it belongs here, and the
+     * upload is checked against this same list.
+     */
+    public function importableClients(User $user)
+    {
+        return ClientCompany::query()
+            ->whereHas('deployments')
+            ->withCount(['deployments as placed_now' => fn ($q) => $q->active()])
+            ->orderBy('company_name')
+            ->orderBy('id')
+            ->get(['id', 'company_name', 'status']);
     }
 
     // ------------------------------------------------------------- uploading
 
+    /**
+     * What an uploaded DTR file and its period must satisfy, whoever uploads
+     * it: HR importing directly, or a coordinator handing the client's file
+     * over. The client rule is the caller's, since who may choose which
+     * client differs between them.
+     */
+    public static function uploadRules(): array
+    {
+        $maxKb = (int) config('empower.attendance.import_max_kb', 5120);
+
+        return [
+            'file' => ['required', 'file', 'max:'.$maxKb, 'extensions:'.implode(',', DtrFileReader::EXTENSIONS), 'mimes:'.implode(',', DtrFileReader::EXTENSIONS)],
+            'period_from' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
+            'period_to' => ['required', 'date_format:Y-m-d', 'after_or_equal:period_from', 'before_or_equal:today'],
+            'source_note' => ['nullable', 'string', 'max:500'],
+        ];
+    }
+
+    public static function uploadMessages(): array
+    {
+        return [
+            'file.required' => 'Choose the DTR file to upload.',
+            'file.extensions' => 'Only CSV and Excel (.csv, .xlsx, .xls) files can be imported.',
+            'file.mimes' => 'The contents of the file are not a CSV or an Excel workbook, whatever its name.',
+            'file.max' => sprintf('The file is larger than %d MB. Split it by period and import each part.', intdiv((int) config('empower.attendance.import_max_kb', 5120), 1024)),
+            'period_from.required' => 'Enter the first day the DTR covers.',
+            'period_to.required' => 'Enter the last day the DTR covers.',
+            'period_from.date_format' => 'Enter the date as YYYY-MM-DD.',
+            'period_to.date_format' => 'Enter the date as YYYY-MM-DD.',
+            'period_from.before_or_equal' => 'A DTR can only cover days that are already over.',
+            'period_to.before_or_equal' => 'A DTR can only cover days that are already over.',
+            'period_to.after_or_equal' => 'The last day cannot be before the first day.',
+        ];
+    }
+
+    /** One file covers at most MAX_PERIOD_DAYS days. */
+    public static function assertPeriodLength(string $from, string $to): void
+    {
+        $days = (int) CarbonImmutable::parse($from)->diffInDays(CarbonImmutable::parse($to)) + 1;
+
+        if ($days > AttendanceService::MAX_PERIOD_DAYS) {
+            throw ValidationException::withMessages([
+                'period_to' => sprintf('A DTR file can cover at most %d days; this one says %d. Split a longer DTR into parts.', AttendanceService::MAX_PERIOD_DAYS, $days),
+            ]);
+        }
+    }
+
+    /**
+     * Opens and checks a DTR file before anything is stored: its bytes match
+     * its name, and it can be read as rows. Shared with the coordinator's DTR
+     * submission, so a file handed over is held to exactly the rules of one
+     * HR uploads.
+     *
+     * @return array{extension: string, contents: string, hash: string, rows: array}
+     */
+    public function checkFile(UploadedFile $file): array
+    {
+        $extension = strtolower($file->getClientOriginalExtension());
+        $contents = (string) file_get_contents($file->getRealPath());
+
+        $this->assertContentMatchesExtension($contents, $extension);
+
+        return [
+            'extension' => $extension,
+            'contents' => $contents,
+            'hash' => hash('sha256', $contents),
+            'rows' => $this->reader->read($contents, $extension, $this->maxRows()),
+        ];
+    }
+
+    /**
+     * @param  array{client_company_id: int, period_from: string, period_to: string, source_note?: ?string, dtr_submission_id?: ?int}  $data
+     */
     public function upload(UploadedFile $file, array $data, User $actor): AttendanceImport
     {
         $extension = strtolower($file->getClientOriginalExtension());
         $contents = (string) file_get_contents($file->getRealPath());
         $hash = hash('sha256', $contents);
+
+        $this->assertContentMatchesExtension($contents, $extension);
 
         $this->assertNotAlreadyImported($hash);
 
@@ -119,29 +226,73 @@ class DtrImportService
         $rows = $this->reader->read($contents, $extension, $this->maxRows());
         $stored = $this->storage->storeChecked($file, 'attendance-imports', (int) $data['client_company_id'], $extension);
 
-        $import = DB::transaction(fn () => AttendanceImport::create([
-            'import_code' => $this->codes->attendanceImport(),
-            'client_company_id' => $data['client_company_id'],
-            'period_from' => $data['period_from'],
-            'period_to' => $data['period_to'],
-            'source_note' => $data['source_note'] ?? null,
-            'original_filename' => $stored['file_name'] ?: 'dtr.'.$extension,
-            'file_disk' => (string) config('empower.uploads.disk'),
-            'file_path' => $stored['file_path'],
-            'file_hash' => $hash,
-            'file_size_bytes' => (int) $stored['file_size_bytes'],
-            'status' => 'draft',
-            'total_rows' => max(0, count($rows) - 1),
-            'uploaded_by' => $actor->id,
-        ]));
+        try {
+            $import = DB::transaction(fn () => AttendanceImport::create([
+                'import_code' => $this->codes->attendanceImport(),
+                'client_company_id' => $data['client_company_id'],
+                // Filed under the client's DTR period for these days, which
+                // may refuse it if HR has already confirmed that period.
+                'attendance_dtr_period_id' => $this->periods->forUpload(
+                    (int) $data['client_company_id'],
+                    CarbonImmutable::parse($data['period_from'])->startOfDay(),
+                    CarbonImmutable::parse($data['period_to'])->startOfDay(),
+                    $actor,
+                )->id,
+                'period_from' => $data['period_from'],
+                'period_to' => $data['period_to'],
+                'source_note' => $data['source_note'] ?? null,
+                'dtr_submission_id' => $data['dtr_submission_id'] ?? null,
+                'original_filename' => $stored['file_name'] ?: 'dtr.'.$extension,
+                'file_disk' => (string) config('empower.uploads.disk'),
+                'file_path' => $stored['file_path'],
+                'file_hash' => $hash,
+                'file_size_bytes' => (int) $stored['file_size_bytes'],
+                'status' => 'draft',
+                'total_rows' => max(0, count($rows) - 1),
+                'uploaded_by' => $actor->id,
+            ]));
+        } catch (\Throwable $e) {
+            // Nothing refers to the stored copy if the record was never made.
+            $this->storage->delete($stored['file_path']);
+
+            throw $e;
+        }
 
         $this->audit->record('upload', 'attendance', AttendanceImport::class, $import->id, null, [
             'import_code' => $import->import_code,
             'file' => $import->original_filename,
             'period' => $import->period_from->toDateString().' to '.$import->period_to->toDateString(),
+            'source_note' => $import->source_note,
+            'dtr_period_id' => $import->attendance_dtr_period_id,
+            'dtr_submission_id' => $import->dtr_submission_id,
         ], clientCompanyId: $import->client_company_id);
 
         return $import;
+    }
+
+    /**
+     * The bytes have to be what the name says. The name decides how the file
+     * is read, so a workbook renamed .csv would otherwise be read as text.
+     */
+    private function assertContentMatchesExtension(string $contents, string $extension): void
+    {
+        $zip = str_starts_with($contents, "PK\x03\x04");
+        $ole = str_starts_with($contents, "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1");
+
+        $ok = match ($extension) {
+            'xlsx' => $zip,
+            'xls' => $ole,
+            'csv', 'txt' => ! $zip && ! $ole && ! str_contains(substr($contents, 0, 65536), "\0"),
+            default => false,
+        };
+
+        if (! $ok) {
+            throw new RuntimeException(match ($extension) {
+                'xlsx' => 'This file is not an .xlsx workbook, whatever its name. Open it in Excel and save it again as .xlsx or .csv.',
+                'xls' => 'This file is not an Excel 97-2003 (.xls) workbook, whatever its name. Open it in Excel and save it again as .xlsx or .csv.',
+                default => 'This file is not plain text, so it cannot be read as a CSV. If it is an Excel workbook, upload it with its .xlsx or .xls name.',
+            }, 422);
+        }
     }
 
     /**
@@ -210,6 +361,7 @@ class DtrImportService
             }
 
             $this->assertNotAlreadyImported($import->file_hash, $import->id);
+            $this->periods->assertImportable($import);
 
             // Checked again rather than trusted from the preview: the DTR on
             // file may have changed since.
@@ -217,7 +369,7 @@ class DtrImportService
             $counts = ['imported' => 0, 'replaced' => 0, 'unchanged' => 0, 'skipped' => 0, 'errors' => 0];
             $outcomes = [];
 
-            if ($analysis['counts']['new'] === 0 && ! ($replace && $analysis['counts']['conflict'] > 0) && $analysis['covered'] === []) {
+            if ($analysis['counts']['new'] === 0 && ! ($replace && $analysis['counts']['conflict'] > 0) && $analysis['in_file'] === []) {
                 throw new RuntimeException('Nothing in this file can be imported. Check the column choices and the rows marked as problems.', 422);
             }
 
@@ -270,25 +422,9 @@ class DtrImportService
                 $outcomes[] = $row;
             }
 
-            [$today, $from, $to] = [CarbonImmutable::today(), $import->period_from, $import->period_to];
-
-            foreach ($analysis['covered'] as $employeeId) {
-                [$first, $last] = $this->attendance->employmentWindow($analysis['employees'][$employeeId]);
-                $start = $first && $from->lessThan($first) ? $first : CarbonImmutable::parse($from);
-                $end = $last && $to->greaterThan($last) ? $last : CarbonImmutable::parse($to);
-                $end = $end->greaterThan($today) ? $today : $end;
-
-                if ($end->greaterThanOrEqualTo($start)) {
-                    AttendanceCoveragePeriod::create([
-                        'employee_id' => $employeeId,
-                        'period_from' => $start->toDateString(),
-                        'period_to' => $end->toDateString(),
-                        'attendance_import_id' => $import->id,
-                        'declared_by' => $actor->id,
-                    ]);
-                }
-            }
-
+            // No coverage is declared here. Whether the client's DTR for the
+            // period is now complete is HR's call on the DTR period, not a
+            // side effect of one file going in.
             $import->update([
                 'status' => 'completed',
                 'imported_rows' => $counts['imported'],
@@ -302,7 +438,8 @@ class DtrImportService
                     'rows' => array_map([$this, 'publicRow'], array_slice($outcomes, 0, self::RESULT_ROW_LIMIT)),
                     'rows_truncated' => count($outcomes) > self::RESULT_ROW_LIMIT,
                     'employees_without_rows' => $analysis['employees_without_rows'],
-                    'covered_employees' => count($analysis['covered']),
+                    'employees_in_file' => count($analysis['in_file']),
+                    'summary' => $this->summary($analysis),
                 ],
                 'completed_by' => $actor->id,
                 'completed_at' => now(),
@@ -317,6 +454,14 @@ class DtrImportService
                 'errors' => $counts['errors'],
                 'replace_reason' => $replace ? $reason : null,
             ], clientCompanyId: $import->client_company_id);
+
+            $this->periods->afterImport($import, $actor);
+
+            // Inside the same transaction: a submission is "imported" only
+            // if this import actually completed.
+            if ($import->dtr_submission_id) {
+                app(DtrSubmissionService::class)->imported($import, $actor);
+            }
 
             return $import;
         });
@@ -338,10 +483,14 @@ class DtrImportService
             'import_code' => $import->import_code,
         ], clientCompanyId: $import->client_company_id, actor: $actor);
 
+        if ($import->dtr_submission_id) {
+            app(DtrSubmissionService::class)->draftDiscarded($import, $actor);
+        }
+
         return $import;
     }
 
-    private function assertNotAlreadyImported(string $hash, ?int $exceptId = null): void
+    public function assertNotAlreadyImported(string $hash, ?int $exceptId = null): void
     {
         $previous = AttendanceImport::with('uploader')
             ->where('file_hash', $hash)
@@ -434,7 +583,8 @@ class DtrImportService
         $results = $this->markDuplicates($results);
         $results = $this->explainUnmatched($results, $column);
 
-        $covered = collect($results)
+        // Employees the file has usable rows for.
+        $inFile = collect($results)
             ->whereIn('status', ['new', 'unchanged', 'conflict', 'duplicate_in_file'])
             ->pluck('employee_id')->unique()->values()->all();
 
@@ -447,9 +597,8 @@ class DtrImportService
         return [
             'rows' => $results,
             'counts' => $counts,
-            'covered' => $covered,
-            'employees' => $candidates->all(),
-            'employees_without_rows' => $candidates->except($covered)
+            'in_file' => $inFile,
+            'employees_without_rows' => $candidates->except($inFile)
                 ->filter(fn (Employee $e) => $this->placedDuring($context, $e->id, $companyId, $from, $to))
                 ->map(fn (Employee $e) => ['employee_number' => $e->employee_number, 'full_name' => $e->full_name])
                 ->sortBy('employee_number')->values()->all(),
@@ -764,10 +913,14 @@ class DtrImportService
             }
         }
 
+        if ($mapping['time_in_column'] === $mapping['time_out_column']) {
+            throw new RuntimeException('Time in and time out cannot be the same column. A file with one time per row is a raw punch log (one row per punch), which this import does not support: ask the client for the DTR summary with a time-in and a time-out per day.', 422);
+        }
+
         $used = array_filter(array_intersect_key($mapping, array_flip($columns)), fn ($v) => $v !== null);
 
         if (count($used) !== count(array_unique($used))) {
-            throw new RuntimeException('Each column can be used for only one thing.', 422);
+            throw new RuntimeException('Each column can be used for only one thing. Two of the choices point at the same column.', 422);
         }
 
         return [
@@ -886,11 +1039,45 @@ class DtrImportService
             'counts' => $analysis['counts'],
             'ready' => $ready->count(),
             'errors' => $others->whereIn('status', self::ERRORS)->count(),
+            'summary' => $this->summary($analysis),
             'rows' => $others->take(self::RESULT_ROW_LIMIT)->concat($ready->take(200))
                 ->sortBy('line')->map(fn ($r) => $this->publicRow($r))->values()->all(),
             'rows_truncated' => $others->count() > self::RESULT_ROW_LIMIT || $ready->count() > 200,
-            'covered_employees' => count($analysis['covered']),
+            'employees_in_file' => count($analysis['in_file']),
             'employees_without_rows' => $analysis['employees_without_rows'],
+        ];
+    }
+
+    /**
+     * The totals HR reads before deciding: how many rows, how many usable,
+     * and why the rest are not.
+     */
+    private function summary(array $analysis): array
+    {
+        $rows = collect($analysis['rows']);
+        $counts = $analysis['counts'];
+        $group = fn (array $statuses) => array_sum(array_intersect_key($counts, array_flip($statuses)));
+        $dates = $rows->pluck('work_date')->filter()->sort()->values();
+
+        // One time per row, the same employee and day several times: a raw
+        // punch log mapped as if it were a daily DTR.
+        $punchLike = $rows->where('status', 'conflicting_in_file')
+            ->filter(fn ($r) => ($r['_in'] === null) !== ($r['_out'] === null))
+            ->count();
+
+        return [
+            'total_rows' => $rows->count(),
+            'valid_rows' => $counts['new'] + $counts['unchanged'] + $counts['conflict'],
+            'ready_rows' => $counts['new'],
+            'invalid_rows' => $group(self::ERRORS),
+            'skipped_rows' => $counts['blank_times'] + $counts['duplicate_in_file'],
+        ] + array_map($group, self::SUMMARY_GROUPS) + [
+            'dates_in_file' => $dates->isEmpty() ? null : ['from' => $dates->first(), 'to' => $dates->last()],
+            'punch_log_suspected' => $punchLike >= 2 && $punchLike * 2 >= $rows->count() - $counts['blank_times'],
+            'reasons' => collect(self::ERRORS)
+                ->filter(fn ($s) => $counts[$s] > 0)
+                ->map(fn ($s) => ['status' => $s, 'label' => self::ROW_LABELS[$s], 'rows' => $counts[$s]])
+                ->values()->all(),
         ];
     }
 

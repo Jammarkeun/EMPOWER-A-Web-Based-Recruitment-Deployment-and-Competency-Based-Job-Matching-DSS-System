@@ -233,6 +233,6 @@ class CoordinatorRequisitionController extends Controller
 
     private function loaded(ManpowerRequisition $requisition): ManpowerRequisition
     {
-        return $requisition->load(['company', 'department', 'requester', 'reviewer', 'jobRequest', 'history.changedBy']);
+        return $requisition->load(['company', 'department', 'requester', 'reviewer', 'jobRequest.department', 'history.changedBy']);
     }
 }

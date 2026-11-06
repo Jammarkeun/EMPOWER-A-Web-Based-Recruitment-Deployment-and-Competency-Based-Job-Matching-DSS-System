@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\DocumentCompliance;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -199,5 +200,23 @@ class Employee extends Model
     public function scopeCurrentlyDeployed(Builder $query): Builder
     {
         return $query->active()->whereHas('deployments', fn (Builder $deployment) => $deployment->active());
+    }
+
+    /**
+     * Employed, with an annual medical or health card (a type renewed while
+     * employed) that has lapsed - the dashboard's "renewals overdue" people.
+     * Informational: nothing about the employment changes.
+     */
+    public function scopeRenewalOverdue(Builder $query): Builder
+    {
+        return $query->whereHas('applicant', fn (Builder $applicant) => $applicant
+            ->whereIn('current_status', DocumentCompliance::EMPLOYED_STATUSES)
+            ->whereHas('requirements', fn (Builder $requirement) => $requirement->renewalOverdue()));
+    }
+
+    /** With at least one violation still open, under review, or escalated. */
+    public function scopeWithOpenViolations(Builder $query): Builder
+    {
+        return $query->whereHas('violations', fn (Builder $violation) => $violation->open());
     }
 }

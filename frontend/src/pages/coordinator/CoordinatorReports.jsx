@@ -122,7 +122,7 @@ export default function CoordinatorReports() {
                     <ReportStatus status={report.status} label={report.status_label} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/coordinator/reports/${report.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/coordinator/reports/${report.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open report ${report.report_code}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

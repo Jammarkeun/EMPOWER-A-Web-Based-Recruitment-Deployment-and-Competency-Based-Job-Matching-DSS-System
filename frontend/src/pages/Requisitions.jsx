@@ -55,7 +55,7 @@ export default function Requisitions() {
     <div className="space-y-4">
       <PageHeader
         title="Manpower Requisitions"
-        description="Requests for people that coordinators filed from client sites on CDE's Manpower Requisition Form. Approve one, then record it as a manpower request to start recruiting."
+        description="Requests for people that coordinators filed from client sites on CDE's Manpower Requisition Form. Approving one creates its manpower request automatically."
       />
 
       <FilterToolbar
@@ -117,7 +117,14 @@ export default function Requisitions() {
             <TableBody>
               {data.map((r) => (
                 <TableRow key={r.id} className="group">
-                  <TableCell>
+                  <TableCell className="relative">
+                    {r.is_new && (
+                      <span
+                        className="absolute left-1.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-navy-900"
+                        title="New — not opened by HR yet"
+                        aria-label="New"
+                      />
+                    )}
                     <Link to={`/requisitions/${r.id}`} className="block">
                       <p className="font-mono text-sm font-semibold group-hover:text-brand">{r.requisition_code}</p>
                       <p className="text-xs text-muted-foreground">
@@ -141,7 +148,7 @@ export default function Requisitions() {
                     <ReportStatus status={r.status} label={r.status_label} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link to={`/requisitions/${r.id}`} className="text-muted-foreground group-hover:text-brand">
+                    <Link to={`/requisitions/${r.id}`} className="text-muted-foreground group-hover:text-brand" aria-label={`Open requisition ${r.requisition_code}`}>
                       <ChevronRight className="h-4 w-4" />
                     </Link>
                   </TableCell>

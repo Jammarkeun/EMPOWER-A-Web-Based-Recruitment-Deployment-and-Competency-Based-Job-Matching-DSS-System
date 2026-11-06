@@ -15,12 +15,15 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input, MobileInput, NameInput } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { Field, FormGrid } from '@/components/ui/form'
+import { Field, FormGrid, useFocusFirstError } from '@/components/ui/form'
 import { todayISO } from '@/lib/utils'
 import { formProblems, latestBirthDate } from '@/lib/validation'
 import { READABLE_ACCEPT } from '@/lib/uploads'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
 
-const EMPTY = {
+// A function, not a constant: today's date is read at opening, so a tab left
+// open overnight does not default to yesterday.
+const emptyForm = () => ({
   source_channel: 'walk_in',
   first_name: '',
   middle_name: '',
@@ -32,7 +35,7 @@ const EMPTY = {
   present_address: '',
   preferred_position_id: '',
   application_date: todayISO(),
-}
+})
 
 /**
  * Registration form for a new applicant.
@@ -43,11 +46,14 @@ const EMPTY = {
  * created at all.
  */
 export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
-  const [form, setForm] = React.useState(EMPTY)
+  const [form, setForm] = React.useState(emptyForm)
   const [errors, setErrors] = React.useState({})
+  const [formRef, focusFirstError] = useFocusFirstError()
   const [submitting, setSubmitting] = React.useState(false)
   const toast = useToast()
   const navigate = useNavigate()
+  const { guard, prompt } = useUnsavedChanges(open && JSON.stringify(form) !== JSON.stringify(emptyForm()))
+  const close = guard(onOpenChange)
 
   // Document reading state. `scanned` records which fields came from a document
   // and how confident the reading was, so the form can mark them for checking.
@@ -62,7 +68,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
 
   React.useEffect(() => {
     if (open) {
-      setForm(EMPTY)
+      setForm(emptyForm())
       setErrors({})
       setScanned({})
       setScanMeta(null)
@@ -158,7 +164,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
     // Named beside the field before sending; the server checks again.
     const problems = formProblems(form, { mobiles: ['contact_number'], names: ['first_name', 'middle_name', 'last_name'] })
     setErrors(problems)
-    if (Object.keys(problems).length) return
+    if (Object.keys(problems).length) return focusFirstError()
 
     setSubmitting(true)
 
@@ -180,6 +186,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
     } catch (error) {
       if (error.isValidation) {
         setErrors(error.errors)
+        focusFirstError()
         toast.error('Please check the form', 'Some fields need correcting.')
       } else {
         toast.error('Could not register applicant', error.message)
@@ -190,8 +197,9 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !submitting && close(next)}>
       <DialogContent className="max-w-2xl">
+        {prompt}
         <DialogHeader>
           <DialogTitle>Register applicant</DialogTitle>
           <DialogDescription>
@@ -213,7 +221,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
           />
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <form ref={formRef} onSubmit={handleSubmit} className="space-y-4" noValidate>
           <FormGrid>
             <Field
               label="First name"
@@ -324,7 +332,7 @@ export default function NewApplicantDialog({ open, onOpenChange, onCreated }) {
           </FormGrid>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            <Button type="button" variant="outline" onClick={() => close(false)} disabled={submitting}>
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>

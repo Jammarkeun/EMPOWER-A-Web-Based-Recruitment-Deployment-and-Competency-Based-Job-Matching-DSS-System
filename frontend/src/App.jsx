@@ -4,6 +4,7 @@ import { Loader2, ShieldAlert } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { homePathFor } from '@/lib/utils'
 import { NotificationsProvider } from '@/contexts/NotificationsContext'
+import { LiveUpdatesProvider } from '@/contexts/LiveUpdatesContext'
 import { Button } from '@/components/ui/button'
 import SessionTimeout from '@/components/SessionTimeout'
 
@@ -30,12 +31,13 @@ const JobRequestDetail = React.lazy(() => import('@/pages/JobRequestDetail'))
 const Clients = React.lazy(() => import('@/pages/Clients'))
 const ClientDetail = React.lazy(() => import('@/pages/ClientDetail'))
 const DepartmentDetail = React.lazy(() => import('@/pages/DepartmentDetail'))
-const Employees = React.lazy(() => import('@/pages/Employees'))
+const Employees = React.lazy(() => import('@/pages/Employees'))       
 const EmployeeDetail = React.lazy(() => import('@/pages/EmployeeDetail'))
 const Deployments = React.lazy(() => import('@/pages/Deployments'))
 const Trainings = React.lazy(() => import('@/pages/Trainings'))
 const TrainingDetail = React.lazy(() => import('@/pages/TrainingDetail'))
 const Separations = React.lazy(() => import('@/pages/Separations'))
+const TerminationCase = React.lazy(() => import('@/pages/TerminationCase'))
 const Archives = React.lazy(() => import('@/pages/Archives'))
 const Retention = React.lazy(() => import('@/pages/Retention'))
 const AuditLogs = React.lazy(() => import('@/pages/AuditLogs'))
@@ -56,6 +58,10 @@ const CoordinatorIncidents = React.lazy(() => import('@/pages/coordinator/Coordi
 const CoordinatorIncident = React.lazy(() => import('@/pages/coordinator/CoordinatorIncident'))
 const CoordinatorRequisitions = React.lazy(() => import('@/pages/coordinator/CoordinatorRequisitions'))
 const CoordinatorRequisition = React.lazy(() => import('@/pages/coordinator/CoordinatorRequisition'))
+const CoordinatorSchedules = React.lazy(() => import('@/pages/coordinator/CoordinatorSchedules'))
+const CoordinatorSchedule = React.lazy(() => import('@/pages/coordinator/CoordinatorSchedule'))
+const CoordinatorDtrSubmissions = React.lazy(() => import('@/pages/coordinator/CoordinatorDtrSubmissions'))
+const CoordinatorDtrSubmission = React.lazy(() => import('@/pages/coordinator/CoordinatorDtrSubmission'))
 const IncidentReports = React.lazy(() => import('@/pages/IncidentReports'))
 const IncidentReportDetail = React.lazy(() => import('@/pages/IncidentReportDetail'))
 const Requisitions = React.lazy(() => import('@/pages/Requisitions'))
@@ -67,6 +73,7 @@ const Settings = React.lazy(() => import('@/pages/Settings'))
 const PortalLayout = React.lazy(() => import('@/pages/portal/PortalLayout'))
 const PortalOverview = React.lazy(() => import('@/pages/portal/PortalOverview'))
 const PortalDocuments = React.lazy(() => import('@/pages/portal/PortalDocuments'))
+const PortalBioData = React.lazy(() => import('@/pages/portal/PortalBioData'))
 const PortalTraining = React.lazy(() => import('@/pages/portal/PortalTraining'))
 const PortalEmployment = React.lazy(() => import('@/pages/portal/PortalEmployment'))
 const PortalProfile = React.lazy(() => import('@/pages/portal/PortalProfile'))
@@ -94,6 +101,7 @@ export default function App() {
      * regardless of how many badges are displayed. Disabled while signed out,
      * because an unauthenticated poll would be a 401 a minute.
      */
+    <LiveUpdatesProvider enabled={isAuthenticated && !user?.must_change_password}>
     <NotificationsProvider enabled={isAuthenticated && !user?.must_change_password}>
     {/* Warns before a sign-in ends and signs out cleanly once it has. Here
         rather than in a layout so it covers every signed-in page, the
@@ -143,6 +151,7 @@ export default function App() {
       >
         <Route index element={<PortalOverview />} />
         <Route path="documents" element={<PortalDocuments />} />
+        <Route path="bio-data" element={<PortalBioData />} />
         <Route path="training" element={<PortalTraining />} />
         <Route path="employment" element={<PortalEmployment />} />
         <Route path="profile" element={<PortalProfile />} />
@@ -180,6 +189,11 @@ export default function App() {
         <Route path="/coordinator/requisitions" element={<Guard permission="coordination.access"><CoordinatorRequisitions /></Guard>} />
         <Route path="/coordinator/requisitions/new" element={<Guard permission="coordination.access"><CoordinatorRequisition /></Guard>} />
         <Route path="/coordinator/requisitions/:id" element={<Guard permission="coordination.access"><CoordinatorRequisition /></Guard>} />
+        <Route path="/coordinator/schedules" element={<Guard permission="coordination.access"><CoordinatorSchedules /></Guard>} />
+        <Route path="/coordinator/schedules/new" element={<Guard permission="coordination.access"><CoordinatorSchedule /></Guard>} />
+        <Route path="/coordinator/schedules/:id" element={<Guard permission="coordination.access"><CoordinatorSchedule /></Guard>} />
+        <Route path="/coordinator/dtr-submissions" element={<Guard permission="coordination.access"><CoordinatorDtrSubmissions /></Guard>} />
+        <Route path="/coordinator/dtr-submissions/:id" element={<Guard permission="coordination.access"><CoordinatorDtrSubmission /></Guard>} />
 
         <Route path="/job-requests" element={<Guard permission="job_requests.view"><JobRequests /></Guard>} />
         <Route path="/job-requests/:id" element={<Guard permission="job_requests.view"><JobRequestDetail /></Guard>} />
@@ -201,6 +215,7 @@ export default function App() {
         <Route path="/requisitions" element={<Guard permission="requisitions.view"><Requisitions /></Guard>} />
         <Route path="/requisitions/:id" element={<Guard permission="requisitions.view"><RequisitionDetail /></Guard>} />
         <Route path="/separations" element={<Guard permission="separation.view"><Separations /></Guard>} />
+        <Route path="/separations/terminations/:id" element={<Guard permission="separation.view"><TerminationCase /></Guard>} />
 
         <Route path="/clients" element={<Guard permission="clients.view"><Clients /></Guard>} />
         <Route path="/clients/:id" element={<Guard permission="clients.view"><ClientDetail /></Guard>} />
@@ -237,6 +252,7 @@ export default function App() {
     </Routes>
     </React.Suspense>
     </NotificationsProvider>
+    </LiveUpdatesProvider>
   )
 }
 

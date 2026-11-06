@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
 /**
@@ -58,6 +59,7 @@ class TrainingController extends Controller
         $this->authorize('viewAny', Training::class);
 
         $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:120'],
             'status' => ['nullable', Rule::in(Training::STATUSES)],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
@@ -65,6 +67,12 @@ class TrainingController extends Controller
         ]);
 
         $trainings = Training::query()
+            // Title, code, place or trainer; the order stays alphabetical.
+            ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(fn ($any) => $any
+                ->whereContains('training_title', $v)
+                ->orWhereContains('training_code', $v)
+                ->orWhereContains('location', $v)
+                ->orWhereContains('trainer_name', $v)))
             ->withCount([
                 'enrollments',
                 'enrollments as attended_count' => fn ($q) => $q->where('attendance_status', 'present'),
@@ -73,8 +81,7 @@ class TrainingController extends Controller
             ->when($filters['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->when($filters['date_from'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '>=', $v))
             ->when($filters['date_to'] ?? null, fn ($q, $v) => $q->whereDate('training_date', '<=', $v))
-            ->orderByDesc('training_date')
-            ->orderByDesc('id')
+            ->alphabetical()
             ->paginate($filters['per_page'] ?? 20);
 
         return ApiResponse::paginated($trainings, 'Training sessions retrieved');
@@ -87,10 +94,14 @@ class TrainingController extends Controller
         $data = $request->validate([
             'training_title' => ['required', 'string', 'max:190'],
             'training_date' => ['required', 'date'],
+            'start_time' => ['required', 'date_format:H:i'],
+            'end_time' => ['nullable', 'date_format:H:i'],
             'location' => ['required', 'string', 'max:190'],
             'trainer_name' => ['required', 'string', 'max:190'],
             'remarks' => ['nullable', 'string', 'max:2000'],
         ]);
+
+        $this->checkTimes($data['start_time'], $data['end_time'] ?? null);
 
         $training = Training::create(array_merge($data, [
             'training_code' => $this->codes->training(),
@@ -128,11 +139,20 @@ class TrainingController extends Controller
         $data = $request->validate([
             'training_title' => ['sometimes', 'required', 'string', 'max:190'],
             'training_date' => ['sometimes', 'required', 'date'],
+            'start_time' => ['sometimes', 'required', 'date_format:H:i'],
+            'end_time' => ['sometimes', 'nullable', 'date_format:H:i'],
             'location' => ['sometimes', 'required', 'string', 'max:190'],
             'trainer_name' => ['sometimes', 'required', 'string', 'max:190'],
             'status' => ['sometimes', 'required', Rule::in(Training::STATUSES)],
             'remarks' => ['nullable', 'string', 'max:2000'],
         ]);
+
+        if (array_key_exists('start_time', $data) || array_key_exists('end_time', $data)) {
+            $this->checkTimes(
+                $data['start_time'] ?? $training->start_time,
+                array_key_exists('end_time', $data) ? $data['end_time'] : $training->end_time
+            );
+        }
 
         if ($refusal = $this->refuseSessionChange($training, $data)) {
             return ApiResponse::error($refusal, 409);
@@ -180,10 +200,12 @@ class TrainingController extends Controller
 
             // Only those still due to attend. Anybody with attendance or a
             // completion recorded is past the point where a new date concerns
-            // them - for them it is a correction to the record.
+            // them - for them it is a correction to the record. A confirmation
+            // was given for the old day, time or place, so it is asked again.
             if ($rescheduling && $training->acceptsEnrolment()) {
                 foreach ($training->enrollments()->with('applicant')->get() as $enrollment) {
                     if ($enrollment->isUntouched()) {
+                        $enrollment->forceFill(['attendance_confirmed_at' => null])->save();
                         $this->tell($enrollment->applicant, $training, 'rescheduled');
                     }
                 }
@@ -572,14 +594,35 @@ class TrainingController extends Controller
         }
     }
 
-    /** Whether a change gives the session a different day or place. */
+    /** Whether a change gives the session a different day, time or place. */
     private function movesSession(Training $training, array $data): bool
     {
         $movesDate = isset($data['training_date'])
             && $training->training_date?->toDateString() !== Carbon::parse($data['training_date'])->toDateString();
+        $movesTime = (array_key_exists('start_time', $data) && $data['start_time'] !== $training->start_time)
+            || (array_key_exists('end_time', $data) && $data['end_time'] !== $training->end_time);
         $movesPlace = isset($data['location']) && $data['location'] !== $training->location;
 
-        return $movesDate || $movesPlace;
+        return $movesDate || $movesTime || $movesPlace;
+    }
+
+    /**
+     * A session ends after it starts, and an end time needs a start time.
+     * Both are HH:MM, so comparing them as strings compares them as times.
+     */
+    private function checkTimes(?string $start, ?string $end): void
+    {
+        if ($end === null) {
+            return;
+        }
+
+        if ($start === null) {
+            throw ValidationException::withMessages(['start_time' => 'Set the start time as well as the end time.']);
+        }
+
+        if ($end <= $start) {
+            throw ValidationException::withMessages(['end_time' => 'The end time must be later than the start time.']);
+        }
     }
 
     /**
@@ -645,6 +688,8 @@ class TrainingController extends Controller
             'training_code' => $training->training_code,
             'training_title' => $training->training_title,
             'training_date' => $training->training_date?->toDateString(),
+            'start_time' => $training->start_time,
+            'end_time' => $training->end_time,
             'location' => $training->location,
             'trainer_name' => $training->trainer_name,
             'status' => $training->status,
@@ -654,6 +699,8 @@ class TrainingController extends Controller
             'can_record_outcomes' => $training->canRecordOutcomes(),
             'counts' => [
                 'enrolled' => $enrollments->count(),
+                // Applicants who said from the portal that they will come.
+                'confirmed' => $enrollments->whereNotNull('attendance_confirmed_at')->count(),
                 'present' => $enrollments->where('attendance_status', 'present')->count(),
                 'absent' => $enrollments->where('attendance_status', 'absent')->count(),
                 'completed' => $enrollments->where('completion_status', 'completed')->count(),
@@ -673,6 +720,7 @@ class TrainingController extends Controller
                 'applicant_code' => $enrollment->applicant?->applicant_code,
                 'current_status' => $enrollment->applicant?->current_status,
             ],
+            'attendance_confirmed_at' => $enrollment->attendance_confirmed_at?->toIso8601String(),
             'attendance_status' => $enrollment->attendance_status,
             'attendance_recorded_by' => $enrollment->attendanceRecorder?->full_name,
             'attendance_recorded_at' => $enrollment->attendance_recorded_at?->toIso8601String(),

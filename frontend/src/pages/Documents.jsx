@@ -22,6 +22,9 @@ export default function Documents() {
   const [searchParams, setSearchParams] = useSearchParams()
   const view = searchParams.get('view') === 'by-type' ? 'by-type' : 'by-applicant'
   const applicant = searchParams.get('applicant')
+  // Which applicants the list shows ("Awaiting review", "New uploads"), so
+  // the dashboard can open it on HR's verification queue.
+  const filter = searchParams.get('filter')
 
   function update(changes) {
     const next = new URLSearchParams(searchParams)
@@ -46,6 +49,8 @@ export default function Documents() {
           <ApplicantDocuments
             selectedId={applicant}
             onSelect={(id) => update({ applicant: id ? String(id) : null })}
+            listView={filter}
+            onListViewChange={(value) => update({ filter: value === 'with_documents' ? null : value })}
           />
         </TabsContent>
 

@@ -270,9 +270,10 @@ class CoordinatorTest extends TestCase
     {
         $this->actAs($this->coordinator($this->clientA));
 
-        // Reference data and the user's own account are the only open ones.
+        // Reference data and the user's own account are the only open ones,
+        // plus the live-update marker, which carries no data at all.
         $open = [
-            'api/v1/auth/', 'api/v1/notifications', 'api/v1/register/', 'api/v1/requirement-types',
+            'api/v1/auth/', 'api/v1/notifications', 'api/v1/live', 'api/v1/register/', 'api/v1/requirement-types',
             'api/v1/document-scan/status', 'api/v1/coordinator/', 'api/v1/portal',
         ];
 

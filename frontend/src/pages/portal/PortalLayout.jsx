@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
-import { LogOut, FileText, Home, Briefcase, UserRound, SlidersHorizontal, GraduationCap } from 'lucide-react'
+import { LogOut, FileText, Home, Briefcase, UserRound, SlidersHorizontal, GraduationCap, ClipboardList } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import NotificationBell from '@/components/NotificationBell'
@@ -64,6 +64,8 @@ export default function PortalLayout() {
   const links = [
     { to: '/portal', label: 'My application', icon: Home, end: true, categories: ['application', 'deployment'] },
     { to: '/portal/documents', label: 'My documents', icon: FileText, categories: ['requirements'] },
+    // Filled in here instead of uploaded; its notifications link to it.
+    { to: '/portal/bio-data', label: 'My Bio-Data', icon: ClipboardList, categories: [] },
     { to: '/portal/training', label: 'My training', icon: GraduationCap, categories: ['training'] },
     ...(isEmployee
       ? [{ to: '/portal/employment', label: 'My employment', icon: Briefcase, categories: ['employment'] }]

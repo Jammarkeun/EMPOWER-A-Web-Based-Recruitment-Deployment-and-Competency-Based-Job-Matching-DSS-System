@@ -135,7 +135,7 @@ class PortalTrainingTest extends TestCase
         $this->assertStringContainsString(now()->addDays(5)->format('j F Y'), $body);
         $this->assertStringContainsString('CDE office, Sta. Cruz, Laguna', $body);
         $this->assertStringContainsString('necessary before you can proceed to the next step', $body);
-        // The session record has no start time, so none is mentioned.
+        // This session was recorded without a start time, so none is made up.
         $this->assertDoesNotMatchRegularExpression('/\d{1,2}:\d{2}/', $body);
     }
 
@@ -422,5 +422,152 @@ class PortalTrainingTest extends TestCase
 
         $this->assertSame([], $this->notices($portal));
         $this->assertSame('scheduled', $this->training($portal)['status']);
+    }
+
+    public function test_hr_must_set_a_start_time_and_an_end_time_must_come_after_it(): void
+    {
+        $hr = $this->hrUser();
+        Sanctum::actingAs($hr);
+
+        $details = [
+            'training_title' => 'Food safety orientation',
+            'training_date' => now()->addDays(3)->toDateString(),
+            'location' => 'CDE office',
+            'trainer_name' => 'Ms. Lopez',
+        ];
+
+        $this->postJson('/api/v1/trainings', $details)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('start_time');
+        $this->postJson('/api/v1/trainings', $details + ['start_time' => '13:00', 'end_time' => '09:00'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('end_time');
+
+        $id = $this->postJson('/api/v1/trainings', $details + ['start_time' => '08:00', 'end_time' => '17:00'])
+            ->assertCreated()
+            ->json('data.id');
+
+        $this->getJson("/api/v1/trainings/{$id}")
+            ->assertOk()
+            ->assertJsonPath('data.start_time', '08:00')
+            ->assertJsonPath('data.end_time', '17:00');
+
+        // An edit is checked against the time already on record.
+        $this->patchJson("/api/v1/trainings/{$id}", ['end_time' => '07:30'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('end_time');
+    }
+
+    public function test_the_portal_and_the_notice_show_the_time_hr_set(): void
+    {
+        $hr = $this->hrUser();
+        $training = $this->trainingSession($hr, ['start_time' => '08:00', 'end_time' => '17:00']);
+        $applicant = $this->readyApplicant($hr);
+        $portal = $this->portalUserFor($applicant);
+
+        $this->enrol($hr, $training, $applicant);
+
+        $session = $this->training($portal)['sessions'][0];
+        $this->assertSame('08:00', $session['start_time']);
+        $this->assertSame('17:00', $session['end_time']);
+
+        $body = $this->notice($portal, 'You are scheduled for training')['body'];
+        $this->assertStringContainsString(
+            'on '.now()->addDays(5)->format('j F Y').', 8:00 AM to 5:00 PM, at CDE office, Sta. Cruz, Laguna',
+            $body
+        );
+    }
+
+    public function test_an_applicant_can_tell_hr_they_will_attend(): void
+    {
+        $hr = $this->hrUser();
+        $training = $this->trainingSession($hr, ['start_time' => '09:00']);
+        $applicant = $this->readyApplicant($hr);
+        $portal = $this->portalUserFor($applicant);
+
+        $enrollment = $this->enrol($hr, $training, $applicant);
+        $this->assertTrue($this->training($portal)['sessions'][0]['can_confirm']);
+
+        Sanctum::actingAs($portal);
+        $this->postJson("/api/v1/portal/training/{$enrollment->id}/confirm")
+            ->assertOk()
+            ->assertJsonPath('data.sessions.0.can_confirm', false);
+
+        $session = $this->training($portal)['sessions'][0];
+        $this->assertNotNull($session['confirmed_at']);
+        // Saying you will come is not attending.
+        $this->assertSame('pending', $session['attendance_status']);
+        $this->assertSame('scheduled', $session['state']);
+
+        // Saying it again changes nothing and does not tell the office twice.
+        $this->postJson("/api/v1/portal/training/{$enrollment->id}/confirm")->assertOk();
+
+        $hrNotices = collect($this->notices($hr))->where('title', $applicant->full_name.' will attend training');
+        $this->assertCount(1, $hrNotices);
+        $this->assertSame("/trainings/{$training->id}", $hrNotices->first()['link']);
+        $this->assertStringContainsString('9:00 AM', $hrNotices->first()['body']);
+
+        // The roster shows it.
+        Sanctum::actingAs($hr);
+        $this->getJson("/api/v1/trainings/{$training->id}")
+            ->assertOk()
+            ->assertJsonPath('data.counts.confirmed', 1)
+            ->assertJsonPath('data.enrollments.0.attendance_confirmed_at', fn ($at) => $at !== null);
+    }
+
+    public function test_an_applicant_can_confirm_only_their_own_upcoming_session(): void
+    {
+        $hr = $this->hrUser();
+        $me = $this->readyApplicant($hr);
+        $them = $this->readyApplicant($hr);
+        $portal = $this->portalUserFor($me);
+
+        $theirs = $this->enrol($hr, $this->trainingSession($hr), $them);
+
+        // Somebody else's enrolment is not found, and is left alone.
+        Sanctum::actingAs($portal);
+        $this->postJson("/api/v1/portal/training/{$theirs->id}/confirm")->assertNotFound();
+        $this->assertNull($theirs->fresh()->attendance_confirmed_at);
+
+        // Once attendance is recorded, the question has been answered.
+        $today = $this->trainingSession($hr, ['training_date' => now()->toDateString()]);
+        $attended = $this->enrol($hr, $today, $me);
+        $this->record($hr, $today, $attended, ['attendance_status' => 'present']);
+
+        Sanctum::actingAs($portal);
+        $this->postJson("/api/v1/portal/training/{$attended->id}/confirm")->assertStatus(409);
+
+        // A cancelled session has nothing to confirm.
+        $called = $this->trainingSession($hr);
+        $cancelled = $this->enrol($hr, $called, $me);
+        Sanctum::actingAs($hr);
+        $this->patchJson("/api/v1/trainings/{$called->id}", ['status' => 'cancelled'])->assertOk();
+
+        Sanctum::actingAs($portal);
+        $this->postJson("/api/v1/portal/training/{$cancelled->id}/confirm")->assertStatus(409);
+        $this->assertNull($cancelled->fresh()->attendance_confirmed_at);
+    }
+
+    public function test_a_new_time_asks_the_applicant_to_confirm_again(): void
+    {
+        $hr = $this->hrUser();
+        $training = $this->trainingSession($hr, ['start_time' => '08:00']);
+        $applicant = $this->readyApplicant($hr);
+        $portal = $this->portalUserFor($applicant);
+
+        $enrollment = $this->enrol($hr, $training, $applicant);
+
+        Sanctum::actingAs($portal);
+        $this->postJson("/api/v1/portal/training/{$enrollment->id}/confirm")->assertOk();
+
+        Sanctum::actingAs($hr);
+        $this->patchJson("/api/v1/trainings/{$training->id}", ['start_time' => '13:00'])->assertOk();
+
+        $this->assertNull($enrollment->fresh()->attendance_confirmed_at);
+        $this->assertTrue($this->training($portal)['sessions'][0]['can_confirm']);
+
+        $moved = $this->notice($portal, 'Your training schedule has changed');
+        $this->assertStringContainsString('1:00 PM', $moved['body']);
+        $this->assertStringContainsString('confirm again', $moved['body']);
     }
 }

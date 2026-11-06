@@ -17,6 +17,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { useUnsavedChanges } from '@/components/UnsavedChanges'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import { formatDate, todayISO } from '@/lib/utils'
 
 /** The earliest date a move may carry: the placement's start, or its last move. */
@@ -71,9 +73,13 @@ export function reassignmentProblems(form, deployment) {
 export default function ReassignDialog({ open, onOpenChange, employeeName, deployment, onSaved }) {
   const toast = useToast()
   const [step, setStep] = React.useState('edit')
-  const [form, setForm] = React.useState(() => startingForm(deployment))
+  // A background refresh of the employee hands over a new deployment object;
+  // it must neither undo the edits nor send the officer back from review.
+  const { form, setForm, dirty } = useFormDraft(deployment, startingForm, { open, key: deployment?.id })
   const [errors, setErrors] = React.useState({})
   const [submitting, setSubmitting] = React.useState(false)
+  const { guard, prompt } = useUnsavedChanges(dirty)
+  const close = guard(onOpenChange)
 
   const clientId = deployment?.client_company_id
   const departments = useApi(`/clients/${clientId}/departments`, undefined, { enabled: open && Boolean(clientId) })
@@ -82,10 +88,9 @@ export default function ReassignDialog({ open, onOpenChange, employeeName, deplo
   React.useEffect(() => {
     if (open) {
       setStep('edit')
-      setForm(startingForm(deployment))
       setErrors({})
     }
-  }, [open, deployment])
+  }, [open])
 
   const activeDepartments = (departments.data ?? []).filter(
     (d) => d.status === 'active' || String(d.id) === String(deployment?.client_department_id)
@@ -139,8 +144,9 @@ export default function ReassignDialog({ open, onOpenChange, employeeName, deplo
   ]
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !submitting && close(next)}>
       <DialogContent className="max-w-xl">
+        {prompt}
         <DialogHeader>
           <DialogTitle>{step === 'edit' ? 'Reassign within the client' : 'Review the reassignment'}</DialogTitle>
           <DialogDescription>
@@ -216,7 +222,7 @@ export default function ReassignDialog({ open, onOpenChange, employeeName, deplo
               </Field>
 
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                <Button type="button" variant="outline" onClick={() => close(false)}>
                   Cancel
                 </Button>
                 <Button type="submit">Review</Button>

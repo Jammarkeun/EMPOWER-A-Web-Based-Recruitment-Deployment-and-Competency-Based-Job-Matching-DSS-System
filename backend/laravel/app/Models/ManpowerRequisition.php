@@ -89,6 +89,7 @@ class ManpowerRequisition extends Model
             'date_requested' => 'date:Y-m-d',
             'required_by' => 'date:Y-m-d',
             'submitted_at' => 'datetime',
+            'hr_viewed_at' => 'datetime',
             'reviewed_at' => 'datetime',
             'workers_needed' => 'integer',
             'male_count' => 'integer',
@@ -130,6 +131,28 @@ class ManpowerRequisition extends Model
     public function history(): HasMany
     {
         return $this->hasMany(ManpowerRequisitionStatusHistory::class)->orderBy('changed_at')->orderBy('id');
+    }
+
+    /**
+     * Record that HR has opened this submission, once. Saved without touching
+     * updated_at: reading a requisition is not a change to it.
+     */
+    public function markViewedByHr(User $staff): bool
+    {
+        if ($this->hr_viewed_at || $this->status === 'draft') {
+            return false;
+        }
+
+        $this->forceFill([
+            'hr_viewed_at' => now(),
+            'hr_viewed_by' => $staff->id,
+        ]);
+
+        $this->timestamps = false;
+        $this->saveQuietly();
+        $this->timestamps = true;
+
+        return true;
     }
 
     /** Written on the temporary default form, before CDE's own arrived. */

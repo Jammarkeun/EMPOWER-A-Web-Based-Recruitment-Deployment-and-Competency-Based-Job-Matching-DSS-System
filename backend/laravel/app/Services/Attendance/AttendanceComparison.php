@@ -22,9 +22,11 @@ use Illuminate\Support\Collection;
  * - Nothing on file is not an absence. The DTR stays in the client's
  *   biometrics and reaches the agency late or not at all, so a scheduled day
  *   with no record is "awaiting DTR" - not enough data to compare - unless the
- *   DTR for that day is known to have been received (an import, or HR saying a
- *   period is complete). Only then is it "no DTR record", and even that is a
- *   discrepancy to look into, not a finding.
+ *   DTR for that day is known to have been received in full: HR confirmed the
+ *   client's DTR period complete, or said the hand-encoded DTR for that
+ *   employee is complete. An import alone does not say so, since a client may
+ *   send a cutoff in parts. Only then is it "no DTR record", and even that is
+ *   a discrepancy to look into, not a finding.
  * - A record that cannot be matched to a shift is not measured against one. A
  *   time-in after the shift has already ended is "does not match the scheduled
  *   shift", not ten hours late.
@@ -90,7 +92,8 @@ final class AttendanceComparison
         /** @var AttendanceRecord|null $record */
         $record = $context->recordsFor($employee->id)->get($date->toDateString());
         $exception = $this->exceptionFor($context->exceptionsFor($employee->id), $date, $placement);
-        $covered = $context->coverageFor($employee->id)->contains(fn ($c) => $c->covers($date));
+        $covered = $context->coverageFor($employee->id)->contains(fn ($c) => $c->covers($date))
+            || $context->dtrConfirmed($placement['client_company_id'] ?? null, $date);
 
         $in = $record?->time_in ? CarbonImmutable::parse($record->time_in) : null;
         $out = $record?->time_out ? CarbonImmutable::parse($record->time_out) : null;

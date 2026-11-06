@@ -14,10 +14,9 @@ use Illuminate\Validation\Rule;
 /**
  * HR's side of coordinators' manpower requisitions: read them, and decide.
  *
- * Approving one does not create a manpower request by itself. HR records the
- * request through the ordinary screen, which links it here - so every request
- * still passes the same validation, criteria and status rules (R-16) whichever
- * way it arrived.
+ * Approving one creates its manpower request at the same moment, from what the
+ * requisition says, so HR never types it in a second time. The request then
+ * follows the same criteria and status rules (R-16) as any other.
  */
 class ManpowerRequisitionController extends Controller
 {
@@ -59,9 +58,15 @@ class ManpowerRequisitionController extends Controller
         return ApiResponse::paginated(ManpowerRequisitionResource::collection($requisitions), 'Requisitions retrieved');
     }
 
-    public function show(ManpowerRequisition $requisition): JsonResponse
+    public function show(Request $request, ManpowerRequisition $requisition): JsonResponse
     {
         $this->authorize('view', $requisition);
+
+        // Opening it clears the "new" dot on HR's list. A coordinator reading
+        // their own does not count as HR having seen it.
+        if (! $request->user()->isCoordinator()) {
+            $requisition->markViewedByHr($request->user());
+        }
 
         return ApiResponse::success(new ManpowerRequisitionResource($this->loaded($requisition)));
     }
@@ -75,20 +80,54 @@ class ManpowerRequisitionController extends Controller
             // Returning or rejecting has to say why, so the coordinator - and
             // later readers - know what was wrong with it.
             'note' => ['nullable', 'required_if:action,return,reject', 'string', 'max:500'],
+            // What approving needs from HR when the form leaves it open; the
+            // service decides whether each is needed and allowed.
+            'client_department_id' => ['nullable', 'integer'],
+            'job_position_id' => ['nullable', 'integer'],
+            'confirm_new_position' => ['nullable', 'boolean'],
         ], [
             'note.required_if' => 'Say why, so the coordinator knows what to do next.',
         ]);
 
-        $requisition = $this->requisitions->review($requisition, $request->user(), $data['action'], $data['note'] ?? null);
+        $requisition = $this->requisitions->review(
+            $requisition,
+            $request->user(),
+            $data['action'],
+            $data['note'] ?? null,
+            collect($data)->only(['client_department_id', 'job_position_id', 'confirm_new_position'])->all(),
+        );
 
         return ApiResponse::success(new ManpowerRequisitionResource($this->loaded($requisition)), match ($requisition->status) {
             'under_review' => 'Marked as under review',
             'returned' => 'Returned to the coordinator for correction',
-            'approved' => 'Requisition approved. Record it as a manpower request to start recruiting.',
+            'approved' => sprintf('Requisition approved. Manpower request %s was created from it.', $requisition->jobRequest?->request_code),
             'rejected' => 'Requisition rejected',
             'fulfilled' => 'Requisition marked fulfilled',
             default => 'Requisition updated',
         });
+    }
+
+    /**
+     * The manpower request for a requisition approved before approval created
+     * one itself. Same mapping and the same one-request rule.
+     */
+    public function convert(Request $request, ManpowerRequisition $requisition): JsonResponse
+    {
+        $this->authorize('review', $requisition);
+        abort_unless($request->user()->can('job_requests.create'), 403, 'Your role cannot record manpower requests.');
+
+        $data = $request->validate([
+            'client_department_id' => ['nullable', 'integer'],
+            'job_position_id' => ['nullable', 'integer'],
+            'confirm_new_position' => ['nullable', 'boolean'],
+        ]);
+
+        $jobRequest = $this->requisitions->convertApproved($requisition, $request->user(), $data);
+
+        return ApiResponse::success(
+            new ManpowerRequisitionResource($this->loaded($requisition->refresh())),
+            "Manpower request {$jobRequest->request_code} was created from this requisition."
+        );
     }
 
     public function attachment(ManpowerRequisition $requisition): JsonResponse
@@ -107,6 +146,9 @@ class ManpowerRequisitionController extends Controller
 
     private function loaded(ManpowerRequisition $requisition): ManpowerRequisition
     {
-        return $requisition->load(['company', 'department', 'requester', 'reviewer', 'jobRequest', 'history.changedBy']);
+        return $requisition->load([
+            'company', 'department', 'requester', 'reviewer',
+            'jobRequest.department', 'jobRequest.creator', 'history.changedBy',
+        ]);
     }
 }

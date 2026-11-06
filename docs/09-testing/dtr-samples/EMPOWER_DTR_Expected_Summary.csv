@@ -1,0 +1,5 @@
+biometric_no,employee,scheduled_days,compared_days,on_schedule_days,discrepancy_days,late_days,late_minutes,early_departure_days,early_departure_minutes,missing_punch_days,no_record_days,outside_schedule_days,awaiting_dtr_days,minutes_after_end,records,data_status
+90001,"Alma Dizon",5,5,2,4,1,17,1,30,1,0,1,0,3,6,complete
+90002,"Benjie Ocampo",5,5,1,4,1,12,1,30,1,1,0,0,2,4,complete
+90003,"Carla Mendoza",6,6,4,2,1,1,0,0,0,1,0,0,5,5,complete
+90004,"Dario Villanueva",5,5,0,5,0,0,0,0,0,5,0,0,0,0,complete

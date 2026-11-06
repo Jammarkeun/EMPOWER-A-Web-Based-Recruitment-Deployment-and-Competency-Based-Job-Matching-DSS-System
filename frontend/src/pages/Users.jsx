@@ -39,12 +39,17 @@ export default function Users() {
   // filled it and every HR and coordinator account fell off the end.
   React.useEffect(() => setPage(1), [debouncedSearch, userType])
 
-  const { data, meta, loading, error, refetch } = useApi('/users', {
-    search: debouncedSearch || undefined,
-    user_type: userType || undefined,
-    page,
-    per_page: 50,
-  })
+  const { data, meta, loading, error, refetch } = useApi(
+    '/users',
+    {
+      search: debouncedSearch || undefined,
+      user_type: userType || undefined,
+      page,
+      per_page: 50,
+    },
+    // Shows when each account last signed in.
+    { live: 'activity' }
+  )
 
   useClampPage(meta, setPage)
 
